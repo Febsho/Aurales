@@ -107,6 +107,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   const [presentedBackdrop, setPresentedBackdrop] = useState<string | undefined>(() => usableBackdrop(items[0], fixed))
   const [directBackdropRetries, setDirectBackdropRetries] = useState<Set<string>>(() => new Set())
   const loadedBackdropsRef = useRef<Set<string>>(new Set())
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null)
   const [logoError, setLogoError] = useState(false)
   const [cast, setCast] = useState<{ name: string; photo?: string }[]>([])
   const heroRef = useRef<HTMLDivElement>(null)
@@ -155,6 +156,23 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     },
     [count],
   )
+
+  const handleTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (count < 2 || event.touches.length !== 1) return
+    const touch = event.touches[0]
+    touchStartRef.current = { x: touch.clientX, y: touch.clientY }
+  }
+
+  const handleTouchEnd = (event: React.TouchEvent<HTMLDivElement>) => {
+    const start = touchStartRef.current
+    touchStartRef.current = null
+    if (!start || count < 2) return
+    const touch = event.changedTouches[0]
+    const deltaX = touch.clientX - start.x
+    const deltaY = touch.clientY - start.y
+    if (Math.abs(deltaX) < 48 || Math.abs(deltaX) < Math.abs(deltaY) * 1.3) return
+    goTo(activeIndex + (deltaX < 0 ? 1 : -1))
+  }
 
   const handleBrokenBackdrop = useCallback((url: string) => {
     onActiveImageSettled?.()
@@ -539,8 +557,10 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   return (
     <div
       ref={heroRef}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
       className={`relative overflow-hidden select-none group ${cinematic && fixed && !isSmall ? 'fixed-cinematic-hero' : ''} ${cinematic && !isSmall ? 'home-hero home-hero--inset' : 'w-full'} ${cinematic && !isSmall && usesTopNav ? 'home-hero--under-nav' : ''} ${cinematic && !isSmall && !usesTopNav ? 'mt-8' : ''} ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
-      style={{ height: heroHeight }}
+      style={{ height: heroHeight, touchAction: count > 1 ? 'pan-y' : undefined }}
     >
       {!isSmall ? (
         <div
@@ -686,7 +706,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
           <>
             <button
               onClick={() => goTo(activeIndex - 1)}
-              className={`absolute ${isSmall ? 'left-4' : 'left-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
+              className={`hero-carousel-arrow hero-carousel-arrow--previous absolute ${isSmall ? 'left-4' : 'left-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
               aria-label="Previous"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
@@ -695,7 +715,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
             </button>
             <button
               onClick={() => goTo(activeIndex + 1)}
-              className={`absolute ${isSmall ? 'right-4' : 'right-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
+              className={`hero-carousel-arrow hero-carousel-arrow--next absolute ${isSmall ? 'right-4' : 'right-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
               aria-label="Next"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
@@ -738,7 +758,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
             tmdbId={item.tmdbId}
             tvdbId={item.tvdbId}
             malId={item.malId}
-            className={isSmall ? 'mb-2.5' : 'mb-3'}
+            className={`${isSmall ? 'mb-2.5' : 'mb-3'} home-hero-ratings`}
             compact
           />
 

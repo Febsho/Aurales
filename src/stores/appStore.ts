@@ -1509,6 +1509,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       homeCardAnimations: getProfileSetting('aurales_home_card_animations') !== 'false',
       fixedHeroSource: (getProfileSetting('aurales_fixed_hero_source') || 'automatic') as FixedHeroSource,
       fixedHeroManualItem: (() => { try { return JSON.parse(getProfileSetting('aurales_fixed_hero_manual_item') || 'null') as SearchResult | null } catch { return null } })(),
+      // These settings are profile-owned too. Refresh them in the same store
+      // update as the rest of the incoming profile so existing Home cards
+      // never render one frame with the outgoing profile's poster choices.
+      betterPosters: loadBetterPosterSettings(),
+      customArtUrls: loadCustomArtUrls(),
+      artProviders: normalizeArtProviderSettings(readStoredObject('aurales_art_providers')),
     })
   },
 

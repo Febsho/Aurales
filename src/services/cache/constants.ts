@@ -18,6 +18,8 @@ export const CACHE_CATEGORIES = {
   LIBRARY_CALENDAR: 'library_calendar',
   TMDB_RUNTIME: 'tmdb_runtime',
   CONNECTED_HISTORY: 'connected_history',
+  APP_METADATA: 'app_metadata',
+  ANIME_METADATA: 'anime_metadata',
 } as const
 
 export const CACHE_TTLS = {

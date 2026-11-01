@@ -12,6 +12,7 @@ import {
   type SyncRecord,
 } from './syncQueue'
 import { sameWatchlistItem as sameWatchlistIdentity, watchlistIdentity as makeWatchlistIdentity, type WatchlistIdentityItem } from '../watchlistIdentity'
+import { shouldReloadAfterVaultRestore } from '../../platform/capabilities'
 
 export {
   AURALES_SYNC_SCHEMA_VERSION,
@@ -70,6 +71,12 @@ function readProfileObject<T>(key: string, profileId: string): Record<string, T>
   } catch { return {} }
 }
 function writeProfileValue(key: string, profileId: string, value: unknown) { localStorage.setItem(profileStorageKey(key, profileId), JSON.stringify(value)) }
+function reloadAfterVaultRestore(): void {
+  // Native builds can reload because the keyring restores the passphrase on
+  // startup. Browser sessions keep it only in memory, so the profile-change
+  // event must hydrate the existing SPA without discarding the unlock state.
+  if (typeof window !== 'undefined' && shouldReloadAfterVaultRestore()) window.location.reload()
+}
 function watchlistIdentity(item: Record<string, unknown>): string | undefined {
   return makeWatchlistIdentity(item as unknown as WatchlistIdentityItem)
 }
@@ -298,7 +305,7 @@ async function syncNowUnlocked(fetcher: typeof fetch): Promise<{ uploaded: numbe
 export function syncNow(fetcher: typeof fetch = fetch): Promise<{ uploaded: number; downloaded: number }> {
   return withSyncBatchLock(async () => {
     const result = await syncNowUnlocked(fetcher)
-    if (result.activeVaultRestored) window.location.reload()
+    if (result.activeVaultRestored) reloadAfterVaultRestore()
     return { uploaded: result.uploaded, downloaded: result.downloaded }
   })
 }
@@ -338,7 +345,7 @@ async function uploadSyncNowUnlocked(fetcher: typeof fetch): Promise<{ uploaded:
     for (const profile of getProfiles()) { await queueEncryptedVault(profile.id); await drain() }
   }
   if (pendingDeletions.length) clearPendingProfileDeletions(pendingDeletions)
-  if (activeVaultRestored) window.location.reload()
+  if (activeVaultRestored) reloadAfterVaultRestore()
   return { uploaded, downloaded }
 }
 
@@ -369,7 +376,7 @@ async function downloadSyncNowUnlocked(fetcher: typeof fetch): Promise<{ downloa
     cursor = nextCursor
   } while (true)
   setSyncConfig({ cursor, lastSyncAt: new Date().toISOString(), lastError: undefined })
-  if (activeVaultRestored) window.location.reload()
+  if (activeVaultRestored) reloadAfterVaultRestore()
   return { downloaded }
 }
 

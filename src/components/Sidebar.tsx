@@ -126,7 +126,6 @@ export default function Sidebar() {
         <button
           type="button"
           onClick={handleMouseEnter}
-          onFocus={handleMouseEnter}
           className="app-sidebar__collapsed-trigger flex h-11 items-center gap-2.5 whitespace-nowrap px-3.5 text-sm font-bold tracking-wide text-white/95 hover:bg-white/[0.14] hover:text-white focus:outline-none"
           aria-label={`Open navigation; current page ${activeNavItem.label}`}
           aria-expanded={visible}

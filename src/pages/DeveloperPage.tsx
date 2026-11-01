@@ -413,7 +413,7 @@ Last file: ${thumbnailDebug?.lastOutputPath || '-'}`}
                   <label className="text-xs text-white/50 block mb-1">Stream Direct URL</label>
                   <input
                     type="text"
-                    placeholder="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+                    placeholder="https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"
                     value={testUrl}
                     onChange={(e) => setTestUrl(e.target.value)}
                     className="w-full px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-xs text-white placeholder-white/20 focus:outline-none focus:border-accent/50"

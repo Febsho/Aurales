@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import type { TrailerSource } from '../services/trailers'
 import { resolveHeroStreams } from '../services/heroTrailerStreams'
 import TrailerPreview from './TrailerPreview'
+import { getPlatformCapabilities } from '../platform/capabilities'
 import {
   getEmbeddedPlayerOwner,
   launchEmbeddedPlayer,
@@ -73,6 +74,10 @@ export default function HeroMpvTrailer({
     launchedRef.current = false
     endedRef.current = false
     setVideoVisible(false)
+    if (!getPlatformCapabilities().nativePlayer) {
+      setMode('fallback')
+      return () => { cancelled = true }
+    }
     setMode('pending')
 
     ;(async () => {

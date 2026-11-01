@@ -1,5 +1,37 @@
 use std::path::PathBuf;
 
+/// The embedded GTK/WebView surfaces are SDR. Decode HDR at its original bit
+/// depth, then map its tagged transfer function/gamut into that output space.
+/// Do not override input metadata or truncate P010/yuv420p10 to 8-bit YUV.
+/// These options work with both Linux's render API and Windows' gpu-next.
+pub const EMBEDDED_VIDEO_OPTIONS: &[(&str, &str)] = &[
+    ("target-prim", "bt.709"),
+    ("target-trc", "srgb"),
+    ("tone-mapping", "bt.2390"),
+    ("hdr-compute-peak", "no"),
+    ("scale", "bilinear"),
+    ("cscale", "bilinear"),
+    ("dscale", "mitchell"),
+    ("deband", "no"),
+    ("dither-depth", "auto"),
+];
+
+/// The libmpv OpenGL render API uses mpv's legacy gpu renderer, which cannot
+/// apply Dolby Vision's IPTPQc2 reshaping. HDR10/HLG and DV's HDR10-compatible
+/// base layers remain playable. Do not "fix" profile 5 by relabeling it BT.2020.
+pub fn requires_dolby_vision_renderer(property: &str, value: &serde_json::Value) -> bool {
+    match property {
+        "track-list" => value.as_array().is_some_and(|tracks| {
+            tracks.iter().any(|track| {
+                track["type"] == "video"
+                    && track["selected"] == true
+                    && track["dolby-vision-profile"].as_i64() == Some(5)
+            })
+        }),
+        _ => false,
+    }
+}
+
 fn is_usable_binary(path: &std::path::Path) -> bool {
     let Ok(metadata) = std::fs::metadata(path) else {
         return false;
@@ -213,7 +245,47 @@ pub fn diagnostics(
 
 #[cfg(test)]
 mod tests {
-    use super::{diagnostics, mpv_candidates, resolve_ytdlp, stable_stream_hash};
+    use super::{
+        diagnostics, mpv_candidates, requires_dolby_vision_renderer, resolve_ytdlp,
+        stable_stream_hash,
+    };
+
+    #[test]
+    fn does_not_guess_dolby_vision_profile_from_the_color_matrix() {
+        use serde_json::json;
+        // The matrix alone cannot distinguish profile 5 from compatible base
+        // layers. Only the selected track's explicit profile can reject it.
+        for matrix in ["dolbyvision", "bt.2020-ncl", "bt.709"] {
+            assert!(!requires_dolby_vision_renderer(
+                "video-params",
+                &json!({"colormatrix": matrix})
+            ));
+        }
+    }
+
+    #[test]
+    fn checks_only_the_selected_video_and_keeps_hdr10_compatible_dv_playable() {
+        use serde_json::json;
+        for profile in [5, 7, 8] {
+            let track =
+                json!([{"type": "video", "selected": true, "dolby-vision-profile": profile}]);
+            assert_eq!(
+                requires_dolby_vision_renderer("track-list", &track),
+                profile == 5
+            );
+        }
+        assert!(!requires_dolby_vision_renderer(
+            "track-list",
+            &json!([
+                {"type": "video", "selected": false, "dolby-vision-profile": 5},
+                {"type": "video", "selected": true},
+            ])
+        ));
+        assert!(!requires_dolby_vision_renderer(
+            "track-list",
+            &serde_json::Value::Null
+        ));
+    }
 
     #[test]
     fn keeps_the_existing_diagnostic_payload_shape() {

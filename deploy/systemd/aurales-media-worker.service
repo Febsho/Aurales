@@ -1,0 +1,37 @@
+[Unit]
+Description=Aurales optional media worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aurales-media
+Group=aurales-media
+EnvironmentFile=/etc/aurales-media-worker.env
+ExecStart=/opt/aurales/bin/aurales-media-worker
+Restart=on-failure
+RestartSec=3
+
+# Keep the listener private; Caddy/Nginx terminates TLS on the public interface.
+Environment=AURALES_MEDIA_BIND=127.0.0.1:8188
+StateDirectory=aurales-media-worker
+StateDirectoryMode=0700
+Environment=AURALES_MEDIA_CONVERSION_DIR=/var/lib/aurales-media-worker
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/aurales-media-worker
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

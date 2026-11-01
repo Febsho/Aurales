@@ -1,0 +1,7 @@
+# The worker should remain bound to 127.0.0.1:8188 (the default).
+# Replace this hostname with the exact HTTPS origin configured in
+# AURALES_MEDIA_WEB_ORIGINS only if the frontend is served from the same host.
+media.example.com {
+    # Do not enable access logs for signed /v1/media/* query URLs.
+    reverse_proxy 127.0.0.1:8188
+}

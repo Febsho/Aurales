@@ -8,8 +8,8 @@
  * Times in response are SECONDS — converted to ms for PMDBSkipSegment compatibility.
  */
 import type { PMDBSkipSegment } from './pmdb'
-import { invoke } from '@tauri-apps/api/core'
 import { useAppStore } from '../stores/appStore'
+import { getHttpText } from '../platform/httpText'
 
 const BASE_URL = 'https://api.introdb.app'
 const BUILTIN_KEY = 'idb_HMvlSoXKSLYhE8yw0Tou-2ImApiY7Tsb'
@@ -43,7 +43,7 @@ export async function getIntroDBSkips(
   try {
     const apiKey = useAppStore.getState().introdbApiKey.trim() || BUILTIN_KEY
     const url = `${BASE_URL}/segments?imdb_id=${encodeURIComponent(imdbId)}&season=${season}&episode=${episode}&apiKey=${encodeURIComponent(apiKey)}`
-    const body = await invoke<string>('http_get_text', { url })
+    const body = await getHttpText(url)
     const raw = JSON.parse(body) as IntroDBResponse
     const intro = raw.intro ?? null
     const outro = raw.outro ?? null

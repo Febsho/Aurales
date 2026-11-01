@@ -46,6 +46,7 @@ import { useAppStore, getLanguageCodeFromTrack, getLanguageNameFromTrack, APP_LA
 import { setDiscordActivity, restoreDiscordBrowsingActivity } from '../services/discord'
 import { minimalMpvPlayer } from '../services/player/minimalMpvPlayer'
 import { createTrackPropertyQueue } from '../services/player/trackSwitch'
+import { waitForSubtitleMirror } from '../services/player/subtitleMirror'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
 import {
   play as wtPlay,
@@ -80,6 +81,8 @@ interface NativeMpvPlayerProps {
   onPickAnother: () => void
   onPlaybackError?: (message: string, positionSeconds?: number) => void
   onPlaybackStarted?: () => void
+  onNextEpisode?: (season: number, episode: number) => void
+  nextEpisodeHint?: { season: number; episode: number }
   onReportBad?: () => void
 }
 
@@ -704,9 +707,10 @@ function wtControlBlocked(): boolean {
 
 // mpv args derived from settings that aren't first-class launch params.
 function buildMpvExtraArgs(storeState: { audioPassthrough: boolean }): string {
-  const qualityArgs = '--scale=ewa_lanczossharp --cscale=ewa_lanczossharp --dscale=mitchell --deband=yes --deband-iterations=2 --dither-depth=auto --correct-downscaling=yes --linear-downscaling=yes --sigmoid-upscaling=yes --hdr-compute-peak=yes'
-  const parts = [qualityArgs]
-  if (storeState.audioPassthrough && !parts[0].includes('--audio-spdif')) {
+  // Video defaults belong to the native backend so every launch/restart uses
+  // the same color and performance policy. Do not force gpu-hq filters here.
+  const parts: string[] = []
+  if (storeState.audioPassthrough) {
     parts.push('--audio-spdif=ac3,eac3,dts,dts-hd,truehd')
   }
   return parts.filter(Boolean).join(' ')
@@ -785,6 +789,8 @@ function FullNativeMpvPlayer({
   onPickAnother,
   onPlaybackError,
   onPlaybackStarted,
+  onNextEpisode,
+  nextEpisodeHint,
 }: NativeMpvPlayerProps) {
   useEffect(() => {
     setRequestPlaybackActive(true)
@@ -868,7 +874,7 @@ function FullNativeMpvPlayer({
   const [paused, setPaused] = useState(false)
   const [buffering, setBuffering] = useState(false)
   const eofClosedRef = useRef(false)
-  const closeRef = useRef<(() => Promise<void>) | null>(null)
+  const closeRef = useRef<((keepFullscreen?: boolean) => Promise<void>) | null>(null)
   const closingRef = useRef(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   // Ref mirror avoids stale closures during native fullscreen transitions.
@@ -1951,22 +1957,34 @@ function FullNativeMpvPlayer({
       && session.status !== 'stopped'
       && latestFullPlayerSessionId === session.id
       && playbackEpochRef.current === playbackEpoch
-    // mpv opens this as a separate subtitle demuxer. Its refresh seeks stay on
-    // that connection and cannot drain or pause the primary A/V packet queue.
-    subtitleMirrorPendingRef.current = source
-    sendPlayerCommand('sub-add', [source, 'auto'])
-      .then(() => {
-        if (!isSessionCurrent() || subtitleMirrorPendingRef.current !== source) return false
-        subtitleMirrorPendingRef.current = null
-        return refreshTracks(isSessionCurrent)
+    // Opening the whole video again as a subtitle source competes with the
+    // first A/V request, especially on torrent gateways. Only do it after
+    // playback has buffered and we know the file actually has embedded subs.
+    void (async () => {
+      const canMirror = await waitForSubtitleMirror({
+        isCurrent: isSessionCurrent,
+        isReady: () => playerReadyRef.current,
+        readState: async () => {
+          const [snapshot, tracks] = await Promise.all([
+            getPlayerSnapshot(), getPlayerProperty('track-list') as Promise<MpvTrack[]>,
+          ])
+          return {
+            hasEmbeddedSubtitles: Array.isArray(tracks) && tracks.some((track) => track.type === 'sub' && !track.external),
+            bufferedSeconds: snapshot.demuxerCacheDuration,
+          }
+        },
       })
-      .catch((error) => {
+      if (!canMirror || !isSessionCurrent()) return
+      subtitleMirrorPendingRef.current = source
+      try {
+        await sendPlayerCommand('sub-add', [source, 'auto'])
+      } finally {
         if (isSessionCurrent() && subtitleMirrorPendingRef.current === source) {
           subtitleMirrorPendingRef.current = null
-          refreshTracks(isSessionCurrent).catch(() => false)
+          await refreshTracks(isSessionCurrent)
         }
-        logEvent('MPV DEBUG', `subtitle mirror failed: ${String(error)}`)
-      })
+      }
+    })().catch((error) => logEvent('MPV DEBUG', `subtitle mirror failed: ${String(error)}`))
   }, [refreshTracks])
 
   // ─ Live subtitle translation ─────────────────────────────────────────────
@@ -2793,6 +2811,31 @@ function FullNativeMpvPlayer({
     }
   }, [startTime])
 
+  // Profile 5 has no HDR10-compatible base layer. Let Smart Play recover
+  // instead of silently showing green/purple through Linux's legacy renderer.
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    listen<{ sessionId: string; error: string }>('mpv-video-unsupported', (event) => {
+      const session = activeSessionRef.current
+      if (disposed || !session || session.status === 'stopped') return
+      void invoke<string | null>('get_embedded_player_session_id').then((nativeId) => {
+        if (disposed || nativeId !== event.payload.sessionId || activeSessionRef.current !== session) return
+        setError(event.payload.error)
+        sendPlayerCommand('set_property', ['pause', true]).catch(() => {})
+        if (!unstableStreamNotifiedRef.current && !useWatchTogetherStore.getState().currentRoom) {
+          unstableStreamNotifiedRef.current = true
+          smartErrorNotifiedRef.current = true
+          onPlaybackErrorRef.current?.(event.payload.error, progressRef.current.currentTime)
+        }
+      }).catch(() => {})
+    }).then((fn) => {
+      if (disposed) fn()
+      else unlisten = fn
+    }).catch(() => {})
+    return () => { disposed = true; unlisten?.() }
+  }, [])
+
   useEffect(() => {
     if (playerReady || error) return
     let cancelled = false
@@ -3409,10 +3452,18 @@ function FullNativeMpvPlayer({
   }, [skips, autoSkipIntro, autoSkipCredits, nextEpisodeCountdownSeconds, command, saveLocalProgress, savePMDBProgressHelper, saveMdblistProgressHelper, scrobbleSimkl, simklSaveResumePosition, scrobbleAnilist, pmdbApiKey, pmdbSaveResumePosition, mdblistApiKey, scrobbleMdblistEnabled, title, sendWatchTogetherSeek, triggerRestart])
 
   // ─ Fetch next episode on mount ────────────────────────────────────────────
+  const nextEpisodeHintSeason = nextEpisodeHint?.season
+  const nextEpisodeHintEpisode = nextEpisodeHint?.episode
   useEffect(() => {
     if (!playbackItem || playbackItem.contentType !== 'series') return
     if (!playbackItem.season || !playbackItem.episode) return
     let cancelled = false
+    const hinted = nextEpisodeHintSeason != null && nextEpisodeHintEpisode != null ? {
+      season: nextEpisodeHintSeason,
+      episode: nextEpisodeHintEpisode,
+      title: `Episode ${nextEpisodeHintEpisode}`,
+    } : null
+    setNextEpInfo(hinted)
 
     const doFetch = async () => {
       let tmdbId = tmdbIdRef.current
@@ -3430,13 +3481,13 @@ function FullNativeMpvPlayer({
       if (tmdbId) {
         const info = await fetchNextEpisodeFromTmdb(tmdbId, nextSeason, nextEpisode)
         if (cancelled) return
-        setNextEpInfo(info)
+        setNextEpInfo(info || hinted)
         return
       }
 
       // Fallback: build a minimal stub so UpNext overlay can still appear
       // even when TMDB key/id is unavailable
-      setNextEpInfo({
+      setNextEpInfo(hinted || {
         season: nextSeason,
         episode: nextEpisode,
         title: `Episode ${nextEpisode}`,
@@ -3448,13 +3499,19 @@ function FullNativeMpvPlayer({
     // Give the main start effect time to resolve TMDB ID
     const timer = setTimeout(doFetch, 2000)
     return () => { cancelled = true; clearTimeout(timer) }
-  }, [playbackItem])
+  }, [playbackItem, nextEpisodeHintSeason, nextEpisodeHintEpisode])
 
   // ─ Up Next countdown ─────────────────────────────────────────────────────
   const handleAutoplay = useCallback(async () => {
     const nextEp = nextEpInfoRef.current
     const item = currentItemRef.current
     if (!nextEp || !item?.localId || isAutoSearching) { setShowUpNext(false); return }
+    if (onNextEpisode) {
+      setIsAutoSearching(true)
+      await closeRef.current?.(true)
+      onNextEpisode(nextEp.season, nextEp.episode)
+      return
+    }
     const mediaId = item.imdbId || item.localId
     const sessionId = activeSessionRef.current?.id
     const playbackEpoch = playbackEpochRef.current
@@ -3760,7 +3817,7 @@ function FullNativeMpvPlayer({
       setBuffering(false)
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [title, scrobbleSimkl, scrobbleTrakt, isAutoSearching, saveLocalProgress, refreshTracks, applySavedVolume, schedulePlayerTimeout, mirrorEmbeddedSubtitles])
+  }, [title, scrobbleSimkl, scrobbleTrakt, isAutoSearching, onNextEpisode, saveLocalProgress, refreshTracks, applySavedVolume, schedulePlayerTimeout, mirrorEmbeddedSubtitles])
 
   useEffect(() => {
     if (!showUpNext) { setUpNextCountdown(nextEpisodeCountdownSeconds); return }
@@ -3782,7 +3839,7 @@ function FullNativeMpvPlayer({
   }, [showUpNext, handleAutoplay, autoPlayNextEpisode, nextEpisodeCountdownSeconds])
 
   // ─ Playback controls ──────────────────────────────────────────────────────
-  const close = async () => {
+  const close = async (keepFullscreen = false) => {
     if (closingRef.current) return
     closingRef.current = true
     const item = currentItemRef.current
@@ -3795,7 +3852,7 @@ function FullNativeMpvPlayer({
     // Restore the native window before revealing the detail page. Rendering it
     // while Windows is still leaving fullscreen leaves the whole app at the
     // temporary fullscreen bounds/position.
-    if (isFullscreenRef.current) await exitFullscreenWindow().catch(() => {})
+    if (!keepFullscreen && isFullscreenRef.current) await exitFullscreenWindow().catch(() => {})
     // Stopping mpv and remote progress/scrobble writes remain non-blocking.
     void stopEmbeddedPlayer().catch(() => {})
     onClose()

@@ -40,9 +40,13 @@ async function vaultKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey
 export function unlockSyncVault(passphrase: string): void {
   if (passphrase.length < 12) throw new Error('Use a Sync account password of at least 12 characters.')
   vaultPassphrase = passphrase
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') window.dispatchEvent(new Event('aurales:sync-vault-state-changed'))
 }
 export function isSyncVaultUnlocked(): boolean { return Boolean(vaultPassphrase) }
-export function lockSyncVault(): void { vaultPassphrase = null }
+export function lockSyncVault(): void {
+  vaultPassphrase = null
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') window.dispatchEvent(new Event('aurales:sync-vault-state-changed'))
+}
 export function vaultSettingCount(): number { const profileId = getActiveProfileId(); return Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter((key): key is string => Boolean(key && included(key, profileId))).length }
 function hashText(seed: number, value: string): number {
   let hash = seed

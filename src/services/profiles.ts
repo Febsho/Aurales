@@ -52,6 +52,9 @@ function stateKey(profileId: string, key: string): string { return `${PROFILE_ST
 /** Sync transport/device identity stays on this installation. Everything else,
  * including provider sessions and user settings, belongs to the active profile. */
 export function isProfileOwnedStorageKey(key: string): boolean {
+  // Personal media-worker credentials are installation secrets, not portable
+  // profile data; never include them in Aurales Sync or profile backups.
+  if (key === 'aurales_media_worker_secret_v1') return false
   return !key.startsWith('aurales_sync_')
     && key !== PROFILES_KEY && key !== ACTIVE_KEY
     && key !== 'aurales_sync_device_v1'

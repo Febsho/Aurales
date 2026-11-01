@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Aurales browser media test</title></head>
+  <body>
+    <video id="media" controls muted autoplay playsinline></video>
+    <output id="media-state" aria-live="polite">loading</output>
+    <script>
+      const media = document.querySelector('#media')
+      const state = document.querySelector('#media-state')
+      const params = new URLSearchParams(location.search)
+      const mp4 = params.get('format') === 'mp4'
+      const seekTarget = mp4 ? 1.5 : 6
+      let didPlay = false
+      media.src = mp4 ? '/tests/browser/fixtures/h264-aac.mp4' : '/tests/browser/fixtures/vp8-opus.webm'
+      const report = () => { state.textContent = JSON.stringify({
+        event: media.dataset.lastEvent || 'initial',
+        played: didPlay,
+        readyState: media.readyState,
+        paused: media.paused,
+        currentTime: media.currentTime,
+        duration: media.duration,
+        seekableRanges: media.seekable.length,
+        error: media.error?.message || null,
+      }) }
+      for (const eventName of ['loadedmetadata', 'canplay', 'playing', 'timeupdate', 'seeked', 'error']) {
+        media.addEventListener(eventName, () => { if (eventName === 'playing') didPlay = true; media.dataset.lastEvent = eventName; report() })
+      }
+      if (mp4) media.addEventListener('playing', () => media.pause())
+      else media.addEventListener('timeupdate', () => { if (media.currentTime >= seekTarget + 0.2) media.pause() })
+      media.addEventListener('loadedmetadata', () => {
+        if (media.seekable.length) {
+          media.currentTime = Math.min(seekTarget, media.duration / 2)
+          void media.play().catch(() => {})
+        }
+      })
+      report()
+    </script>
+  </body>
+</html>

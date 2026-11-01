@@ -1,6 +1,7 @@
 import type { TraktTokens, TraktDeviceCode, TraktAccount } from '../../types'
 import { invoke } from '@tauri-apps/api/core'
 import { withRequestTimeout } from '../network/timeout'
+import { getMediaWorkerConfig, proxyTraktRequest } from '../mediaWorker'
 
 const TRAKT_API = 'https://api.trakt.tv'
 const LS_ACCOUNT = 'trakt_account'
@@ -47,6 +48,18 @@ async function readTraktResponse(response: Response): Promise<string> {
 async function traktRequest(url: string, options: RequestInit = {}): Promise<TraktHttpResult> {
   if (!isTauri()) {
     return withRequestTimeout(15_000, async (signal) => {
+      if (getMediaWorkerConfig()) {
+        const headers: Record<string, string> = {}
+        new Headers(options.headers).forEach((value, key) => { headers[key] = value })
+        const response = await proxyTraktRequest(
+          url,
+          options.method || 'GET',
+          headers,
+          typeof options.body === 'string' ? options.body : undefined,
+          signal,
+        )
+        return { status: response.status, data: parseJson(response.body) }
+      }
       const response = await fetch(url, { ...options, signal })
       return { status: response.status, data: parseJson(await readTraktResponse(response)) }
     }, 'Trakt request timed out', options.signal ?? undefined)
@@ -78,7 +91,11 @@ export function getClientId(): string {
 }
 
 function getClientSecret(): string {
-  return localStorage.getItem('trakt_client_secret') || import.meta.env.VITE_TRAKT_CLIENT_SECRET || ''
+  // A client secret must never come from a Vite environment variable: VITE_*
+  // values are compiled into JavaScript and shared with every web user.
+  // Users who need a confidential Trakt client may still enter their own
+  // value in settings; it stays in that browser's existing local storage.
+  return localStorage.getItem('trakt_client_secret') || ''
 }
 
 export function getStoredTokens(): TraktTokens | null {

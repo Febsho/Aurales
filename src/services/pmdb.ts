@@ -1,17 +1,18 @@
 /**
  * PMDB (PublicMetaDB) service.
  *
- * All HTTP calls are routed through the Rust `pmdb_request` Tauri command so
- * that they originate from the native process — bypassing the WebView's CORS
- * restrictions. The browser `fetch` API cannot reach publicmetadb.com from a
- * tauri://localhost origin without explicit CORS headers on the server side.
+ * Desktop HTTP calls use the Rust `pmdb_request` command. Browser requests use
+ * bounded CORS fetch, or the optional authenticated Aurales worker when the
+ * provider does not allow browser CORS.
  */
 import { invoke } from '@tauri-apps/api/core'
 import { useAppStore } from '../stores/appStore'
 import { getTmdbApiKey } from './apiKeys'
 import { requestCoordinator } from './network/requestCoordinator'
 import { withRequestTimeout } from './network/timeout'
-import { readBoundedResponseJson } from './network/boundedResponse'
+import { readBoundedResponseJson, readBoundedResponseText } from './network/boundedResponse'
+import { getMediaWorkerConfig, proxyPmdbRequest } from './mediaWorker'
+import { getPlatformCapabilities } from '../platform/capabilities'
 
 const BASE_URL = 'https://publicmetadb.com/api/external'
 const MAX_TMDB_FIND_RESPONSE_BYTES = 1024 * 1024
@@ -45,24 +46,43 @@ async function pmdbFetch(
   if (!apiKey) return { ok: false, status: 0, data: null }
 
   try {
+    const onWeb = getPlatformCapabilities().platform !== 'tauri'
+    const workerConfigured = onWeb && Boolean(getMediaWorkerConfig())
     const result = await requestCoordinator.run<RustPmdbResponse>({
       origin: BASE_URL,
       label: 'PublicMetaDB',
       kind: 'metadata',
       dedupeKey: `${credentialFingerprint(apiKey)}:${method}:${path}:${bodyObj === undefined ? '' : JSON.stringify(bodyObj)}`,
       priority: method === 'GET' ? 'visible' : 'interactive',
-      timeoutMs: 15_000,
+      timeoutMs: workerConfigured ? 35_000 : 15_000,
       retry: 'none',
-    }, () => {
+    }, (signal) => {
       if (useAppStore.getState().pmdbApiKey !== apiKey) {
         throw new Error('PublicMetaDB connection changed before the request could be sent.')
       }
-      return invoke<RustPmdbResponse>('pmdb_request', {
-        method,
-        url: `${BASE_URL}${path}`,
-        apiKey,
-        body: bodyObj !== undefined ? JSON.stringify(bodyObj) : null,
-      })
+      const body = bodyObj !== undefined ? JSON.stringify(bodyObj) : undefined
+      if (!onWeb) {
+        return invoke<RustPmdbResponse>('pmdb_request', {
+          method,
+          url: `${BASE_URL}${path}`,
+          apiKey,
+          body: body ?? null,
+        })
+      }
+      if (workerConfigured) return proxyPmdbRequest(method, path, apiKey, body, signal)
+      return withRequestTimeout(15_000, async (signal) => {
+        const response = await fetch(`${BASE_URL}${path}`, {
+          method,
+          headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json', 'Content-Type': 'application/json' },
+          body,
+          signal,
+        })
+        return {
+          status: response.status,
+          ok: response.ok,
+          body: await readBoundedResponseText(response, MAX_TMDB_FIND_RESPONSE_BYTES * 16, 'PublicMetaDB response'),
+        }
+      }, 'PublicMetaDB request timed out', signal)
     })
 
     let data: unknown = null

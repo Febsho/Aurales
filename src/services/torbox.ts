@@ -2,6 +2,7 @@ import type { StreamResult } from '../types'
 import { invoke } from '@tauri-apps/api/core'
 import { getPlayableDirectUrl } from './streams/playableUrl'
 import { readBoundedResponseText } from './network/boundedResponse'
+import { getMediaWorkerConfig, proxyTorboxRequest } from './mediaWorker'
 
 const API_BASE = 'https://api.torbox.app/v1/api'
 const TOKEN_KEY = 'torbox_api_token'
@@ -94,7 +95,9 @@ async function request<T>(path: string, init: RequestInit = {}, authenticated = 
   if (authenticated && !token) throw new Error('Connect TorBox in Settings first.')
   const headers = new Headers(init.headers)
   if (authenticated) headers.set('Authorization', `Bearer ${token}`)
-  if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+  if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
+    headers.set('Content-Type', init.body instanceof URLSearchParams ? 'application/x-www-form-urlencoded' : 'application/json')
+  }
   const usingTauri = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__)
   let responseStatus: number
   let responseOk: boolean
@@ -104,26 +107,40 @@ async function request<T>(path: string, init: RequestInit = {}, authenticated = 
       method: init.method || 'GET',
       path,
       token: authenticated ? token : null,
-      body: typeof init.body === 'string' ? init.body : null,
+      body: typeof init.body === 'string' ? init.body : init.body instanceof URLSearchParams ? init.body.toString() : null,
       contentType: headers.get('Content-Type') || 'application/json',
     })
     responseStatus = proxy.status
     responseOk = proxy.ok
     responseBody = proxy.body
   } else {
-    const controller = init.signal ? undefined : new AbortController()
-    const timeout = controller ? window.setTimeout(() => controller.abort(), 15_000) : undefined
-    try {
-      const response = await fetch(`${API_BASE}${path}`, {
-        ...init,
-        headers,
-        signal: init.signal ?? controller?.signal,
-      })
+    if (getMediaWorkerConfig()) {
+      const response = await proxyTorboxRequest(
+        (init.method || 'GET').toUpperCase() as 'GET' | 'POST',
+        path,
+        authenticated ? token : undefined,
+        typeof init.body === 'string' ? init.body : init.body instanceof URLSearchParams ? init.body.toString() : undefined,
+        headers.get('Content-Type') || 'application/json',
+        init.signal ?? undefined,
+      )
       responseStatus = response.status
       responseOk = response.ok
-      responseBody = await readBoundedResponseText(response, MAX_TORBOX_RESPONSE_BYTES, 'TorBox response')
-    } finally {
-      if (timeout != null) window.clearTimeout(timeout)
+      responseBody = response.body
+    } else {
+      const controller = init.signal ? undefined : new AbortController()
+      const timeout = controller ? window.setTimeout(() => controller.abort(), 15_000) : undefined
+      try {
+        const response = await fetch(`${API_BASE}${path}`, {
+          ...init,
+          headers,
+          signal: init.signal ?? controller?.signal,
+        })
+        responseStatus = response.status
+        responseOk = response.ok
+        responseBody = await readBoundedResponseText(response, MAX_TORBOX_RESPONSE_BYTES, 'TorBox response')
+      } finally {
+        if (timeout != null) window.clearTimeout(timeout)
+      }
     }
   }
   let payload: TorBoxResponse<T>

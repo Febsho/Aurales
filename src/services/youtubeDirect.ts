@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { getPlatformCapabilities } from '../platform/capabilities'
 
 // Resolves a YouTube video id to a directly playable stream URL so trailers
 // can run in a native <video> element with no YouTube UI.
@@ -136,6 +137,10 @@ function rememberDirectStream(videoId: string, promise: Promise<DirectStream | n
 }
 
 export function getDirectYoutubeStream(videoId: string): Promise<DirectStream | null> {
+  // YT-DLP and its bounded localhost proxy belong to the Windows/Linux
+  // embedded-player path. Browser and WebView-only builds use the YouTube
+  // iframe fallback from TrailerPreview instead of calling desktop IPC.
+  if (!getPlatformCapabilities().nativePlayer) return Promise.resolve(null)
   const cached = streamCache.get(videoId)
   if (cached) {
     rememberDirectStream(videoId, cached)

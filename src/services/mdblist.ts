@@ -6,6 +6,8 @@ import { mediaIdentity } from './mediaPresentation'
 import { rotateProviderCredentialScope } from './cache/homeStartupSnapshot'
 import { withRequestTimeout } from './network/timeout'
 import { readBoundedResponseJson, readBoundedResponseText } from './network/boundedResponse'
+import { getPlatformCapabilities } from '../platform/capabilities'
+import { getMediaWorkerConfig, proxyMdblistRequest } from './mediaWorker'
 
 export interface MdblistRating {
   source: string
@@ -241,6 +243,10 @@ export function clearMdblistOAuth(): void {
 
 export function cancelMdblistOAuthLogin(): void {
   mdblistAuthGeneration++
+  if (getPlatformCapabilities().platform === 'web') {
+    sessionStorage.removeItem(MDBLIST_BROWSER_SESSION_KEY)
+    return
+  }
   const cancellation = invoke<void>('cancel_anilist_callback_server', { provider: 'mdblist' })
   mdblistCallbackCancellation = cancellation
   void cancellation.finally(() => {
@@ -250,18 +256,30 @@ export function cancelMdblistOAuthLogin(): void {
 
 async function postMdblistOAuthForm(path: string, params: Record<string, string>): Promise<any> {
   return withRequestTimeout(15_000, async (signal) => {
-    const res = await fetch(`${BASE_URL}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-      body: new URLSearchParams(params),
-      signal,
-    })
-    const data = await readBoundedResponseJson<any>(res, MAX_MDBLIST_OAUTH_RESPONSE_BYTES, 'MDBList OAuth response').catch(() => null)
-    if (!res.ok) {
-      const message = data?.error_description || data?.detail || data?.error || `MDBList OAuth failed (${res.status})`
+    let status: number
+    let ok: boolean
+    let data: any
+    if (getPlatformCapabilities().platform === 'web' && getMediaWorkerConfig()) {
+      const response = await proxyMdblistRequest('POST', path, {}, new URLSearchParams(params).toString(), 'application/x-www-form-urlencoded', signal)
+      status = response.status
+      ok = response.ok
+      try { data = JSON.parse(response.body) } catch { data = null }
+    } else {
+      const response = await fetch(`${BASE_URL}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+        body: new URLSearchParams(params),
+        signal,
+      })
+      status = response.status
+      ok = response.ok
+      data = await readBoundedResponseJson<any>(response, MAX_MDBLIST_OAUTH_RESPONSE_BYTES, 'MDBList OAuth response').catch(() => null)
+    }
+    if (!ok) {
+      const message = data?.error_description || data?.detail || data?.error || `MDBList OAuth failed (${status})`
       const err = new Error(String(message)) as Error & { code?: string; status?: number }
       err.code = data?.error
-      err.status = res.status
+      err.status = status
       throw err
     }
     return data
@@ -332,11 +350,18 @@ async function generateCodeChallenge(verifier: string): Promise<string> {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-const MDBLIST_REDIRECT_URI = 'http://localhost:42814/'
+const MDBLIST_NATIVE_REDIRECT_URI = 'http://localhost:42814/'
+const MDBLIST_BROWSER_SESSION_KEY = 'mdblist_oauth_pkce_v1'
+
+function mdblistRedirectUri(): string {
+  if (getPlatformCapabilities().platform !== 'web') return MDBLIST_NATIVE_REDIRECT_URI
+  return import.meta.env.VITE_MDBLIST_WEB_REDIRECT_URI || `${window.location.origin}/auth/mdblist/callback`
+}
 
 export interface MdblistPKCESession {
   codeVerifier: string
   state: string
+  redirectUri?: string
   authGeneration?: number
 }
 
@@ -351,18 +376,34 @@ export async function startMdblistPKCELogin(): Promise<{ authUrl: string; sessio
     throw new Error('MDBList sign-in was cancelled.')
   }
   const state = crypto.randomUUID()
+  const redirectUri = mdblistRedirectUri()
+  if (getPlatformCapabilities().platform === 'web') {
+    const redirect = new URL(redirectUri)
+    if (redirect.origin !== window.location.origin || (redirect.protocol !== 'https:' && redirect.hostname !== 'localhost' && redirect.hostname !== '127.0.0.1')) {
+      throw new Error('MDBList browser redirect URI must use this app origin over HTTPS and be registered with MDBList.')
+    }
+  }
   const params = new URLSearchParams({
     client_id: clientId,
-    redirect_uri: MDBLIST_REDIRECT_URI,
+    redirect_uri: redirectUri,
     response_type: 'code',
     scope: 'write',
     state,
     code_challenge: codeChallenge,
     code_challenge_method: 'S256',
   })
+  const session: MdblistPKCESession = {
+    codeVerifier,
+    state,
+    redirectUri,
+    ...(getPlatformCapabilities().platform === 'web' ? {} : { authGeneration: generation }),
+  }
+  if (getPlatformCapabilities().platform === 'web') {
+    sessionStorage.setItem(MDBLIST_BROWSER_SESSION_KEY, JSON.stringify(session))
+  }
   return {
     authUrl: `https://mdblist.com/oauth/authorize/?${params}`,
-    session: { codeVerifier, state, authGeneration: generation },
+    session,
   }
 }
 
@@ -374,7 +415,7 @@ export async function exchangeMdblistPKCEToken(code: string, session: MdblistPKC
   const data = await postMdblistOAuthForm('/oauth/token/', {
     grant_type: 'authorization_code',
     code,
-    redirect_uri: MDBLIST_REDIRECT_URI,
+    redirect_uri: session.redirectUri || MDBLIST_NATIVE_REDIRECT_URI,
     client_id: clientId,
     code_verifier: session.codeVerifier,
   })
@@ -391,6 +432,9 @@ export interface MdblistOAuthCallback {
 }
 
 export async function waitForMdblistCallback(): Promise<MdblistOAuthCallback> {
+  if (getPlatformCapabilities().platform === 'web') {
+    throw new Error('MDBList browser authorization returns through the Aurales callback page.')
+  }
   const result = await invoke<string>('start_anilist_callback_server', { provider: 'mdblist' })
   let callback: unknown
   try {
@@ -406,6 +450,48 @@ export async function waitForMdblistCallback(): Promise<MdblistOAuthCallback> {
     ...(typeof values.code === 'string' ? { code: values.code } : {}),
     ...(typeof values.state === 'string' ? { state: values.state } : {}),
     ...(typeof values.error === 'string' ? { error: values.error } : {}),
+  }
+}
+
+/** Validate MDBList's same-origin browser callback and exchange its PKCE code. */
+export async function completeMdblistBrowserCallback(search: string): Promise<MdblistOAuthTokens> {
+  const params = new URLSearchParams(search)
+  let session: MdblistPKCESession
+  try {
+    session = JSON.parse(sessionStorage.getItem(MDBLIST_BROWSER_SESSION_KEY) || '') as MdblistPKCESession
+  } catch {
+    throw new Error('MDBList sign-in session expired. Start the connection again.')
+  }
+  if (!session?.codeVerifier || !session.state || !session.redirectUri) {
+    throw new Error('MDBList sign-in session expired. Start the connection again.')
+  }
+  let redirect: URL
+  try { redirect = new URL(session.redirectUri) } catch { throw new Error('MDBList sign-in session has an invalid redirect URI.') }
+  if (redirect.origin !== window.location.origin || redirect.pathname !== '/auth/mdblist/callback') {
+    sessionStorage.removeItem(MDBLIST_BROWSER_SESSION_KEY)
+    throw new Error('MDBList sign-in redirect did not match this Aurales site.')
+  }
+  if (params.get('state') !== session.state) {
+    sessionStorage.removeItem(MDBLIST_BROWSER_SESSION_KEY)
+    throw new Error('Rejected an unexpected MDBList authorization response.')
+  }
+  const providerError = params.get('error')
+  if (providerError) {
+    sessionStorage.removeItem(MDBLIST_BROWSER_SESSION_KEY)
+    throw new Error(providerError === 'access_denied' ? 'MDBList sign-in was cancelled.' : `MDBList authorization failed: ${providerError}`)
+  }
+  const code = params.get('code')
+  if (!code) {
+    sessionStorage.removeItem(MDBLIST_BROWSER_SESSION_KEY)
+    throw new Error('MDBList did not return an authorization code.')
+  }
+  try {
+    const tokens = await exchangeMdblistPKCEToken(code, session)
+    sessionStorage.removeItem(MDBLIST_BROWSER_SESSION_KEY)
+    return tokens
+  } catch (error) {
+    sessionStorage.removeItem(MDBLIST_BROWSER_SESSION_KEY)
+    throw error
   }
 }
 
@@ -452,7 +538,7 @@ async function mdblistFetch<T>(
     timeoutMs: 20_000,
     retry: 'none',
   }, (signal) => queueMdblistRequest(async () => {
-    if (token) {
+    if (token && getPlatformCapabilities().platform === 'tauri') {
       if (getStoredMdblistTokens()?.accessToken !== token) {
         throw new Error('MDBList connection changed before the request could be sent.')
       }
@@ -486,10 +572,29 @@ async function mdblistFetch<T>(
       return JSON.parse(raw) as T
     }
 
+    if (getPlatformCapabilities().platform === 'web' && getMediaWorkerConfig()) {
+      const response = await proxyMdblistRequest(method, path, {
+        ...(token ? { bearerToken: token } : {}),
+        ...(key ? { apiKey: key } : {}),
+      }, body !== undefined ? JSON.stringify(body) : undefined, 'application/json', signal)
+      if (response.status === 429) throw new MdblistRateLimitError()
+      if (!response.ok) {
+        let message = `MDBList ${method} ${path} failed (${response.status})`
+        try {
+          const data = JSON.parse(response.body)
+          message = String(data?.detail || data?.error || message)
+        } catch { /* keep bounded generic message */ }
+        throw new Error(message)
+      }
+      if (response.status === 204) return undefined as T
+      try { return JSON.parse(response.body) as T } catch { throw new Error('MDBList returned an invalid JSON response.') }
+    }
+
     const res = await fetch(url.toString(), {
       method,
       signal,
       headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,

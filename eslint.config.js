@@ -8,8 +8,11 @@ import { defineConfig, globalIgnores } from 'eslint/config'
 export default defineConfig([
   globalIgnores([
     'dist',
+    'dist-web',
     'node_modules',
     'coverage',
+    'playwright-report',
+    'test-results',
     'src-tauri/target',
     'watch-together-server/node_modules',
   ]),

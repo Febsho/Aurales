@@ -3599,7 +3599,6 @@ export default function CollectionsPage() {
   const [overlayStartMode, setOverlayStartMode] = useState<'preset' | 'discover'>('preset')
   const activeTab: 'collections' | 'shelves' | 'watchlist' | 'calendar' | 'activity' = searchParams.get('tab') === 'watchlist' ? 'watchlist' : searchParams.get('tab') === 'calendar' ? 'calendar' : searchParams.get('tab') === 'activity' ? 'activity' : searchParams.get('tab') === 'collections' ? 'collections' : 'shelves'
   const [editingRow, setEditingRow] = useState<HomeRowConfig | null>(null)
-  const [deleteCandidate, setDeleteCandidate] = useState<HomeRowConfig | null>(null)
   const [shelfQuery, setShelfQuery] = useState('')
   const [sourceFilter, setSourceFilter] = useState('All')
   const [heroExpanded, setHeroExpanded] = useState(false)
@@ -3806,10 +3805,7 @@ export default function CollectionsPage() {
                       addons={addons}
                       draggable={false}
                       onOpen={activeTab === 'collections' ? () => navigate(`/catalog/${row.id}?title=${encodeURIComponent(row.title)}`) : undefined}
-                      onRemove={() => {
-                        if (row.sourceType === 'discover') setDeleteCandidate(row)
-                        else removeHomeRow(row.id)
-                      }}
+                      onRemove={() => removeHomeRow(row.id)}
                       onEdit={() => {
                         setEditingRow(row)
                         setOverlayStartMode(row.sourceType === 'discover' ? 'discover' : 'preset')
@@ -3826,7 +3822,7 @@ export default function CollectionsPage() {
                       index={index}
                       addons={addons}
                       onUpdate={(updates) => updateHomeRow(row.id, updates)}
-                      onRemove={() => setDeleteCandidate(row)}
+                      onRemove={() => removeHomeRow(row.id)}
                     />
                   ))}
                 </div>
@@ -3850,47 +3846,6 @@ export default function CollectionsPage() {
         onBatchAdd={handleBatchAdd}
       />
 
-      <Modal
-        open={deleteCandidate !== null}
-        onClose={() => setDeleteCandidate(null)}
-        title={deleteCandidate?.sourceType === 'discover' ? 'Delete smart collection?' : 'Delete home shelf?'}
-        description={deleteCandidate ? (deleteCandidate.sourceType === 'discover' ? `“${deleteCandidate.title}” will be removed from Library and Home.` : `“${deleteCandidate.title}” will be permanently removed from Home.`) : undefined}
-        size="sm"
-      >
-        <div className="flex flex-col gap-5">
-          <div className="flex items-start gap-3 rounded-xl border border-red-500/15 bg-red-500/[0.06] p-4">
-            <div className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg bg-red-500/15 text-red-300">
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path d="M12 9v4m0 4h.01" />
-                <path d="M10.3 3.7 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0Z" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-semibold text-white/80">This action cannot be undone.</p>
-              <p className="mt-1 text-xs leading-relaxed text-white/60">{deleteCandidate?.sourceType === 'discover' ? 'The collection rules and its linked Home shelf will be permanently deleted.' : 'You can add this catalog again later from the catalog drawer.'}</p>
-            </div>
-          </div>
-          <div className="flex justify-end gap-2.5">
-            <button
-              type="button"
-              onClick={() => setDeleteCandidate(null)}
-              className="rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-2.5 text-xs font-bold text-white/60 transition-all hover:bg-white/[0.08] hover:text-white cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (deleteCandidate) removeHomeRow(deleteCandidate.id)
-                setDeleteCandidate(null)
-              }}
-              className="rounded-xl border border-red-400/20 bg-red-500 px-4 py-2.5 text-xs font-bold text-white shadow-lg shadow-red-500/15 transition-all hover:bg-red-400 cursor-pointer"
-            >
-              {deleteCandidate?.sourceType === 'discover' ? 'Delete Collection' : 'Delete Shelf'}
-            </button>
-          </div>
-        </div>
-      </Modal>
     </div>
   )
 }
@@ -4022,8 +3977,9 @@ function CompactShelfRow({
         type="button"
         onClick={onRemove}
         disabled={locked}
-        className="hidden h-9 w-9 place-items-center rounded-xl border border-transparent text-white/20 transition-all hover:border-red-500/15 hover:bg-red-500/10 hover:text-red-300 disabled:cursor-default disabled:opacity-0 md:grid cursor-pointer"
+        className="hidden h-9 w-9 place-items-center rounded-xl border border-red-500/15 bg-red-500/[0.07] text-red-300/80 transition-all hover:border-red-400/30 hover:bg-red-500/15 hover:text-red-200 disabled:cursor-default disabled:opacity-0 md:grid cursor-pointer"
         title="Delete shelf"
+        aria-label={`Delete ${row.title}`}
       >
         <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14" /></svg>
       </button>
@@ -4042,7 +3998,7 @@ function CompactShelfRow({
             <option value="landscape" className="bg-[#111318]">Landscape</option>
             <option value="list" className="bg-[#111318]">Compact list</option>
           </SelectMenu>
-          <button type="button" onClick={onRemove} className="h-9 rounded-xl border border-red-500/15 bg-red-500/[0.07] px-3 text-xs font-bold text-red-300 cursor-pointer">Delete</button>
+          <button type="button" onClick={onRemove} aria-label={`Delete ${row.title}`} className="h-9 rounded-xl border border-red-500/15 bg-red-500/[0.07] px-3 text-xs font-bold text-red-300 cursor-pointer">Delete</button>
         </div>
       )}
     </div>

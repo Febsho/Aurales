@@ -12,8 +12,9 @@
  * Successful mappings are stored in localStorage (keyed by local media ID)
  * so repeated lookups avoid extra network requests.
  *
- * TODO: migrate storage to SQLite via Tauri invoke for persistence across
- * localStorage clears.
+ * Storage intentionally stays in localStorage to preserve the existing
+ * desktop contract and remain available in browser-only mode. Both builds
+ * share this key space and the one-time migration from the legacy prefix.
  */
 
 import { resolveSimklMapping, searchSimklItem } from './client'

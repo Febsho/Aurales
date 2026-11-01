@@ -1,5 +1,6 @@
 import type { AppSeason, AnimeStructureValidation } from './types'
 import { invoke } from '@tauri-apps/api/core'
+import { getPlatformCapabilities } from '../../platform/capabilities'
 
 export function validateAnimeTvdbStructure(
   seasons: AppSeason[],
@@ -57,6 +58,7 @@ export async function validateAnimeTvdbStructureWithNativeFallback(
   seasons: AppSeason[],
   expectedMultiSeason = false,
 ): Promise<AnimeStructureValidation> {
+  if (getPlatformCapabilities().platform === 'web') return validateAnimeTvdbStructure(seasons, expectedMultiSeason)
   try {
     return await invoke<AnimeStructureValidation>('validate_anime_tvdb_structure', {
       request: {

@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { getPlatformCapabilities } from '../platform/capabilities'
 
 interface AnimeMapping {
   anidb_id?: number
@@ -277,6 +278,7 @@ function resolveAnimeEpisodeMappingLegacy(
 export async function resolveAnimeEpisodeMappingWithNativeFallback(
   request: AnimeEpisodeResolutionRequest,
 ): Promise<AnimeEpisodeResolutionResult | null> {
+  if (getPlatformCapabilities().platform === 'web') return resolveAnimeEpisodeMappingLegacy(request)
   try {
     return await invoke<AnimeEpisodeResolutionResult | null>('resolve_anime_episode_mapping', { request })
   } catch (_) {

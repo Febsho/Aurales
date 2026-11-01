@@ -1,8 +1,8 @@
-import { invoke } from '@tauri-apps/api/core'
 import { getTmdbApiKey } from './apiKeys'
 import { cacheGet, cacheSet } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { readBoundedResponseJson } from './network/boundedResponse'
+import { getHttpText } from '../platform/httpText'
 
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3'
 const TRAILER_METADATA_TIMEOUT_MS = 8_000
@@ -269,7 +269,7 @@ export function extractYoutubeFallback(html: string, title: string): TrailerSour
 async function fetchYoutubeFallback(input: TrailerLookupInput): Promise<TrailerSource | null> {
   const query = [input.title, input.year, 'official trailer'].filter(Boolean).join(' ')
   const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`
-  const html = await invoke<string>('http_get_text', { url })
+  const html = await getHttpText(url, { timeoutMs: TRAILER_METADATA_TIMEOUT_MS, maxBytes: MAX_TRAILER_METADATA_RESPONSE_BYTES })
   return extractYoutubeFallback(html, input.title)
 }
 
@@ -302,8 +302,9 @@ async function fetchTrailerio(input: TrailerLookupInput): Promise<TrailerSource 
   if (!imdbId) return null
 
   const mediaType = mediaTypeForTmdb(input.type) === 'movie' ? 'movie' : 'series'
-  const responseText = await invoke<string>('http_get_text', {
-    url: `${TRAILERIO_BASE_URL}/meta/${mediaType}/${encodeURIComponent(imdbId)}.json`,
+  const responseText = await getHttpText(`${TRAILERIO_BASE_URL}/meta/${mediaType}/${encodeURIComponent(imdbId)}.json`, {
+    timeoutMs: TRAILER_METADATA_TIMEOUT_MS,
+    maxBytes: MAX_TRAILER_METADATA_RESPONSE_BYTES,
   })
   const payload = JSON.parse(responseText) as TrailerioResponse
   const links = payload.meta?.links || []

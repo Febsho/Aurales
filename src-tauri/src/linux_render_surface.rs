@@ -174,13 +174,20 @@ fn install_layer(webview: &webkit2gtk::WebView) -> Result<(), String> {
     fixed.set_vexpand(true);
     let area = gtk::GLArea::new();
     area.set_has_alpha(false);
-    area.set_auto_render(true);
+    area.set_auto_render(false);
     area.set_required_version(3, 2);
     area.connect_render(|area, _| render_frame(area));
-    let frame_area = area.clone();
-    glib::timeout_add_local(Duration::from_millis(16), move || {
-        if frame_area.is_visible() {
-            frame_area.queue_render();
+    // Follow the compositor's frame clock (including 120/144 Hz displays),
+    // and redraw only when mpv has a new frame/OSD update. A fixed 16 ms timer
+    // both capped high-fps video and re-rendered paused/24fps video needlessly.
+    area.add_tick_callback(|area, _| {
+        let pending = CURRENT_PLAYER.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .is_some_and(|player| player.take_render_update())
+        });
+        if pending {
+            area.queue_render();
         }
         glib::ControlFlow::Continue
     });

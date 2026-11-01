@@ -1,7 +1,6 @@
 import { lazy, StrictMode, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter } from 'react-router-dom'
-import App from './App'
+import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { ToastProvider } from './components/ui/Toast'
 import './index.css'
 import { markPerformance, performanceSnapshot } from './services/performanceMetrics'
@@ -10,8 +9,19 @@ import { configureImageCache } from './services/imageCache'
 
 markPerformance('bootstrap-start')
 
+if (import.meta.env.VITE_WEB_BUILD === 'true' && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    void navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((error) => {
+      console.warn('[PWA] Service worker registration failed:', error)
+    })
+  }, { once: true })
+}
+
+const App = lazy(() => import('./App'))
 const ContextMenu = lazy(() => import('./components/ContextMenu'))
 const ArtworkDebugOverlay = lazy(() => import('./components/ArtworkDebugOverlay'))
+const SimklCallbackPage = lazy(() => import('./pages/SimklCallbackPage'))
+const MdblistCallbackPage = lazy(() => import('./pages/MdblistCallbackPage'))
 
 // WebKitGTK has to use its non-DMA-BUF renderer on GPU/driver combinations
 // where GBM allocation fails. Mark Linux early so CSS can avoid effects that
@@ -42,16 +52,37 @@ if (!import.meta.env.DEV) {
   })
 }
 
+const isProviderCallback = window.location.pathname === '/auth/simkl/callback'
+  || window.location.pathname === '/auth/mdblist/callback'
+
+function AppRoutes() {
+  if (isProviderCallback) {
+    return (
+      <Suspense fallback={<div className="grid min-h-screen place-items-center bg-black text-white">Finishing sign-in…</div>}>
+        <Routes>
+          <Route path="/auth/simkl/callback" element={<SimklCallbackPage />} />
+          <Route path="/auth/mdblist/callback" element={<MdblistCallbackPage />} />
+        </Routes>
+      </Suspense>
+    )
+  }
+  return (
+    <>
+      <Suspense fallback={null}><App /></Suspense>
+      <Suspense fallback={null}>
+        <ContextMenu />
+        {import.meta.env.DEV && <ArtworkDebugOverlay />}
+      </Suspense>
+    </>
+  )
+}
+
 function mountApp(): void {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <BrowserRouter>
         <ToastProvider>
-          <App />
-          <Suspense fallback={null}>
-            <ContextMenu />
-            {import.meta.env.DEV && <ArtworkDebugOverlay />}
-          </Suspense>
+          <AppRoutes />
         </ToastProvider>
       </BrowserRouter>
     </StrictMode>,

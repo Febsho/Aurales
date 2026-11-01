@@ -1,3 +1,4 @@
+pub use aurales_domain::media_probe::StreamProbeResponse;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
@@ -59,18 +60,6 @@ pub struct ProxyResponse {
     pub ok: bool,
     /// Raw response body; frontend callers retain responsibility for parsing.
     pub body: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StreamProbeResponse {
-    pub status: u16,
-    pub content_type: Option<String>,
-    pub accept_ranges: bool,
-    pub content_length: Option<u64>,
-    pub final_url: String,
-    pub sampled_bytes: u64,
-    pub elapsed_ms: u64,
 }
 
 pub fn validate_http_url(url: &str) -> Result<(), String> {
@@ -144,7 +133,7 @@ pub fn get_text(url: String) -> Result<String, String> {
 /// command errors, exactly matching the previous command implementation.
 pub fn probe_stream(url: String, timeout_ms: Option<u64>) -> Result<StreamProbeResponse, String> {
     let started = std::time::Instant::now();
-    const SAMPLE_BYTES: u64 = 256 * 1024;
+    use aurales_domain::media_probe::{accepts_byte_ranges, total_content_length, SAMPLE_BYTES};
     let agent = ureq::builder()
         .timeout(std::time::Duration::from_millis(
             timeout_ms.unwrap_or(4_000).clamp(500, 30_000),
@@ -160,24 +149,12 @@ pub fn probe_stream(url: String, timeout_ms: Option<u64>) -> Result<StreamProbeR
     };
     let status = response.status();
     let content_type = response.header("Content-Type").map(str::to_owned);
-    let accept_ranges = status == 206
-        || response
-            .header("Accept-Ranges")
-            .map(|value| value.to_ascii_lowercase().contains("bytes"))
-            .unwrap_or(false);
-    let content_length = response
-        .header("Content-Range")
-        .and_then(|value| value.rsplit('/').next())
-        .and_then(|total| total.trim().parse::<u64>().ok())
-        .or_else(|| {
-            if status == 206 {
-                None
-            } else {
-                response
-                    .header("Content-Length")
-                    .and_then(|value| value.trim().parse::<u64>().ok())
-            }
-        });
+    let accept_ranges = accepts_byte_ranges(status, response.header("Accept-Ranges"));
+    let content_length = total_content_length(
+        status,
+        response.header("Content-Range"),
+        response.header("Content-Length"),
+    );
     let final_url = response.get_url().to_string();
     let mut reader = std::io::Read::take(response.into_reader(), SAMPLE_BYTES);
     let sampled_bytes = std::io::copy(&mut reader, &mut std::io::sink()).unwrap_or(0);

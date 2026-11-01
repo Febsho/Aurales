@@ -5,6 +5,7 @@ import { OUTBOX_CHANGED_EVENT, getOutboxError } from '../../services/sync/outbox
 import { lockSyncVault, unlockSyncVault } from '../../services/sync/encryptedVault'
 import { deleteSyncPassword, saveSyncPassword } from '../../services/sync/secureLogin'
 import { readBoundedResponseJson } from '../../services/network/boundedResponse'
+import { getMediaWorkerConfig, proxyAuralesSyncRequest } from '../../services/mediaWorker'
 
 const MAX_SYNC_AUTH_RESPONSE_BYTES = 256 * 1024
 
@@ -14,6 +15,15 @@ async function requestSyncAuth(action: 'register' | 'login', email: string, pass
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(new DOMException('Authentication request timed out', 'TimeoutError')), 15_000)
   try {
+    if (getMediaWorkerConfig()) {
+      const path = action === 'login' ? '/v1/auth/login' : '/v1/auth/register'
+      const relayed = await proxyAuralesSyncRequest(path, JSON.stringify({ email, password }), undefined, controller.signal)
+      let result: { accessToken?: string; error?: string }
+      try { result = JSON.parse(relayed.body) as typeof result }
+      catch { throw new Error(`Authentication failed (${relayed.status})`) }
+      if (!relayed.ok || !result.accessToken) throw new Error(result.error || `Authentication failed (${relayed.status})`)
+      return result
+    }
     const response = await fetch(`${DEFAULT_SYNC_ENDPOINT}/v1/auth/${action}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

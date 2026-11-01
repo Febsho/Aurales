@@ -6,6 +6,7 @@ import { CACHE_CATEGORIES, CACHE_TTLS } from '../cache/constants'
 import { tmdbProvider } from '../tmdb'
 import { tvdbProvider } from '../tvdb'
 import { recordDetailProviderRequest } from '../performanceMetrics'
+import { getPlatformCapabilities } from '../../platform/capabilities'
 
 type DetailProvider = 'tmdb' | 'tvdb'
 type DetailPriority = 'playback' | 'interactive' | 'visible' | 'background'
@@ -105,27 +106,29 @@ export async function loadDetailPage(
   const operationKey = `series:${provider}:${cleanProviderId}:image:${quality}`
   const generation = beginNavigationRequest(cancelGroup, operationKey)
   try {
-    try {
-      const response = await invoke<NativeDetailResponse<ShowDetails>>('load_detail_page', {
-        request: {
-          provider,
-          mediaType: 'series',
-          id: cleanProviderId,
-          apiKey: provider === 'tmdb' ? getTmdbApiKey() : getTvdbApiKey(),
-          imageQuality: quality,
-          priority: options.priority || 'visible',
-          cancelGroup,
-          timeoutMs: 15_000,
-        },
-      })
-      if (response.stale) throw staleRequestError()
-      ensureCurrentNavigation(cancelGroup, operationKey, generation)
-      if (response.cacheStatus === 'miss') recordDetailProviderRequest()
-      return response.data
-    } catch (error) {
-      if ((error instanceof DOMException && error.name === 'AbortError') || isNativeCancellation(error)) throw staleRequestError()
-      ensureCurrentNavigation(cancelGroup, operationKey, generation)
-      console.warn('[detail] Native detail load failed, using compatibility path:', error)
+    if (getPlatformCapabilities().platform !== 'web') {
+      try {
+        const response = await invoke<NativeDetailResponse<ShowDetails>>('load_detail_page', {
+          request: {
+            provider,
+            mediaType: 'series',
+            id: cleanProviderId,
+            apiKey: provider === 'tmdb' ? getTmdbApiKey() : getTvdbApiKey(),
+            imageQuality: quality,
+            priority: options.priority || 'visible',
+            cancelGroup,
+            timeoutMs: 15_000,
+          },
+        })
+        if (response.stale) throw staleRequestError()
+        ensureCurrentNavigation(cancelGroup, operationKey, generation)
+        if (response.cacheStatus === 'miss') recordDetailProviderRequest()
+        return response.data
+      } catch (error) {
+        if ((error instanceof DOMException && error.name === 'AbortError') || isNativeCancellation(error)) throw staleRequestError()
+        ensureCurrentNavigation(cancelGroup, operationKey, generation)
+        console.warn('[detail] Native detail load failed, using compatibility path:', error)
+      }
     }
 
     const fallback = await loadDetailPageFallback(provider, cleanProviderId, quality)
@@ -148,30 +151,32 @@ export async function loadMovieDetailPage(
   const operationKey = `movie:tmdb:${cleanProviderId}:image:${quality}`
   const generation = beginNavigationRequest(cancelGroup, operationKey)
   try {
-    try {
-      const response = await invoke<NativeDetailResponse<MovieDetails>>('load_detail_page', {
-        request: {
-          provider: 'tmdb',
-          mediaType: 'movie',
-          id: cleanProviderId,
-          apiKey: getTmdbApiKey(),
-          imageQuality: quality,
-          priority: options.priority || 'visible',
-          cancelGroup,
-          timeoutMs: 15_000,
-        },
-      })
-      if (response.stale) throw staleRequestError()
-      ensureCurrentNavigation(cancelGroup, operationKey, generation)
-      return response.data
-    } catch (error) {
-      if ((error instanceof DOMException && error.name === 'AbortError') || isNativeCancellation(error)) throw staleRequestError()
-      ensureCurrentNavigation(cancelGroup, operationKey, generation)
-      console.warn('[detail] Native movie detail load failed, using compatibility path:', error)
-      const fallback = await tmdbProvider.getMovie(`tmdb-${cleanProviderId}`)
+    if (getPlatformCapabilities().platform !== 'web') {
+      try {
+        const response = await invoke<NativeDetailResponse<MovieDetails>>('load_detail_page', {
+          request: {
+            provider: 'tmdb',
+            mediaType: 'movie',
+            id: cleanProviderId,
+            apiKey: getTmdbApiKey(),
+            imageQuality: quality,
+            priority: options.priority || 'visible',
+            cancelGroup,
+            timeoutMs: 15_000,
+          },
+        })
+        if (response.stale) throw staleRequestError()
+        ensureCurrentNavigation(cancelGroup, operationKey, generation)
+        return response.data
+      } catch (error) {
+        if ((error instanceof DOMException && error.name === 'AbortError') || isNativeCancellation(error)) throw staleRequestError()
+        ensureCurrentNavigation(cancelGroup, operationKey, generation)
+        console.warn('[detail] Native movie detail load failed, using compatibility path:', error)
+      }
+    }
+    const fallback = await tmdbProvider.getMovie(`tmdb-${cleanProviderId}`)
       ensureCurrentNavigation(cancelGroup, operationKey, generation)
       return fallback
-    }
   } finally {
     finishNavigationRequest(cancelGroup, operationKey, generation)
   }

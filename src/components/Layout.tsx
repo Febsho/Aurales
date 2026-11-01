@@ -346,7 +346,13 @@ export default function Layout() {
         </header>}
 
         <main ref={mainRef} className={`app-scroll-root flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${roomPanelOpen ? 'app-scroll-root--panel-open mr-[380px]' : ''} ${cinematic ? 'cinematic-main' : ''} transition-[margin] duration-300 ease-expo`}>
-          <Outlet />
+          <Suspense fallback={(
+            <div role="status" aria-label="Loading page" className="flex min-h-full items-center justify-center bg-black text-sm font-medium text-white/55">
+              <span className="rounded-full border border-white/10 bg-white/[.04] px-4 py-2">Loading Aurales…</span>
+            </div>
+          )}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
 
