@@ -7,7 +7,7 @@ RUN npm ci
 COPY . .
 RUN npm run build:web
 
-FROM rust:1.88-bookworm AS worker-build
+FROM rust:1.89-bookworm AS worker-build
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config libssl-dev \

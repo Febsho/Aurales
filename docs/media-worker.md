@@ -10,7 +10,7 @@ executable path is configured, and capabilities report detected encoders.
 
 ## Build and run
 
-Install the Rust toolchain supported by this repository (Rust 1.88 or newer),
+Install the Rust toolchain supported by this repository (Rust 1.89 or newer),
 then from the repository root build the service:
 
 ```sh
