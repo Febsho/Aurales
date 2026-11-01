@@ -83,6 +83,28 @@ test('iOS player uses Safari native fullscreen when the standard API is unavaila
   await expect(video).toHaveAttribute('data-webkit-fullscreen-requested', 'true')
 })
 
+test('iOS player calls Safari native fullscreen directly from the tap when both APIs exist', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'ios-webkit', 'Safari native fullscreen is iOS-specific.')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/h264-aac.mp4')}`)
+  const video = page.locator('video')
+  await video.evaluate((element) => {
+    const safariVideo = element as HTMLVideoElement & { webkitEnterFullscreen?: () => void }
+    Object.defineProperty(safariVideo, 'requestFullscreen', {
+      configurable: true,
+      value: () => { safariVideo.setAttribute('data-standard-fullscreen-requested', 'true'); return Promise.resolve() },
+    })
+    Object.defineProperty(safariVideo, 'webkitEnterFullscreen', {
+      configurable: true,
+      value: () => safariVideo.setAttribute('data-webkit-fullscreen-requested', 'true'),
+    })
+  })
+
+  await page.getByRole('button', { name: 'Full screen' }).tap()
+  await expect(video).toHaveAttribute('data-webkit-fullscreen-requested', 'true')
+  await expect(video).not.toHaveAttribute('data-standard-fullscreen-requested', 'true')
+})
+
 test('a late rejection from an earlier play request does not replace active playback with an error', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name.includes('webkit'), 'WebKit playback timing is covered by the real fixture test; synthetic autoplay races are unreliable there.')
   await page.addInitScript(() => {
