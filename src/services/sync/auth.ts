@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import { getMediaWorkerConfig, proxyAuralesSyncRequest } from '../mediaWorker'
+import { getMediaWorkerConfig, isIntegratedMediaWorkerBuild, isIntegratedMediaWorkerConnected, proxyAuralesSyncRequest } from '../mediaWorker'
 import { readBoundedResponseJson } from '../network/boundedResponse'
 import { DEFAULT_SYNC_ENDPOINT } from './auralesSync'
 
@@ -16,8 +16,9 @@ function parseResponse(body: string, status?: number): AuthResponse {
 }
 
 export async function requestSyncAuth(action: 'register' | 'login', email: string, password: string): Promise<{ accessToken: string }> {
+  const normalizedEmail = email.trim().toLowerCase()
   const path = `/v1/auth/${action}` as '/v1/auth/login' | '/v1/auth/register'
-  const body = JSON.stringify({ email, password })
+  const body = JSON.stringify({ email: normalizedEmail, password })
   let result: AuthResponse
   let status: number | undefined
   if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
@@ -42,6 +43,12 @@ export async function requestSyncAuth(action: 'register' | 'login', email: strin
     if (new TextEncoder().encode(response).byteLength > MAX_SYNC_AUTH_RESPONSE_BYTES) throw new Error('Authentication response is too large')
     result = parseResponse(response)
   } else {
+    // A self-hosted browser cannot call the first-party Sync origin directly:
+    // its CORS policy only permits the official web origin. Integrated builds
+    // must first establish their same-origin, HttpOnly worker session.
+    if (isIntegratedMediaWorkerBuild() && !isIntegratedMediaWorkerConnected()) {
+      throw new Error('Unlock the Aurales media service in Settings before signing in to Aurales Sync.')
+    }
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(new DOMException('Authentication request timed out', 'TimeoutError')), 15_000)
     try {
