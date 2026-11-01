@@ -3,6 +3,8 @@ mod core;
 mod db;
 mod image_cache;
 mod libmpv_player;
+#[cfg(any(target_os = "linux", test))]
+mod render_wakeup;
 mod native_secrets {
     include!(concat!(env!("OUT_DIR"), "/native_secrets.rs"));
 }

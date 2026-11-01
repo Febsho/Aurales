@@ -1,0 +1,50 @@
+name: Native Linux video rendering
+
+on:
+  pull_request:
+    paths:
+      - 'src-tauri/src/libmpv_player.rs'
+      - 'src-tauri/src/linux_render_surface.rs'
+      - 'src-tauri/src/render_wakeup.rs'
+      - '.github/workflows/native-video-render.yml'
+  push:
+    branches: ['**']
+    paths:
+      - 'src-tauri/src/libmpv_player.rs'
+      - 'src-tauri/src/linux_render_surface.rs'
+      - 'src-tauri/src/render_wakeup.rs'
+      - '.github/workflows/native-video-render.yml'
+  workflow_dispatch:
+
+jobs:
+  moving-frames:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      TAURI_CONFIG: '{"bundle":{"externalBin":null,"resources":null}}'
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GTK, WebKitGTK, mpv and software OpenGL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libwebkit2gtk-4.1-dev libx11-dev \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            libmpv-dev ffmpeg xvfb xauth libgl1-mesa-dri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: npm ci
+      - run: npm run build
+      - name: Verify real video frames keep changing after missed draws
+        run: |
+          xvfb-run -a -s '-screen 0 1280x720x24 +extension GLX' \
+            cargo test --manifest-path src-tauri/Cargo.toml --lib \
+            linux_render_surface::tests::moving_video_recovers_after_gtk_skips_draws \
+            -- --ignored --test-threads=1 --nocapture

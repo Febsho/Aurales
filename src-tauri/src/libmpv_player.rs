@@ -75,7 +75,7 @@ type MpvRenderContextSetUpdateCallback = unsafe extern "C" fn(
 unsafe extern "C" fn mark_render_pending(ctx: *mut c_void) {
     // mpv invokes this on its own threads. Never call GTK or another mpv API
     // here. The flag lives inside the Arc-owned player until context_free.
-    (*(ctx as *const AtomicBool)).store(true, Ordering::Release);
+    (*(ctx as *const crate::render_wakeup::RenderWakeup)).request();
 }
 
 #[cfg(target_os = "linux")]
@@ -237,7 +237,7 @@ pub(crate) struct LibMpvPlayer {
     #[cfg(target_os = "linux")]
     render_context: std::sync::Mutex<Option<usize>>,
     #[cfg(target_os = "linux")]
-    render_update_pending: AtomicBool,
+    render_update_pending: crate::render_wakeup::RenderWakeup,
 }
 
 unsafe impl Send for LibMpvPlayer {}
@@ -266,7 +266,7 @@ impl LibMpvPlayer {
             #[cfg(target_os = "linux")]
             render_context: std::sync::Mutex::new(None),
             #[cfg(target_os = "linux")]
-            render_update_pending: AtomicBool::new(false),
+            render_update_pending: crate::render_wakeup::RenderWakeup::default(),
         }))
     }
 
@@ -601,7 +601,7 @@ impl LibMpvPlayer {
         (self.api.render_context_set_update_callback)(
             context,
             Some(mark_render_pending),
-            (&self.render_update_pending as *const AtomicBool)
+            (&self.render_update_pending as *const crate::render_wakeup::RenderWakeup)
                 .cast_mut()
                 .cast(),
         );
@@ -609,8 +609,8 @@ impl LibMpvPlayer {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) fn take_render_update(&self) -> bool {
-        self.render_update_pending.swap(false, Ordering::AcqRel)
+    pub(crate) fn has_render_update(&self) -> bool {
+        self.render_update_pending.is_pending()
     }
 
     #[cfg(target_os = "linux")]
@@ -630,6 +630,9 @@ impl LibMpvPlayer {
         let Some(context) = *slot else {
             return Ok(());
         };
+        // Do not acknowledge a callback when merely queueing a GTK draw:
+        // an occluded or deferred draw would otherwise lose the only wakeup.
+        self.render_update_pending.begin_render();
         (self.api.render_context_update)(context as *mut MpvRenderContext);
         let mut fbo = MpvOpenGlFbo {
             fbo: framebuffer,
@@ -657,10 +660,14 @@ impl LibMpvPlayer {
                 data: std::ptr::null_mut(),
             },
         ];
-        self.check((self.api.render_context_render)(
+        let result = self.check((self.api.render_context_render)(
             context as *mut MpvRenderContext,
             params.as_mut_ptr(),
-        ))
+        ));
+        if result.is_err() {
+            self.render_update_pending.request();
+        }
+        result
     }
 
     #[cfg(target_os = "linux")]
@@ -675,7 +682,7 @@ impl LibMpvPlayer {
                     std::ptr::null_mut(),
                 );
                 (self.api.render_context_free)(context as *mut MpvRenderContext);
-                self.render_update_pending.store(false, Ordering::Release);
+                self.render_update_pending.clear();
             }
         }
         if self.destroyed.load(Ordering::SeqCst) {

@@ -21,6 +21,18 @@ const GL_DRAW_FRAMEBUFFER_BINDING: u32 = 0x8CA6;
 #[link(name = "GL")]
 extern "C" {
     fn glGetIntegerv(name: u32, value: *mut c_int);
+    #[cfg(test)]
+    fn glBindFramebuffer(target: u32, framebuffer: u32);
+    #[cfg(test)]
+    fn glReadPixels(
+        x: c_int,
+        y: c_int,
+        width: c_int,
+        height: c_int,
+        format: u32,
+        kind: u32,
+        pixels: *mut c_void,
+    );
     fn glXGetProcAddressARB(name: *const c_uchar) -> *mut c_void;
 }
 
@@ -46,6 +58,11 @@ struct RenderLayer {
 thread_local! {
     static RENDER_LAYER: RefCell<Option<RenderLayer>> = const { RefCell::new(None) };
     static CURRENT_PLAYER: RefCell<Option<Arc<LibMpvPlayer>>> = const { RefCell::new(None) };
+    static RENDER_GENERATION: Cell<u64> = const { Cell::new(0) };
+    #[cfg(test)]
+    static TEST_SKIPPED_DRAWS: Cell<u32> = const { Cell::new(0) };
+    #[cfg(test)]
+    static TEST_FRAME_HASHES: RefCell<Option<Vec<u64>>> = const { RefCell::new(None) };
 }
 
 fn disconnect_tauri_resize_handlers(webview: &webkit2gtk::WebView) {
@@ -126,6 +143,18 @@ fn render_frame(area: &gtk::GLArea) -> glib::Propagation {
     if area.error().is_some() {
         return glib::Propagation::Stop;
     }
+    #[cfg(test)]
+    if TEST_SKIPPED_DRAWS.with(|remaining| {
+        let count = remaining.get();
+        if count == 0 {
+            false
+        } else {
+            remaining.set(count - 1);
+            true
+        }
+    }) {
+        return glib::Propagation::Stop;
+    }
     CURRENT_PLAYER.with(|slot| {
         let player = slot.borrow().clone();
         let Some(player) = player else {
@@ -140,6 +169,32 @@ fn render_frame(area: &gtk::GLArea) -> glib::Propagation {
         let height = area.allocated_height().max(1) * scale;
         if let Err(error) = unsafe { player.render_opengl_frame(framebuffer, width, height) } {
             crate::commands::player_debug_log(format!("[LINUX RENDER] frame failed: {error}"));
+        } else {
+            RENDER_GENERATION.with(|generation| generation.set(generation.get().wrapping_add(1)));
+            #[cfg(test)]
+            TEST_FRAME_HASHES.with(|slot| {
+                use std::hash::{Hash, Hasher};
+                if let Some(hashes) = slot.borrow_mut().as_mut() {
+                    // Read back the actual rendered pixels, not merely mpv's
+                    // clock or GTK callback count, to detect frozen images.
+                    let mut pixels = vec![0u8; 64 * 64 * 4];
+                    unsafe {
+                        glBindFramebuffer(0x8CA8, framebuffer as u32); // GL_READ_FRAMEBUFFER
+                        glReadPixels(
+                            (width / 2 - 32).max(0),
+                            (height / 2 - 32).max(0),
+                            64,
+                            64,
+                            0x1908,
+                            0x1401,
+                            pixels.as_mut_ptr().cast(),
+                        ); // RGBA / UNSIGNED_BYTE
+                    }
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    pixels.hash(&mut hasher);
+                    hashes.push(hasher.finish());
+                }
+            });
         }
     });
     glib::Propagation::Stop
@@ -177,17 +232,36 @@ fn install_layer(webview: &webkit2gtk::WebView) -> Result<(), String> {
     area.set_auto_render(false);
     area.set_required_version(3, 2);
     area.connect_render(|area, _| render_frame(area));
-    // Follow the compositor's frame clock (including 120/144 Hz displays),
-    // and redraw only when mpv has a new frame/OSD update. A fixed 16 ms timer
-    // both capped high-fps video and re-rendered paused/24fps video needlessly.
-    area.add_tick_callback(|area, _| {
+    // A request is acknowledged only inside render_frame. GTK can defer a
+    // queued GLArea draw, especially under a transparent WebKit overlay. Keep
+    // retrying until the draw actually happens, and invalidate the containing
+    // overlay as a recovery if three frame clocks pass without a render.
+    let overlay_for_redraw = overlay.downgrade();
+    let missed_draws = Cell::new(0u8);
+    let last_render = Cell::new(0u64);
+    area.add_tick_callback(move |area, _| {
         let pending = CURRENT_PLAYER.with(|slot| {
             slot.borrow()
                 .as_ref()
-                .is_some_and(|player| player.take_render_update())
+                .is_some_and(|player| player.has_render_update())
         });
+        let generation = RENDER_GENERATION.with(Cell::get);
+        if generation != last_render.replace(generation) {
+            missed_draws.set(0);
+        }
         if pending {
             area.queue_render();
+            let missed = missed_draws.get().saturating_add(1);
+            if missed >= 3 {
+                if let Some(overlay) = overlay_for_redraw.upgrade() {
+                    overlay.queue_draw();
+                }
+                missed_draws.set(0);
+            } else {
+                missed_draws.set(missed);
+            }
+        } else {
+            missed_draws.set(0);
         }
         glib::ControlFlow::Continue
     });
@@ -358,4 +432,124 @@ pub(crate) fn detach(player: &Arc<LibMpvPlayer>) {
         let _ = tx.send(());
     });
     let _ = rx.recv_timeout(Duration::from_secs(3));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::time::{Duration, Instant};
+
+    fn pump_until(timeout: Duration, mut ready: impl FnMut() -> bool) -> bool {
+        let context = glib::MainContext::default();
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if context.pending() {
+                context.iteration(false);
+            }
+            if ready() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        false
+    }
+
+    #[test]
+    #[ignore = "requires GTK, WebKitGTK, libmpv, ffmpeg and an OpenGL-capable display"]
+    fn moving_video_recovers_after_gtk_skips_draws() {
+        gtk::init().expect("GTK requires a display (for CI, run under xvfb-run)");
+        let filename =
+            std::env::temp_dir().join(format!("aurales-render-test-{}.mp4", std::process::id()));
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x180:rate=30",
+                "-t",
+                "8",
+                "-c:v",
+                "mpeg4",
+                "-q:v",
+                "3",
+            ])
+            .arg(&filename)
+            .status()
+            .expect("ffmpeg is required for this test");
+        assert!(
+            status.success(),
+            "ffmpeg failed to create the video fixture"
+        );
+
+        let window = gtk::Window::new(gtk::WindowType::Toplevel);
+        window.set_default_size(320, 180);
+        let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let webview = webkit2gtk::WebView::new();
+        container.add(&webview);
+        window.add(&container);
+        window.show_all();
+
+        let libmpv = crate::libmpv_player::find_libmpv().expect("libmpv is required for this test");
+        let player = LibMpvPlayer::create(&libmpv, "render-integration-test".into()).unwrap();
+        for (name, value) in [
+            ("config", "no"),
+            ("load-scripts", "no"),
+            ("vo", "libmpv"),
+            ("hwdec", "no"),
+            ("audio", "no"),
+            ("video-timing-offset", "0"),
+        ] {
+            player.set_option(name, value).unwrap();
+        }
+        player.initialize().unwrap();
+        attach_on_main_thread(webview, Arc::clone(&player), 0, 0, 320, 180).unwrap();
+        TEST_FRAME_HASHES.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+        player
+            .command("loadfile", &[serde_json::json!(filename.to_string_lossy())])
+            .unwrap();
+
+        let started = pump_until(Duration::from_secs(5), || {
+            TEST_FRAME_HASHES.with(|slot| {
+                slot.borrow()
+                    .as_ref()
+                    .is_some_and(|frames| frames.len() >= 5)
+            })
+        });
+        // Simulate GTK invalidating but not delivering render signals, as can
+        // happen while the GLArea is covered by the transparent WebKit view.
+        TEST_SKIPPED_DRAWS.with(|remaining| remaining.set(3));
+        let advanced = pump_until(Duration::from_secs(4), || {
+            TEST_FRAME_HASHES.with(|slot| {
+                slot.borrow()
+                    .as_ref()
+                    .is_some_and(|frames| frames.len() >= 25)
+            })
+        });
+        let hashes = TEST_FRAME_HASHES.with(|slot| slot.borrow_mut().take().unwrap());
+        let skipped_remaining = TEST_SKIPPED_DRAWS.with(|remaining| remaining.replace(0));
+        detach(&player);
+        player.shutdown();
+        window.close();
+        let _ = std::fs::remove_file(filename);
+
+        assert!(started, "video never produced the initial frames");
+        assert_eq!(
+            skipped_remaining, 0,
+            "the test did not exercise the skipped draws"
+        );
+        assert!(
+            advanced,
+            "video stopped advancing after skipped GTK draws ({} frames)",
+            hashes.len()
+        );
+        assert!(
+            hashes.iter().collect::<HashSet<_>>().len() >= 12,
+            "GTK rendered callbacks but the video framebuffer pixels did not change"
+        );
+    }
 }
