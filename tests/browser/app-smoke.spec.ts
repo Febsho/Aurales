@@ -231,7 +231,12 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
   expect(skeletonMeasurements.cardWidth).toBeLessThanOrEqual(88)
   expect(skeletonMeasurements.artHeight).toBeGreaterThan(0)
 
-  await expect(page.locator('[data-home-presentation="dynamic"] [data-home-hero]')).toBeVisible()
+  const hero = page.locator('[data-home-presentation="dynamic"] [data-home-hero] > div:first-child')
+  await expect(hero).toBeVisible()
+  await expect.poll(
+    () => hero.evaluate((element) => element.getBoundingClientRect().height),
+    { message: 'catalogue hero should finish mounting with its responsive height' },
+  ).toBeGreaterThan(0)
   const posterShelf = page.locator('[data-home-shelves] .media-row--poster .cinematic-row-track')
   await expect(posterShelf.locator('.media-row-card-slot').first()).toBeVisible()
   const continueEmpty = page.locator('[data-home-shelves] [data-home-row="continue-empty"]')
