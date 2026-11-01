@@ -23,7 +23,8 @@ vi.mock('../profiles', () => ({
 vi.mock('../watchlistIdentity', () => ({ sameWatchlistItem: vi.fn(), watchlistIdentity: vi.fn() }))
 vi.mock('../../platform/capabilities', () => ({ shouldReloadAfterVaultRestore: vi.fn(() => false) }))
 
-import { downloadSyncNow, getSyncConfig } from './auralesSync'
+import { downloadSyncNow, getSyncConfig, syncIfConfigured } from './auralesSync'
+import { scheduleAutomaticSync } from './syncQueue'
 
 const storageValues = new Map<string, string>()
 const storage = {
@@ -58,5 +59,14 @@ describe('Aurales Sync download pagination', () => {
     expect(runSyncBatchMock).toHaveBeenCalledTimes(3)
     expect(runSyncBatchMock.mock.calls.map(([request]) => request.cursor)).toEqual(['0', '500', '501'])
     expect(getSyncConfig().cursor).toBe('501')
+  })
+
+  it('runs a follow-up sync after the initial profile pull so encrypted settings can be checkpointed', async () => {
+    runSyncBatchMock.mockResolvedValueOnce({ cursor: '1', records: [] })
+
+    await syncIfConfigured()
+
+    expect(getSyncConfig().cursor).toBe('1')
+    expect(scheduleAutomaticSync).toHaveBeenCalledWith(1200)
   })
 })
