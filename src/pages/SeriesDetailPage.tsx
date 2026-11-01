@@ -322,7 +322,10 @@ function seriesDetailCacheKeys(id: string | undefined, state: LocationState): st
   const animeRoute = Boolean(state.isAnime || state.anilistId || state.malId || state.provider === 'anilist' || (id && /^(mal|anilist)[-:]/i.test(id)))
   // v14 invalidates anime detail entries created before AniBridge TVDB scope
   // counts became authoritative for splitting flattened cour episodes.
-  const versions = animeRoute ? ['v14'] : ['v2', 'v14']
+  // Bump the ordinary detail key too: an anime opened from a TMDB/add-on ID
+  // may have been cached before the route knew it was anime, and could then
+  // bypass the anime-only key/version and keep its flattened season list.
+  const versions = animeRoute ? ['v14'] : ['v3']
   const cleanStateImdb = cleanId(state.imdbId)
   const cleanStateTmdb = cleanId(state.tmdbId)
   const cleanStateTvdb = cleanId(state.tvdbId)
@@ -381,7 +384,7 @@ async function readSeriesDetailCache(id: string | undefined, state: LocationStat
 }
 
 function writeSeriesDetailCache(id: string | undefined, state: LocationState, entry: SeriesDetailCacheEntry): void {
-  const settingsKey = `${entry.show.isAnime ? 'v14' : 'v2'}:${animeStructureSettingsKey()}:${artworkSettingsKey()}`
+  const settingsKey = `${entry.show.isAnime ? 'v14' : 'v3'}:${animeStructureSettingsKey()}:${artworkSettingsKey()}`
   const cleanShowId = cleanId(entry.show.id)
   const cleanShowImdb = cleanId(entry.show.imdbId)
   const cleanShowTmdb = cleanId(entry.show.tmdbId)
