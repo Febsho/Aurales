@@ -272,6 +272,15 @@ Audio and subtitle preferences can automatically prioritize your preferred langu
 
 Aurales includes recovery mechanisms for problematic streams and playback states, including stream fallback and player recovery when video output fails.
 
+On the web, direct playback is attempted first. If the browser reports an
+unsupported codec/container, a configured Aurales media worker can automatically
+prepare a temporary playback copy: first remux without re-encoding, then convert
+audio to AAC while copying the original video, and finally convert video to
+H.264/AAC when the worker supports it. This does not modify the provider's
+original file. Browser-side conversion is not available; this feature requires
+the optional self-hosted worker and FFmpeg. It cannot bypass DRM or provider
+authorization requirements. See [the media worker deployment guide](docs/media-worker.md).
+
 ---
 
 # Stremio addon support

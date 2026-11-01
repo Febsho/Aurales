@@ -242,7 +242,8 @@ per-redirect revalidation. FFmpeg reads a local downloaded file; it never opens
 a provider URL or follows a network redirect. Provider credentials and
 authorization headers are not accepted.
 
-After a browser decode error, Aurales offers modes reported by the worker:
+After a direct-play browser decode error, Aurales automatically tries the
+conversion modes reported by the worker in this order:
 
 - **Stream-copy remux** copies the first video and audio tracks into a seekable,
   fast-start MP4 without re-encoding.
@@ -261,9 +262,13 @@ private disk for two input/output pairs. Run FFmpeg as a restricted OS account
 with memory, CPU, and filesystem quotas; worker limits do not replace OS-level
 process isolation.
 
-Aurales tries direct playback first; conversion is user-triggered after a
-browser decode failure. The worker does not convert HLS, accept provider
-authorization headers, handle DRM, or accept arbitrary FFmpeg arguments.
+Aurales always tries direct playback first. If it fails with a browser decode
+error and a compatible worker conversion is available, the player automatically
+tries the modes above and switches to the first successful seekable copy. The
+original source is not modified. This requires a configured worker with FFmpeg
+enabled; a browser cannot transcode media on-device. The worker does not convert
+HLS, accept provider authorization headers, handle DRM, or accept arbitrary
+FFmpeg arguments.
 
 The PMDB relay is fixed to HTTPS `publicmetadb.com` under `/api/external`; it
 does not accept arbitrary origins, follows no redirects, allows only GET,
