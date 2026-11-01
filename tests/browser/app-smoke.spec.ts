@@ -134,21 +134,37 @@ test('fixed hero preference uses a swipeable mobile presentation and restores Fi
 
   const home = page.locator('[data-home-presentation]')
   await expect(home).toHaveAttribute('data-home-presentation', 'dynamic')
-  const hero = home.locator('.home-hero').first()
-  if (await hero.count()) {
-    const heroHeight = await hero.evaluate((element) => element.getBoundingClientRect().height)
-    expect(heroHeight, 'phone Dynamic hero should leave more room for the first shelves').toBeLessThanOrEqual(340)
-  }
-
-  const posterRail = home.locator('[data-home-shelves] .media-row--poster .cinematic-row-track').first()
-  if (await posterRail.count()) {
-    const railMetrics = await posterRail.evaluate((track) => ({
+  // This test environment has no configured catalogue provider, so seed the
+  // actual responsive selectors as a DOM fixture instead of silently skipping
+  // the measurements when the Home shelves are empty.
+  const mobileLayout = await page.evaluate(() => {
+    const fixture = document.createElement('div')
+    fixture.innerHTML = `
+      <div data-home-presentation="dynamic">
+        <div data-home-hero><div style="height: 380px; width: 100%"></div></div>
+        <div data-home-shelves>
+          <section class="media-row media-row--poster">
+            <div class="cinematic-row-track"><div class="media-row-card-slot"><button><div data-hero-viewport></div></button></div></div>
+          </section>
+        </div>
+      </div>`
+    document.body.append(fixture)
+    const hero = fixture.querySelector<HTMLElement>('[data-home-hero] > div')!
+    const track = fixture.querySelector<HTMLElement>('.cinematic-row-track')!
+    const slot = fixture.querySelector<HTMLElement>('.media-row-card-slot')!
+    const result = {
+      heroHeight: hero.getBoundingClientRect().height,
       gap: Number.parseFloat(getComputedStyle(track).gap),
-      firstPosterWidth: track.querySelector<HTMLElement>('.media-row-card-slot')?.getBoundingClientRect().width ?? 0,
-    }))
-    expect(railMetrics.gap).toBeLessThanOrEqual(8)
-    if (railMetrics.firstPosterWidth > 0) expect(railMetrics.firstPosterWidth).toBeLessThanOrEqual(88)
-  }
+      posterWidth: slot.getBoundingClientRect().width,
+    }
+    fixture.remove()
+    return result
+  })
+  expect(mobileLayout.heroHeight, 'phone Dynamic hero should leave more room for the first shelves').toBeGreaterThan(0)
+  expect(mobileLayout.heroHeight).toBeLessThanOrEqual(340)
+  expect(mobileLayout.gap).toBeLessThanOrEqual(8)
+  expect(mobileLayout.posterWidth).toBeGreaterThan(0)
+  expect(mobileLayout.posterWidth).toBeLessThanOrEqual(88)
 
   await page.setViewportSize({ width: 1280, height: 800 })
   await expect(home).toHaveAttribute('data-home-presentation', 'fixed')

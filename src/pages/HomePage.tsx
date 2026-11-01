@@ -739,7 +739,7 @@ function HeroCatalogSection({ row, heroMode, onBackdropChange, focusedItem }: { 
     if (focusedItem?.backdrop && focusedItem.backdrop !== focusedItem.poster) heroItems = [focusedItem]
   }
   if (heroItems.length === 0) return null
-  return <HeroSection items={heroItems} fixed={heroMode === 'fixed'} enableTrailers onActiveBackdropChange={onBackdropChange} onActiveImageSettled={markHeroImageSettled} />
+  return <div data-home-hero><HeroSection items={heroItems} fixed={heroMode === 'fixed'} enableTrailers onActiveBackdropChange={onBackdropChange} onActiveImageSettled={markHeroImageSettled} /></div>
 }
 
 // ── Staggered row renderer ─────────────────────────────────────────────────

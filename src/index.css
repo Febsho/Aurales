@@ -4564,6 +4564,14 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     height: clamp(280px, 36svh, 340px) !important;
   }
 
+  /* HeroSection uses its compact `isSmall` markup on phones, which does not
+     carry the desktop `.home-hero` class. Target its Home wrapper as well so
+     the inline 380px height cannot dominate the first screen on iOS. */
+  [data-home-presentation="dynamic"] [data-home-hero] > div:first-child {
+    height: clamp(280px, 36vh, 340px) !important;
+    height: clamp(280px, 36svh, 340px) !important;
+  }
+
   [data-home-shelves] .media-row {
     margin-bottom: .9rem;
   }
