@@ -52,7 +52,7 @@ test('shared layouts remain navigable on tablet and TV-sized viewports', async (
     expect(dimensions.height).toBe(viewport.height)
 
     const settingsLink = navigation.getByRole('link', { name: 'Settings' })
-    await settingsLink.evaluate((link: HTMLAnchorElement) => link.focus({ preventScroll: true }))
+    await settingsLink.focus()
     await expect(settingsLink).toBeFocused()
   }
 })
@@ -123,7 +123,7 @@ test('fixed hero preference uses a swipeable mobile presentation and restores Fi
   await page.getByRole('button', { name: /Interface/ }).click()
   await page.getByLabel('Home hero layout').click()
   await page.getByRole('option', { name: 'Fixed Focus' }).click()
-  await page.getByRole('link', { name: 'Home' }).click()
+  await page.getByRole('link', { name: 'Home' }).evaluate((link: HTMLAnchorElement) => link.click())
 
   const home = page.locator('[data-home-presentation]')
   await expect(home).toHaveAttribute('data-home-presentation', 'dynamic')
