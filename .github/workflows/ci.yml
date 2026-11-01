@@ -151,3 +151,19 @@ jobs:
 
       - name: Compile native player and IPC for this platform
         run: cargo check --manifest-path src-tauri/Cargo.toml --lib
+
+  self-hosted-container:
+    name: Build integrated self-hosted web and media worker
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Compose deployment configuration
+        run: |
+          cp .env.docker.example .env
+          docker compose config --quiet
+
+      - name: Build integrated deployment images
+        run: docker compose build --progress plain
