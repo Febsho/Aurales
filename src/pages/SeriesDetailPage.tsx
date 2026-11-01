@@ -58,6 +58,14 @@ import { getDetailView, rememberDetailView } from '../services/sessionViewState'
 import { seriesPrimaryLabel } from '../services/detailPresentation'
 import { isValidDateKey, localDateKey } from '../services/localDate'
 import { withRequestTimeout } from '../services/network/timeout'
+import { getPlatformCapabilities } from '../platform/capabilities'
+
+function shouldUseTvdbAnimeSeasonStructure(): boolean {
+  // Web installs keep preferences per origin/device. Keep anime season layout
+  // consistent between desktop browsers and mobile Safari by using the TVDB
+  // structure for all web anime; native desktop keeps its user preference.
+  return getPlatformCapabilities().platform === 'web' || useAppStore.getState().preferTvdbAnimeSeasons
+}
 
 function fuzzyIdsMatch(idA?: string | number | null, idB?: string | number | null): boolean {
   if (idA == null || idB == null) return false
@@ -300,7 +308,7 @@ function animeStructureSettingsKey(): string {
     settings.includeAnimeSpecials,
     settings.useGenericAnimeSeasonLabels,
     settings.avoidJapaneseSeasonNames,
-    settings.preferTvdbAnimeSeasons,
+    shouldUseTvdbAnimeSeasonStructure(),
   ].map(Number).join('')
 }
 
@@ -1130,7 +1138,7 @@ export default function SeriesDetailPage() {
           isAnime: addonIsAnime,
           seasons: processSeasons(parsed.seasons || [], addonIsAnime),
         }, 'series', addonIsAnime))
-        const tvdbStructure = addonIsAnime && useAppStore.getState().preferTvdbAnimeSeasons
+        const tvdbStructure = addonIsAnime && shouldUseTvdbAnimeSeasonStructure()
           ? await resolveAddonAnimeTvdbStructure(directShow, resumeProgress?.season).catch((error) => {
             console.warn('[SeriesDetailPage] Add-on anime TVDB structure unavailable:', error)
             return null
@@ -1507,7 +1515,7 @@ export default function SeriesDetailPage() {
           isAnime: addonIsAnime,
           seasons: processSeasons(result.seasons || [], addonIsAnime),
         }, 'series', addonIsAnime))
-        const tvdbStructure = addonIsAnime && useAppStore.getState().preferTvdbAnimeSeasons
+        const tvdbStructure = addonIsAnime && shouldUseTvdbAnimeSeasonStructure()
           ? await resolveAddonAnimeTvdbStructure(directShow, resumeProgress?.season).catch((error) => {
             console.warn('[SeriesDetailPage] Add-on anime TVDB structure unavailable:', error)
             return null
@@ -1867,7 +1875,7 @@ export default function SeriesDetailPage() {
             malId: knownIds.malId ? Number(knownIds.malId) : undefined,
           },
           animeSettings.animeTitleLanguage,
-          animeSettings.preferTvdbAnimeSeasons,
+          shouldUseTvdbAnimeSeasonStructure(),
           {
             hideUnairedSeasons: animeSettings.hideUnairedAnimeSeasons,
             hideUnairedEpisodes: animeSettings.hideUnairedAnimeEpisodes,
