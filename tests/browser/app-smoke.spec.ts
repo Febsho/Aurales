@@ -255,7 +255,7 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
   await expect.poll(
     () => rankedArt.evaluate((art) => art.getBoundingClientRect().width),
     { message: 'the ranked poster artwork should finish applying its responsive width' },
-  ).toBeGreaterThan(0)
+  ).toBeGreaterThanOrEqual(100)
   const showAllCard = page.locator('[data-home-shelves] .show-all-card').first()
   await expect(showAllCard).toBeVisible()
   const showAllHeight = await showAllCard.evaluate((element) => element.getBoundingClientRect().height)
