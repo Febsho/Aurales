@@ -24,15 +24,14 @@ The private API key is not embedded in `dist-web` or sent to browsers.
 git clone --branch master https://github.com/Febsho/Aurales.git Aurales
 cd Aurales
 cp .env.docker.example .env
-openssl rand -hex 32
-openssl rand -hex 32
-openssl rand -hex 24
+openssl rand -hex 32 # API key
+openssl rand -hex 32 # session signing key
+openssl rand -hex 24 # shared instance access code
 ```
 
-Put the two different generated values in `.env` for
-`AURALES_MEDIA_API_KEY` and `AURALES_MEDIA_SESSION_KEY`. Set a separate
-`AURALES_MEDIA_ACCESS_CODE` of at least 16 characters and share it only with
-people allowed to use the worker. Set `AURALES_DOMAIN` and the exact allowed
+Copy each generated value to its matching variable in `.env`. The third value
+is the access code that you share only with people allowed to use the worker;
+do not share either signing key. Set `AURALES_DOMAIN` and the exact allowed
 media hostnames. Restrict the file and start the stack:
 
 ```sh
@@ -56,10 +55,11 @@ HTTPS origin, so no separate URL or CORS hostname is needed. Choose
 **Disconnect** to expire the cookie.
 
 The access code is shared by the instance owner with authorized users. Failed
-attempts are throttled per forwarded client IP. Rotate the code and session
-signing key in `.env` and recreate the worker container to revoke sessions.
-The code is shared across authorized users rather than tied to individual
-Aurales accounts; rotate it to revoke all access if it is shared too broadly.
+attempts are throttled per forwarded client IP. To revoke every device session,
+replace both `AURALES_MEDIA_ACCESS_CODE` and `AURALES_MEDIA_SESSION_KEY` in
+`.env`, then run `docker compose up -d --force-recreate media-worker`. The code
+is shared across authorized users rather than tied to individual Aurales
+accounts; rotating it revokes all access if it is shared too broadly.
 
 The app remains usable without configuring the worker: browser-direct playback
 and local stream ranking continue to work. Proxy playback and media conversion
