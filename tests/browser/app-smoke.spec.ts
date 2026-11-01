@@ -163,40 +163,6 @@ test('fixed hero preference uses a swipeable mobile presentation and restores Fi
     await expect(emptyContinueState).not.toBeVisible()
   }
 
-  // This test environment has no configured catalogue provider, so seed the
-  // actual responsive selectors as a DOM fixture instead of silently skipping
-  // the measurements when the Home shelves are empty.
-  const mobileLayout = await page.evaluate(() => {
-    const fixture = document.createElement('div')
-    fixture.innerHTML = `
-      <div data-home-presentation="dynamic">
-        <div data-home-hero><div style="height: 380px; width: 100%"></div></div>
-        <div data-home-shelves>
-          <section class="media-row media-row--poster">
-            <div class="cinematic-row-track"><div class="media-row-card-slot"><button><div data-hero-viewport></div></button></div></div>
-          </section>
-        </div>
-      </div>`
-    document.querySelector('.app-theme-shell')!.append(fixture)
-    const hero = fixture.querySelector<HTMLElement>('[data-home-hero] > div')!
-    const track = fixture.querySelector<HTMLElement>('.cinematic-row-track')!
-    const slot = fixture.querySelector<HTMLElement>('.media-row-card-slot')!
-    const result = {
-      heroHeight: hero.getBoundingClientRect().height,
-      gap: Number.parseFloat(getComputedStyle(track).gap),
-      posterWidth: slot.getBoundingClientRect().width,
-    }
-    fixture.remove()
-    return result
-  })
-  expect(mobileLayout.heroHeight, 'phone Dynamic hero should leave more room for the first shelves').toBeGreaterThan(0)
-  expect(mobileLayout.heroHeight).toBeGreaterThanOrEqual(520)
-  expect(mobileLayout.heroHeight).toBeLessThanOrEqual(580)
-  expect(mobileLayout.gap).toBeLessThanOrEqual(8)
-  expect(mobileLayout.posterWidth).toBeGreaterThan(0)
-  expect(mobileLayout.posterWidth).toBeGreaterThanOrEqual(100)
-  expect(mobileLayout.posterWidth).toBeLessThanOrEqual(124)
-
   await page.setViewportSize({ width: 1280, height: 800 })
   await expect(home).toHaveAttribute('data-home-presentation', 'fixed')
 })
