@@ -924,7 +924,7 @@ export default function SettingsPage() {
   const [mdblistClientIdInput, setMdblistClientIdInput] = useState(getMdblistClientId)
   const [mdblistOAuthPolling, setMdblistOAuthPolling] = useState(false)
   const [anilistTokenInput, setAnilistTokenInput] = useState(getAniListToken)
-  const [anilistClientIdInput, setAnilistClientIdInput] = useState(() => localStorage.getItem('anilist_web_client_id') || import.meta.env.VITE_ANILIST_WEB_CLIENT_ID || '')
+  const [anilistClientIdInput, setAnilistClientIdInput] = useState(() => localStorage.getItem('anilist_web_client_id') || import.meta.env.VITE_ANILIST_WEB_CLIENT_ID || import.meta.env.VITE_ANILIST_CLIENT_ID || '')
   const [anilistLoading, setAnilistLoading] = useState(false)
   const [anilistMessage, setAnilistMessage] = useState('')
   const anilistAuthRunRef = useRef(0)
@@ -994,7 +994,7 @@ export default function SettingsPage() {
 
   const getAnilistClientId = () => {
     if (getPlatformCapabilities().platform === 'web') {
-      return localStorage.getItem('anilist_web_client_id') || anilistClientIdInput.trim() || import.meta.env.VITE_ANILIST_WEB_CLIENT_ID || ''
+      return localStorage.getItem('anilist_web_client_id') || anilistClientIdInput.trim() || import.meta.env.VITE_ANILIST_WEB_CLIENT_ID || import.meta.env.VITE_ANILIST_CLIENT_ID || ''
     }
     return localStorage.getItem('anilist_client_id') || import.meta.env.VITE_ANILIST_CLIENT_ID || '43411'
   }

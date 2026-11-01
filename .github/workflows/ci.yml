@@ -16,6 +16,17 @@ jobs:
     name: Build, test, and browser verification
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    env:
+      VITE_TMDB_API_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
+      VITE_TVDB_API_KEY: ${{ secrets.VITE_TVDB_API_KEY }}
+      VITE_OMDB_API_KEY: ${{ secrets.VITE_OMDB_API_KEY }}
+      VITE_SIMKL_V2_CLIENT_ID: ${{ secrets.VITE_SIMKL_V2_CLIENT_ID }}
+      VITE_SIMKL_WEB_REDIRECT_URI: ${{ secrets.VITE_SIMKL_WEB_REDIRECT_URI }}
+      VITE_TRAKT_CLIENT_ID: ${{ secrets.VITE_TRAKT_CLIENT_ID }}
+      VITE_ANILIST_WEB_CLIENT_ID: ${{ secrets.VITE_ANILIST_WEB_CLIENT_ID || secrets.VITE_ANILIST_CLIENT_ID }}
+      VITE_ANILIST_CLIENT_ID: ${{ secrets.VITE_ANILIST_CLIENT_ID }}
+      VITE_MDBLIST_CLIENT_ID: ${{ secrets.VITE_MDBLIST_CLIENT_ID }}
+      VITE_MDBLIST_WEB_REDIRECT_URI: ${{ secrets.VITE_MDBLIST_WEB_REDIRECT_URI }}
 
     steps:
       - uses: actions/checkout@v4
@@ -156,6 +167,17 @@ jobs:
     name: Build integrated self-hosted web and media worker
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    env:
+      VITE_TMDB_API_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
+      VITE_TVDB_API_KEY: ${{ secrets.VITE_TVDB_API_KEY }}
+      VITE_OMDB_API_KEY: ${{ secrets.VITE_OMDB_API_KEY }}
+      VITE_SIMKL_V2_CLIENT_ID: ${{ secrets.VITE_SIMKL_V2_CLIENT_ID }}
+      VITE_SIMKL_WEB_REDIRECT_URI: ${{ secrets.VITE_SIMKL_WEB_REDIRECT_URI }}
+      VITE_TRAKT_CLIENT_ID: ${{ secrets.VITE_TRAKT_CLIENT_ID }}
+      VITE_ANILIST_WEB_CLIENT_ID: ${{ secrets.VITE_ANILIST_WEB_CLIENT_ID || secrets.VITE_ANILIST_CLIENT_ID }}
+      VITE_ANILIST_CLIENT_ID: ${{ secrets.VITE_ANILIST_CLIENT_ID }}
+      VITE_MDBLIST_CLIENT_ID: ${{ secrets.VITE_MDBLIST_CLIENT_ID }}
+      VITE_MDBLIST_WEB_REDIRECT_URI: ${{ secrets.VITE_MDBLIST_WEB_REDIRECT_URI }}
 
     steps:
       - uses: actions/checkout@v4

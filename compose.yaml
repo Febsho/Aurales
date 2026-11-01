@@ -3,6 +3,17 @@ services:
     build:
       context: .
       target: web-runtime
+      args:
+        VITE_TMDB_API_KEY: ${VITE_TMDB_API_KEY:-}
+        VITE_TVDB_API_KEY: ${VITE_TVDB_API_KEY:-}
+        VITE_OMDB_API_KEY: ${VITE_OMDB_API_KEY:-}
+        VITE_SIMKL_V2_CLIENT_ID: ${VITE_SIMKL_V2_CLIENT_ID:-}
+        VITE_SIMKL_WEB_REDIRECT_URI: ${VITE_SIMKL_WEB_REDIRECT_URI:-}
+        VITE_TRAKT_CLIENT_ID: ${VITE_TRAKT_CLIENT_ID:-}
+        VITE_ANILIST_WEB_CLIENT_ID: ${VITE_ANILIST_WEB_CLIENT_ID:-}
+        VITE_ANILIST_CLIENT_ID: ${VITE_ANILIST_CLIENT_ID:-}
+        VITE_MDBLIST_CLIENT_ID: ${VITE_MDBLIST_CLIENT_ID:-}
+        VITE_MDBLIST_WEB_REDIRECT_URI: ${VITE_MDBLIST_WEB_REDIRECT_URI:-}
     restart: unless-stopped
     ports:
       - "80:80"

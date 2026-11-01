@@ -32,7 +32,22 @@ openssl rand -hex 24 # shared instance access code
 Copy each generated value to its matching variable in `.env`. The third value
 is the access code that you share only with people allowed to use the worker;
 do not share either signing key. Set `AURALES_DOMAIN` and the exact allowed
-media hostnames. Restrict the file and start the stack:
+media hostnames. To preconfigure provider sign-in, copy the matching **public**
+client IDs from GitHub Actions secrets into the optional `VITE_*` variables in
+`.env`. For example, `VITE_ANILIST_WEB_CLIENT_ID` accepts the existing
+`VITE_ANILIST_CLIENT_ID` value as a fallback. Register the deployed site's
+exact HTTPS callback URL with each provider; when redirect variables are empty,
+Aurales derives the callback from the browser's current HTTPS origin at runtime.
+
+These values are compiled into the JavaScript and are visible to every browser
+user. Only use public OAuth client IDs and provider API keys there. Never set an
+OAuth client secret, access token, `AURALES_MEDIA_API_KEY`, or
+`AURALES_MEDIA_SESSION_KEY` as a `VITE_*` variable. GitHub Actions passes the
+configured public provider values to the self-hosted image validation build;
+when you build on your own server, Docker Compose reads them from its private
+`.env` file.
+
+Restrict the file and start the stack:
 
 ```sh
 chmod 600 .env
