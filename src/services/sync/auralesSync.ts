@@ -239,7 +239,9 @@ export async function applyRemoteRecords(records: SyncRecord[]): Promise<boolean
     let items = readProfileArray<Record<string, unknown>>('aurales_discovery_feedback_v1', profileId)
     for (const record of updates) {
       const payload = record.payload as Record<string, unknown>
-      items = payload.kind === 'show-genre'
+      items = payload.kind === 'clear'
+        ? items.filter((item) => item.mediaKey !== payload.mediaKey)
+        : payload.kind === 'show-genre'
         ? items.filter((item) => {
           if (item.kind !== 'hide-genre') return true
           if (item.genreId === payload.genreId) return false

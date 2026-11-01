@@ -25,3 +25,13 @@ export function unhideRecommendationGenre(genreId: number): RecommendationFeedba
   window.dispatchEvent(new CustomEvent('aurales:discovery-feedback'))
   return next
 }
+
+/** Removes taste-picker signals and syncs a clear marker for each selected title. */
+export function resetTasteFeedback(items: SearchResult[]): RecommendationFeedback[] {
+  const keys = new Set(items.map((item) => mediaKey(item)))
+  const next = loadRecommendationFeedback().filter((entry) => !(entry.kind === 'more-like-this' && keys.has(entry.mediaKey)))
+  try { localStorage.setItem(profileStorageKey(KEY), JSON.stringify(next)) } catch { /* keep live preference */ }
+  for (const key of keys) enqueueSyncRecord('discovery-feedback', key, { kind: 'clear', mediaKey: key })
+  window.dispatchEvent(new CustomEvent('aurales:discovery-feedback'))
+  return next
+}

@@ -412,6 +412,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.getByRole('link', { name: 'Discover' }).click()
   await expect(page.locator('.discover-page')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Discover', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Your Genres' })).toBeVisible()
+  await expect(page.locator('.discover-taste-pick')).toHaveCount(10)
   const surpriseButton = page.getByRole('button', { name: /surprise me/i })
   await expect(surpriseButton).toBeEnabled()
   await surpriseButton.click()
@@ -430,6 +432,28 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(tastePick).toBeVisible()
   await tastePick.click()
   await expect(page.locator('.discover-refine__progress')).toHaveAttribute('aria-label', '1 of 3 titles selected')
+  const tasteSearch = page.getByRole('searchbox', { name: 'Search titles to refine recommendations' })
+  const searchableTitle = await page.locator('.discover-taste-pick__title').first().textContent()
+  await tasteSearch.fill(searchableTitle || '')
+  await expect(tasteSearch).toHaveValue(searchableTitle || '')
+  await expect(page.locator('.discover-taste-pick').first()).toBeVisible()
+  const filteredTasteTitles = await page.locator('.discover-taste-pick__title').allTextContents()
+  expect(filteredTasteTitles.every((title) => title.toLocaleLowerCase().includes((searchableTitle || '').trim().toLocaleLowerCase()))).toBe(true)
+  await tasteSearch.fill('')
+  await page.getByRole('button', { name: /start over/i }).click()
+  await expect(page.locator('.discover-refine__progress')).toHaveAttribute('aria-label', '0 of 3 titles selected')
+  await expect(page.locator('.discover-taste-pick')).toHaveCount(10)
+  await page.getByRole('button', { name: 'Series', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Your Next Binge' })).toBeVisible()
+  await page.getByRole('button', { name: 'Movies', exact: true }).click()
+  const showAllLayout = await page.evaluate(() => {
+    const showAll = document.querySelector<HTMLElement>('.discover-page .show-all-card[data-show-all-layout="poster"]')
+    const poster = document.querySelector<HTMLElement>('.discover-page .media-row--poster .media-row-card-slot')
+    if (!showAll || !poster) return null
+    return { showAll: showAll.getBoundingClientRect().width, poster: poster.getBoundingClientRect().width }
+  })
+  expect(showAllLayout).not.toBeNull()
+  expect(Math.abs(showAllLayout!.showAll - showAllLayout!.poster)).toBeLessThanOrEqual(1)
   const discoveryLayout = await page.evaluate(() => {
     const viewport = document.documentElement.clientWidth
     const heading = document.querySelector<HTMLElement>('.discover-page__heading')

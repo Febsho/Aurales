@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { RefreshCw, Shuffle, X } from 'lucide-react'
+import { RefreshCw, RotateCcw, Search, Shuffle, X } from 'lucide-react'
 import type { DiscoverConfig, SearchResult, WatchProgress } from '../types'
 import { discoverTmdbWithCache, getTmdbPerson, tmdbProvider } from '../services/tmdb'
 import MediaRow from '../components/MediaRow'
@@ -11,7 +11,7 @@ import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
 import WatchlistButton from '../components/WatchlistButton'
 import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import { applyRecommendationFeedback, buildTasteProfile, generateDiscoverySections, rankCandidates } from '../services/discovery/recommendationEngine'
-import { loadRecommendationFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
+import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
 import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktWatchedShows, getRatings as getTraktRatings } from '../services/trakt/sync'
 import { getSimklWatchedMovies, getSimklWatchedEpisodes } from '../services/simkl/history'
@@ -439,6 +439,8 @@ export default function DiscoverPage() {
   const [initialWaitComplete, setInitialWaitComplete] = useState(false)
   const [serverDiscoverItems, setServerDiscoverItems] = useState<SearchResult[]>([])
   const [moodIndex, setMoodIndex] = useState(0)
+  const [tasteQuery, setTasteQuery] = useState('')
+  const [bingeIndex, setBingeIndex] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -538,10 +540,8 @@ export default function DiscoverPage() {
   const refreshNonce = 0
   useEffect(() => { const reset=window.setTimeout(()=>setInitialWaitComplete(false),0); const timer=window.setTimeout(()=>setInitialWaitComplete(true),4000); return()=>{window.clearTimeout(reset);window.clearTimeout(timer)} },[tab,discoveryQueryKey,mode])
   const tasteGenre = useMemo(() => getTopGenre(recentlyViewed, contentType), [recentlyViewed, contentType])
-  const mood = useMemo(() => {
-    const pool = tab === 'movies' ? MOVIE_MOODS : tab === 'series' ? SERIES_MOODS : ANIME_MOODS
-    return pool[moodIndex % pool.length]
-  }, [tab, moodIndex])
+  const moodOptions = useMemo(() => tab === 'movies' ? MOVIE_MOODS : tab === 'series' ? SERIES_MOODS : ANIME_MOODS, [tab])
+  const mood = moodOptions[moodIndex % moodOptions.length]!
 
   useEffect(() => { setMoodIndex(berlinDaySeed(new Date(`${berlinDateKey}T12:00:00.000Z`)) % 3) }, [tab, berlinDateKey])
 
@@ -777,6 +777,10 @@ export default function DiscoverPage() {
     : fallbackRankedSnapshot?.filter((entry) => matchesDiscoverTab(entry.item, tab))?.length
       ? applyRecommendationFeedback(fallbackRankedSnapshot.filter((entry) => matchesDiscoverTab(entry.item, tab)), feedback)
       : liveRanked
+  const genreTiles = useMemo(() => moodOptions.map((option, index) => ({
+    option,
+    item: ranked.find((entry) => option.genres.some((genreId) => entry.item.genreIds?.includes(genreId)))?.item || ranked[index]?.item,
+  })), [moodOptions, ranked])
   useEffect(() => {
     // Today's snapshot is immutable once committed. History, feedback and
     // provider refreshes influence tomorrow instead of reshuffling the page.
@@ -790,6 +794,22 @@ export default function DiscoverPage() {
     })
   }, [activity.recent, berlinDateKey, dailySnapshotKey, initialWaitComplete, liveRanked, setRankedSnapshot, snapshotIsValid])
   const personalizedSections = useMemo(() => generateDiscoverySections(ranked.slice(1), tasteProfile, mode), [ranked, tasteProfile, mode])
+  const bingeRecommendations = useMemo(() => {
+    const matchesTab = (item: SearchResult) => tab === 'anime'
+      ? Boolean(item.isAnime)
+      : tab === 'series' ? item.type === 'series' && !item.isAnime : false
+    const seen = new Set<string>()
+    return [...connectedActivity.bingeItems, ...ranked.map((entry) => entry.item)]
+      .filter((item) => matchesTab(item) && Boolean(item.poster))
+      .filter((item) => {
+        const key = mediaIdentity(item)
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      .slice(0, 5)
+  }, [connectedActivity.bingeItems, ranked, tab])
+  const activeBingeItem = bingeRecommendations.length ? bingeRecommendations[bingeIndex % bingeRecommendations.length] : undefined
   const heroPool = useMemo(() => ranked.slice(0, 6), [ranked])
   const activeHeroIndex = heroPool.length ? heroIndex % heroPool.length : 0
   const heroRecommendation = heroPool[activeHeroIndex]
@@ -805,11 +825,12 @@ export default function DiscoverPage() {
   }, [ranked])
   const tastePickCandidates = useMemo(() => {
     if (!ranked.length) return []
-    const pool = ranked.filter((entry) => entry.item.poster && !pickedIds.includes(mediaIdentity(entry.item)))
+    const query = tasteQuery.trim().toLocaleLowerCase()
+    const pool = ranked.filter((entry) => entry.item.poster && !pickedIds.includes(mediaIdentity(entry.item)) && (!query || `${entry.item.title} ${entry.item.genres?.join(' ') || ''} ${entry.item.year || ''}`.toLocaleLowerCase().includes(query)))
     if (!pool.length) return []
     const start = pickOffset % pool.length
-    return Array.from({ length: Math.min(6, pool.length) }, (_, index) => pool[(start + index) % pool.length]!.item)
-  }, [ranked, pickedIds, pickOffset])
+    return Array.from({ length: Math.min(10, pool.length) }, (_, index) => pool[(start + index) % pool.length]!.item)
+  }, [ranked, pickedIds, pickOffset, tasteQuery])
 
   useEffect(() => { setHeroIndex(0) }, [tab, mode, discoveryQueryKey])
   useEffect(() => { setHeroLogoError(false) }, [activeHeroIndex])
@@ -915,6 +936,13 @@ export default function DiscoverPage() {
     try { localStorage.setItem(pickStorageKey, JSON.stringify(next)) } catch { /* use this session's selection */ }
     submitFeedback(item, 'more-like-this')
   }
+  const resetTastePicks = () => {
+    const selected = ranked.map((entry) => entry.item).filter((item) => pickedIds.includes(mediaIdentity(item)))
+    setFeedback(resetTasteFeedback(selected))
+    setPickedIds([])
+    setPickOffset(0)
+    try { localStorage.removeItem(pickStorageKey) } catch { /* use this session's selection */ }
+  }
 
   const handleTabChange = (nextTab: DiscoverTab) => {
     setTab(nextTab)
@@ -967,7 +995,7 @@ export default function DiscoverPage() {
           {viewState==='content'&&heroRecommendation ? <section className="discover-spotlight">
             <div className="discover-spotlight__ambient" aria-hidden="true">{heroRecommendation.item.backdrop && <img src={heroRecommendation.item.backdrop} alt="" draggable={false} decoding="async" />}</div>
             <div className="discover-spotlight__copy">
-              <p className="discover-spotlight__eyebrow">Tonight’s pick <span>·</span> {heroRecommendation.reasons[0]?.label.replace(/\btaste\b/gi, 'preferences') || 'Picked for you'}</p>
+              <p className="discover-spotlight__eyebrow">Your Weekend Plan · Tonight <span>·</span> {heroRecommendation.reasons[0]?.label.replace(/\btaste\b/gi, 'preferences') || 'Picked for you'}</p>
               {heroLogo && !heroLogoError
                 ? <img src={heroLogo} alt={heroRecommendation.item.title} draggable={false} onError={()=>setHeroLogoError(true)} className="discover-spotlight__logo" />
                 : <h2>{heroRecommendation.item.title}</h2>}
@@ -982,7 +1010,7 @@ export default function DiscoverPage() {
                 <button onClick={() => openHeroDetail(true)} className="discover-spotlight__play">▶ <span>Play</span></button>
                 <button onClick={() => openHeroDetail(false)} className={heroGlassButton}>Details</button>
                 <WatchlistButton className="discover-spotlight__watchlist" item={heroRecommendation.item} mediaRef={{localId:heroRecommendation.item.id,title:heroRecommendation.item.title,year:heroRecommendation.item.year,type:heroRecommendation.item.isAnime?'anime':heroRecommendation.item.type==='series'?'show':'movie',imdbId:heroRecommendation.item.imdbId,tmdbId:heroRecommendation.item.tmdbId?Number(heroRecommendation.item.tmdbId):undefined}} mediaType={heroRecommendation.item.type} isAnime={tab==='anime'||Boolean(heroRecommendation.item.isAnime)} anilistId={heroRecommendation.item.anilistId} malId={heroRecommendation.item.malId} tvdbId={heroRecommendation.item.tvdbId}/>
-                {heroPool.length > 1 && <button onClick={() => setHeroIndex((activeHeroIndex + 1) % heroPool.length)} className={heroGlassButton}>Another pick</button>}
+                {heroPool.length > 1 && <button onClick={() => setHeroIndex((activeHeroIndex + 1) % heroPool.length)} className={heroGlassButton}>Another option</button>}
                 {heroTrailer && <button onClick={() => setTrailerOpen(true)} className={`${heroGlassButton} discover-spotlight__trailer`}>Trailer</button>}
                 <button onClick={() => submitFeedback(heroRecommendation.item,'not-interested')} className={`${heroGlassButton} discover-spotlight__feedback`}>Not for me</button>
               </div>
@@ -998,22 +1026,35 @@ export default function DiscoverPage() {
                 <span className="discover-refine__count">{pickedIds.length < 3 ? `${3 - pickedIds.length} more to go` : 'Taste tuned'}</span>
               </div>
             </div>
-            {pickedIds.length < 3 && <button className="discover-refine__more" type="button" onClick={() => setPickOffset((current) => current + 3)}><RefreshCw size={16} aria-hidden="true" /> <span>More choices</span></button>}
+            <div className="discover-refine__tools">
+              <label className="discover-refine__search"><Search size={16} aria-hidden="true"/><input type="search" value={tasteQuery} onChange={(event) => { setTasteQuery(event.target.value); setPickOffset(0) }} placeholder="Search titles" aria-label="Search titles to refine recommendations" /></label>
+              {tastePickCandidates.length > 0 && pickedIds.length < 3 && <button className="discover-refine__more" type="button" onClick={() => setPickOffset((current) => current + 10)}><RefreshCw size={16} aria-hidden="true" /> <span>More choices</span></button>}
+              {pickedIds.length > 0 && <button className="discover-refine__reset" type="button" onClick={resetTastePicks}><RotateCcw size={16} aria-hidden="true" /> <span>Start over</span></button>}
+            </div>
             <div className="discover-taste-picks">
-              {tastePickCandidates.slice(0, 6).map((item) => {
+              {tastePickCandidates.map((item) => {
                 const id = mediaIdentity(item)
-                return <button key={id} type="button" className="discover-taste-pick" onClick={() => selectTastePick(item)} aria-label={`Choose ${item.title}`}>
+                return <button key={id} type="button" className="discover-taste-pick" onClick={() => selectTastePick(item)} disabled={pickedIds.length >= 3} aria-label={`Choose ${item.title}`}>
                   <span className="discover-taste-pick__poster">{item.poster && <img src={item.poster} alt="" loading="lazy" decoding="async"/>}{item.rating != null && <span className="discover-taste-pick__rating">★ {Number(item.rating).toFixed(1)}</span>}</span>
                   <span className="discover-taste-pick__title">{item.title}</span>
                   <span className="discover-taste-pick__year">{item.year || (item.isAnime ? 'Anime' : item.type === 'series' ? 'Series' : 'Movie')}</span>
                 </button>
               })}
+              {tastePickCandidates.length === 0 && <p className="discover-taste-picks__empty">No matching titles. Try another search.</p>}
             </div>
           </section>}
-          <section className="discover-moods row-contain" aria-label="Choose a mood">
-            <div className="discover-moods__heading"><div><p className="discover-section-eyebrow">Tuned to your taste</p><h2>Sunday Night Moods</h2></div></div>
-            <div className="discover-moods__options" role="group" aria-label="Mood">
-              {(tab === 'movies' ? MOVIE_MOODS : tab === 'series' ? SERIES_MOODS : ANIME_MOODS).slice(0, 3).map((option, index) => <button type="button" key={option.title} aria-pressed={moodIndex === index} className={moodIndex === index ? 'is-active' : ''} onClick={() => setMoodIndex(index)}>{option.title}</button>)}
+          {bingeRecommendations.length > 0 && <section className="discover-binge row-contain" aria-labelledby="discover-binge-title">
+            <div className="discover-binge__heading"><div><p className="discover-section-eyebrow">For your next long watch</p><h2 id="discover-binge-title">Your Next Binge</h2></div><span>Based on your taste and watch history</span></div>
+            <div className="discover-binge__feature">
+              <div className="discover-binge__art">{activeBingeItem?.backdrop && <img src={activeBingeItem.backdrop} alt="" loading="lazy" decoding="async"/>}{activeBingeItem?.poster && <img className="discover-binge__poster" src={activeBingeItem.poster} alt={`${activeBingeItem.title} poster`} loading="lazy" decoding="async"/>}</div>
+              <div className="discover-binge__copy"><p className="discover-section-eyebrow">{activeBingeItem?.isAnime ? 'Anime series' : 'Series pick'}</p><h3>{activeBingeItem?.title}</h3><p>{activeBingeItem?.overview || 'A series recommendation picked from your current discovery results.'}</p><div><button type="button" onClick={() => activeBingeItem && openItemDetail(activeBingeItem, true)}>▶ Play</button><button type="button" onClick={() => activeBingeItem && openItemDetail(activeBingeItem)}>Details</button><button type="button" onClick={() => setBingeIndex((current) => (current + 1) % bingeRecommendations.length)} disabled={bingeRecommendations.length < 2}>Another option</button></div></div>
+            </div>
+            {bingeRecommendations.length > 1 && <div className="discover-binge__rail"><MediaRow title="More series to binge" items={bingeRecommendations.slice(1)} layout="poster" /></div>}
+          </section>}
+          <section className="discover-moods row-contain" aria-label="Choose a genre">
+            <div className="discover-moods__heading"><div><p className="discover-section-eyebrow">Picked from this discovery mix</p><h2>Your Genres</h2></div></div>
+            <div className="discover-genres__grid" role="group" aria-label="Genres">
+              {genreTiles.map(({ option, item }, index) => <button type="button" key={option.title} aria-pressed={moodIndex === index} className={moodIndex === index ? 'is-active' : ''} onClick={() => setMoodIndex(index)} style={item?.backdrop || item?.poster ? { backgroundImage: `linear-gradient(90deg, rgba(9,9,12,.88), rgba(9,9,12,.3)), url("${item.backdrop || item.poster}")` } : undefined}><span>{option.title}</span><small>{item?.title || 'Explore this genre'}</small></button>)}
             </div>
             {moodItems.length > 0 && <MediaRow title={`${mood.title} Picks`} items={moodItems} layout="poster" />}
           </section>

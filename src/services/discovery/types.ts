@@ -1,7 +1,7 @@
 import type { SearchResult, WatchProgress } from '../../types'
 
 export type DiscoveryMode = 'for-you' | 'new' | 'hidden-gems' | 'critically-acclaimed' | 'recently-released' | 'quick-watch'
-export type RecommendationFeedbackKind = 'not-interested' | 'already-seen' | 'hide' | 'hide-genre' | 'less-like-this' | 'more-like-this'
+export type RecommendationFeedbackKind = 'not-interested' | 'already-seen' | 'hide' | 'hide-genre' | 'less-like-this' | 'more-like-this' | 'clear'
 
 export interface TasteSignal {
   kind: 'genre' | 'language' | 'decade' | 'format' | 'anime' | 'person' | 'runtime'
