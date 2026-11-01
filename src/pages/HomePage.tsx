@@ -103,8 +103,8 @@ function simklItemToSearchResult(item: SimklWatchlistItem): SearchResult {
 function MediaRowSkeleton({ title, layout, headerLeftControls, headerRightControls }: { title: string; layout: 'poster' | 'landscape'; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
   const isLandscape = layout === 'landscape'
   return (
-    <div className="mb-8 animate-pulse select-none">
-      <div className="flex items-center justify-between px-6 mb-4">
+    <div data-home-row-skeleton data-layout={layout} className="home-row-skeleton mb-8 animate-pulse select-none">
+      <div className="home-row-skeleton-header flex items-center justify-between px-6 mb-4">
         <div className="flex items-center gap-2.5">
           {headerLeftControls}
           <h2 className="text-xl font-bold tracking-tight text-white/60">{title}</h2>
@@ -113,10 +113,11 @@ function MediaRowSkeleton({ title, layout, headerLeftControls, headerRightContro
           {headerRightControls}
         </div>
       </div>
-      <div className="flex gap-4 overflow-x-hidden px-6 pb-2">
+      <div className="home-row-skeleton-track flex gap-4 overflow-x-hidden px-6 pb-2">
         {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="flex-shrink-0 flex flex-col">
+          <div key={i} data-home-skeleton-card className="flex-shrink-0 flex flex-col">
             <div
+              data-home-skeleton-art
               className={`bg-neutral-800/40 rounded-xl ${
                 isLandscape ? 'w-72 aspect-video' : 'w-36 aspect-[2/3]'
               }`}
@@ -1149,7 +1150,7 @@ export default function HomePage() {
   const shelvesContent = cachePreloaded ? (
     <StaggeredRows rows={activeRows} isEditing={isEditing} onRemove={removeHomeRow} fixed={presentationHeroMode === 'fixed' && !isEditing} activeIndex={activeShelfIndex} previousIndex={previousShelfIndex} direction={shelfDirection} />
   ) : (
-    <div className="space-y-8">
+    <div className="home-shelf-skeleton-list space-y-8">
       {activeRows.slice(0, 3).map((row) => (
         <MediaRowSkeleton key={row.id} title={getRowDisplayTitle(row)} layout={row.layout === 'landscape' ? 'landscape' : 'poster'} />
       ))}

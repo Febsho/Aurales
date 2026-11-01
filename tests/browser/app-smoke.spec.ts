@@ -205,6 +205,7 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
   await page.route('https://api.themoviedb.org/**', async (route) => {
     const pathname = new URL(route.request().url()).pathname
     if (pathname.endsWith('/discover/movie') || pathname.endsWith('/discover/tv')) {
+      await new Promise((resolve) => setTimeout(resolve, 350))
       await route.fulfill({ json: { page: 1, total_pages: 1, total_results: 1, results: [{ id: 43125, title: 'Mobile Fixture Film', poster_path: '/mobile-fixture-poster.jpg', backdrop_path: '/mobile-fixture-backdrop.jpg', overview: 'A fixture for responsive Home layout verification.', release_date: '2025-05-01', vote_average: 8.2, vote_count: 4200, popularity: 220, genre_ids: [18], original_language: 'en' }] } })
       return
     }
@@ -214,6 +215,22 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
 
   await page.goto('/')
   await page.getByRole('button', { name: /select profile/i }).click()
+  const loadingPosterShelf = page.locator('[data-home-shelves] .home-row-skeleton[data-layout="poster"]').first()
+  await expect(loadingPosterShelf).toBeVisible()
+  const skeletonMeasurements = await loadingPosterShelf.evaluate((shelf) => {
+    const track = shelf.querySelector<HTMLElement>('.home-row-skeleton-track')!
+    const poster = shelf.querySelector<HTMLElement>('[data-home-skeleton-card]')!
+    const art = poster.querySelector<HTMLElement>('[data-home-skeleton-art]')!
+    return {
+      gap: Number.parseFloat(getComputedStyle(track).gap),
+      cardWidth: poster.getBoundingClientRect().width,
+      artHeight: art.getBoundingClientRect().height,
+    }
+  })
+  expect(skeletonMeasurements.gap).toBeLessThanOrEqual(8)
+  expect(skeletonMeasurements.cardWidth).toBeLessThanOrEqual(88)
+  expect(skeletonMeasurements.artHeight).toBeGreaterThan(0)
+
   await expect(page.locator('[data-home-presentation="dynamic"] [data-home-hero]')).toBeVisible()
   const posterShelf = page.locator('[data-home-shelves] .media-row--poster .cinematic-row-track')
   await expect(posterShelf.locator('.media-row-card-slot').first()).toBeVisible()

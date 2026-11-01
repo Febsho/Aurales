@@ -4576,6 +4576,45 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     margin-bottom: .9rem;
   }
 
+  [data-home-shelves] .home-shelf-skeleton-list > :not([hidden]) ~ :not([hidden]) {
+    margin-top: .75rem;
+  }
+
+  [data-home-shelves] .home-row-skeleton {
+    margin-bottom: .9rem;
+  }
+
+  [data-home-shelves] .home-row-skeleton-header {
+    padding-inline: .65rem;
+    margin-bottom: .75rem;
+  }
+
+  [data-home-shelves] .home-row-skeleton-track {
+    gap: .5rem;
+    padding-inline: .65rem;
+    padding-bottom: .75rem;
+  }
+
+  [data-home-shelves] .home-row-skeleton[data-layout="poster"] [data-home-skeleton-card] {
+    width: clamp(4.5rem, 19vw, 5.5rem);
+  }
+
+  [data-home-shelves] .home-row-skeleton[data-layout="poster"] [data-home-skeleton-art] {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 2 / 3;
+  }
+
+  [data-home-shelves] .home-row-skeleton[data-layout="landscape"] [data-home-skeleton-card] {
+    width: clamp(10.5rem, 55vw, 14rem);
+  }
+
+  [data-home-shelves] .home-row-skeleton[data-layout="landscape"] [data-home-skeleton-art] {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 9;
+  }
+
   [data-home-shelves] .media-row > div:first-child h2,
   [data-home-shelves] .cw-fixed > div:first-child h2 {
     font-size: .95rem;
