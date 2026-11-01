@@ -5330,6 +5330,10 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-picker__close { position: absolute; top: 1rem; right: 1rem; display: grid; width: 2.35rem; height: 2.35rem; place-items: center; border: 0; border-radius: 50%; background: rgba(255,255,255,.13); color: white; font-size: 1.55rem; line-height: 1; cursor: pointer; }
 .discover-picker__poster { display: block; width: min(61vw, 17.5rem); max-height: 42dvh; aspect-ratio: 2 / 3; object-fit: cover; border: 1px solid rgba(255,255,255,.18); border-radius: 1.2rem; box-shadow: 0 18px 45px rgba(0,0,0,.4); }
 .discover-picker__poster--empty { display: grid; place-items: center; background: rgba(255,255,255,.08); font-size: 5rem; font-weight: 800; }
+.discover-picker__reveal { display: block; width: min(61vw, 17.5rem); max-height: 42dvh; }
+.discover-picker__reveal.is-spinning { animation: discover-picker-reel .24s cubic-bezier(.2,.8,.25,1) both; }
+.discover-picker h2.is-spinning { animation: discover-picker-title .24s cubic-bezier(.2,.8,.25,1) both; }
+.discover-picker__status { margin: -.75rem 0 1rem !important; color: rgba(255,255,255,.5); font-size: .75rem; }
 .discover-picker__eyebrow { margin: 1rem 0 .2rem !important; color: rgba(255,255,255,.55); font-size: .75rem; font-weight: 600; }
 .discover-picker h2 { max-width: 100%; margin: 0; overflow-wrap: anywhere; font-size: clamp(1.35rem, 5vw, 1.85rem); font-weight: 720; line-height: 1.18; }
 .discover-picker__meta { margin: .3rem 0 1.2rem !important; color: rgba(255,255,255,.57); font-size: .86rem; }
@@ -5338,6 +5342,11 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-picker__open { border: 0; background: #f5f5f5; color: #111; }
 .discover-picker__spin { border: 1px solid rgba(255,255,255,.17); background: rgba(255,255,255,.1); color: #fff; }
 @keyframes discover-picker-in { from { transform: translateY(1rem); opacity: .65; } to { transform: translateY(0); opacity: 1; } }
+@keyframes discover-picker-reel { from { transform: translateY(-.35rem) scale(.98); opacity: .35; filter: blur(2px); } to { transform: translateY(0) scale(1); opacity: 1; filter: blur(0); } }
+@keyframes discover-picker-title { from { transform: translateY(-.25rem); opacity: .35; filter: blur(2px); } to { transform: translateY(0); opacity: 1; filter: blur(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .discover-picker__reveal.is-spinning, .discover-picker h2.is-spinning { animation: none; }
+}
 .discover-section-eyebrow { margin: 0 0 .25rem !important; color: rgba(255,255,255,.5); font-size: .72rem; font-weight: 550; }
 .discover-refine { margin-block: 1.5rem 1.7rem; }
 .discover-refine__heading, .discover-moods__heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw, Shuffle, X } from 'lucide-react'
 import type { DiscoverConfig, SearchResult, WatchProgress } from '../types'
@@ -126,11 +126,12 @@ function readDiscoveryPicks(key: string): string[] {
   }
 }
 
-function DiscoveryPicker({ item, onClose, onSpin, onOpen }: {
+function DiscoveryPicker({ item, onClose, onSpin, onOpen, isSpinning }: {
   item: SearchResult
   onClose: () => void
   onSpin: () => void
   onOpen: () => void
+  isSpinning: boolean
 }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
@@ -158,13 +159,16 @@ function DiscoveryPicker({ item, onClose, onSpin, onOpen }: {
     <section className="discover-picker" role="dialog" aria-modal="true" aria-labelledby="discover-picker-title" onClick={(event) => event.stopPropagation()}>
       <div className="discover-picker__grabber" aria-hidden="true" />
       <button ref={closeButtonRef} className="discover-picker__close" type="button" aria-label="Close picker" onClick={onClose}><X size={19} /></button>
-      {poster ? <img className="discover-picker__poster" src={poster} alt={`${item.title} poster`} /> : <div className="discover-picker__poster discover-picker__poster--empty" aria-hidden="true">A</div>}
+      <div key={item.id} className={`discover-picker__reveal${isSpinning ? ' is-spinning' : ''}`}>
+        {poster ? <img className="discover-picker__poster" src={poster} alt={`${item.title} poster`} /> : <div className="discover-picker__poster discover-picker__poster--empty" aria-hidden="true">A</div>}
+      </div>
       <p className="discover-picker__eyebrow">Tonight, try</p>
-      <h2 id="discover-picker-title">{item.title}</h2>
+      <h2 key={`title-${item.id}`} id="discover-picker-title" className={isSpinning ? 'is-spinning' : ''} aria-live="polite">{item.title}</h2>
       <p className="discover-picker__meta">{genre}{item.year ? ` · ${item.year}` : ''}{item.rating != null ? ` · ★ ${Number(item.rating).toFixed(1)}` : ''}</p>
+      {isSpinning && <p className="discover-picker__status" role="status">Finding tonight’s pick…</p>}
       <div className="discover-picker__actions">
-        <button className="discover-picker__open" type="button" onClick={onOpen}>Open</button>
-        <button className="discover-picker__spin" type="button" onClick={onSpin}><Shuffle size={17} /> <span>Spin Again</span></button>
+        <button className="discover-picker__open" type="button" onClick={onOpen} disabled={isSpinning}>Open</button>
+        <button className="discover-picker__spin" type="button" onClick={onSpin} disabled={isSpinning}><Shuffle size={17} /> <span>Another option</span></button>
       </div>
     </section>
   </div>
@@ -863,15 +867,46 @@ export default function DiscoverPage() {
     setFeedback(saveRecommendationFeedback(item, kind))
   }
 
-  const pickRandomTitle = (currentId?: string) => {
-    if (!pickerPool.length) return
-    const choices = pickerPool.filter((entry) => entry.item.id !== currentId)
-    const choice = (choices.length ? choices : pickerPool)[Math.floor(Math.random() * (choices.length || pickerPool.length))]
-    if (choice) setRandomPickerItem(choice.item)
-  }
-
   const [randomPickerItem, setRandomPickerItem] = useState<SearchResult | null>(null)
-  const spinPicker = () => pickRandomTitle(randomPickerItem?.id)
+  const [pickerSpinning, setPickerSpinning] = useState(false)
+  const pickerSpinRunRef = useRef(0)
+  const spinPicker = (currentId = randomPickerItem?.id) => {
+    if (!pickerPool.length) return
+    const runId = pickerSpinRunRef.current + 1
+    pickerSpinRunRef.current = runId
+    const alternatives = pickerPool.filter((entry) => entry.item.id !== currentId)
+    const choices = alternatives.length ? alternatives : pickerPool
+    const winner = choices[Math.floor(Math.random() * choices.length)]
+    if (!winner) return
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setRandomPickerItem(winner.item)
+      setPickerSpinning(false)
+      return
+    }
+
+    const delays = [65, 75, 90, 115, 150, 200, 270, 360]
+    setPickerSpinning(true)
+    const first = choices[Math.floor(Math.random() * choices.length)]
+    if (first) setRandomPickerItem(first.item)
+    void (async () => {
+      for (const delay of delays) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, delay))
+        if (pickerSpinRunRef.current !== runId) return
+        const interimChoices = pickerPool.filter((entry) => entry.item.id !== winner.item.id)
+        const reel = interimChoices.length ? interimChoices : choices
+        const next = reel[Math.floor(Math.random() * reel.length)]
+        if (next) setRandomPickerItem(next.item)
+      }
+      if (pickerSpinRunRef.current !== runId) return
+      setRandomPickerItem(winner.item)
+      setPickerSpinning(false)
+    })()
+  }
+  const closePicker = useCallback(() => {
+    setPickerOpen(false)
+    setPickerSpinning(false)
+    pickerSpinRunRef.current += 1
+  }, [])
   const selectTastePick = (item: SearchResult) => {
     const id = mediaIdentity(item)
     if (pickedIds.includes(id) || pickedIds.length >= 3) return
@@ -919,7 +954,7 @@ export default function DiscoverPage() {
             </button>
           ))}
         </div>
-        <button className="discover-surprise-trigger" type="button" onClick={() => { pickRandomTitle(); setPickerOpen(true) }} disabled={!pickerPool.length}>
+        <button className="discover-surprise-trigger" type="button" onClick={() => { setPickerOpen(true); spinPicker() }} disabled={!pickerPool.length}>
           <Shuffle size={16} aria-hidden="true" /> Surprise Me
         </button>
       </div>
@@ -982,7 +1017,7 @@ export default function DiscoverPage() {
             </div>
             {moodItems.length > 0 && <MediaRow title={`${mood.title} Picks`} items={moodItems} layout="poster" />}
           </section>
-          {pickerOpen && randomPickerItem && <DiscoveryPicker item={randomPickerItem} onClose={() => setPickerOpen(false)} onSpin={spinPicker} onOpen={() => openItemDetail(randomPickerItem)} />}
+          {pickerOpen && randomPickerItem && <DiscoveryPicker item={randomPickerItem} onClose={closePicker} onSpin={() => spinPicker()} onOpen={() => openItemDetail(randomPickerItem)} isSpinning={pickerSpinning} />}
           {personalizedSections.map((section) => {
             const title = DISCOVERY_SECTION_TITLES[section.id] ?? section.title.replace(/\s+for you$/i, '')
             return <div key={section.id} className="row-contain discover-shelf"><MediaRow title={title} items={section.items.map((entry)=>entry.item)} layout="poster" showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div>
