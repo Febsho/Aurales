@@ -294,7 +294,7 @@ html, body, #root {
   padding: 0;
   background: #000;
   color: var(--color-text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Inter', 'Segoe UI', sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   overflow: hidden;
   color-scheme: dark;
   -webkit-font-smoothing: antialiased;
@@ -4560,22 +4560,43 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
      shelf starts near the fold on a phone. The hero remains swipeable, while
      posters use a denser rail instead of desktop cinema-card dimensions. */
   [data-home-presentation="dynamic"] .home-hero {
-    height: clamp(280px, 36vh, 340px) !important;
-    height: clamp(280px, 36svh, 340px) !important;
+    height: clamp(520px, 62vh, 580px) !important;
+    height: clamp(520px, 62svh, 580px) !important;
   }
 
   /* HeroSection uses its compact `isSmall` markup on phones, which does not
      carry the desktop `.home-hero` class. Target its Home wrapper as well so
      the inline 380px height cannot dominate the first screen on iOS. */
   [data-home-presentation="dynamic"] [data-home-hero] > div:first-child {
-    height: clamp(280px, 36vh, 340px) !important;
-    height: clamp(280px, 36svh, 340px) !important;
+    height: clamp(520px, 62vh, 580px) !important;
+    height: clamp(520px, 62svh, 580px) !important;
   }
+
+  html[data-runtime-platform="web"] [data-home-hero] .hero-content-overlay { padding: 0 .9rem 1.2rem !important; }
+  html[data-runtime-platform="web"] [data-home-hero] .hero-title-text { font-size: clamp(1.55rem, 7vw, 2rem) !important; line-height: 1.05; }
+  html[data-runtime-platform="web"] [data-home-hero] .hero-title-logo { max-height: 3.75rem; max-width: 78%; }
+  html[data-runtime-platform="web"] [data-home-hero] .hero-content-overlay > div:first-child { min-height: 2.5rem; margin-bottom: .4rem; }
+  html[data-runtime-platform="web"] [data-home-hero] .hero-content-overlay > p { font-size: .72rem; line-height: 1rem; }
+  html[data-runtime-platform="web"] [data-home-hero] .hero-content-overlay .home-hero-ratings { margin-bottom: .4rem; }
+  html[data-runtime-platform="web"] [data-home-hero] .hero-content-overlay .home-hero-ratings + p { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-bottom: .6rem; font-size: .76rem; line-height: 1.1rem; }
+  html[data-runtime-platform="web"] [data-home-hero] .hero-content-overlay > div:last-child { align-items: center; }
+  html[data-runtime-platform="web"] [data-home-hero] .hero-content-overlay > div:last-child > button { min-height: 2.65rem; font-size: .75rem; }
 
   /* Use the Home viewport for catalogue content instead of stacking desktop
      empty-state margins between the hero and the first poster shelf. */
   [data-home-shelves] {
     margin-top: .5rem !important;
+  }
+
+  [data-home-shelves] .home-shelf-row-list {
+    display: flex;
+    flex-direction: column;
+    gap: .4rem;
+  }
+
+  [data-home-shelves] .home-shelf-row-list > [data-fixed-hero-row] {
+    margin: 0 !important;
+    padding: 0 !important;
   }
 
   [data-home-shelves] [data-fixed-hero-row] + [data-fixed-hero-row] {
@@ -4641,15 +4662,15 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   }
 
   [data-home-shelves] .media-row {
-    margin-bottom: .9rem;
+    margin-bottom: .35rem !important;
   }
 
   [data-home-shelves] .home-shelf-skeleton-list > :not([hidden]) ~ :not([hidden]) {
-    margin-top: .75rem;
+    margin-top: .35rem;
   }
 
   [data-home-shelves] .home-row-skeleton {
-    margin-bottom: .9rem;
+    margin-bottom: .35rem;
   }
 
   [data-home-shelves] .home-row-skeleton-header {
@@ -4664,7 +4685,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   }
 
   [data-home-shelves] .home-row-skeleton[data-layout="poster"] [data-home-skeleton-card] {
-    width: clamp(4rem, 17vw, 5rem);
+    width: clamp(6.25rem, 28vw, 7.5rem);
   }
 
   [data-home-shelves] .home-row-skeleton[data-layout="poster"] [data-home-skeleton-art] {
@@ -4691,12 +4712,12 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   [data-home-shelves] .cinematic-row-track {
     gap: .5rem !important;
     padding-inline: .65rem !important;
-    padding-bottom: .75rem !important;
+    padding-bottom: .4rem !important;
     scroll-padding-inline: .65rem;
   }
 
   [data-home-shelves] .media-row--poster .cinematic-row-track > .media-row-card-slot {
-    width: clamp(4rem, 17vw, 5rem);
+    width: clamp(6.25rem, 28vw, 7.5rem);
   }
 
   [data-home-shelves] .media-row--poster .cinematic-row-track > .media-row-card-slot > button,
@@ -4714,8 +4735,13 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
      gutter and poster shrink together instead of leaving 200px artwork after
      ordinary poster shelves have already become compact. */
   html[data-runtime-platform="web"] [data-home-shelves] .media-row--ranked .media-row-card-slot > button {
-    --cinematic-special-height: clamp(7.5rem, 28vw, 8.25rem) !important;
-    --ranked-card-height: clamp(7.5rem, 28vw, 8.25rem) !important;
+    --cinematic-special-height: clamp(10.5rem, 42vw, 11.25rem) !important;
+    --ranked-card-height: clamp(10.5rem, 42vw, 11.25rem) !important;
+    width: clamp(6.25rem, 28vw, 7.5rem) !important;
+  }
+  html[data-runtime-platform="web"] [data-home-shelves] .media-row--ranked .media-rank { display: none; }
+  html[data-runtime-platform="web"] [data-home-shelves] .media-row--ranked [data-hero-viewport] {
+    width: 100% !important; height: auto !important; margin-left: 0 !important; aspect-ratio: 2 / 3;
   }
 
   [data-home-shelves] .media-row--poster .cinematic-row-track > .media-row-card-slot h3 {
@@ -4925,15 +4951,16 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 
   html[data-runtime-platform="web"] .mobile-web-nav {
     position: fixed;
-    inset: auto 0 0;
+    inset: auto .65rem calc(.55rem + env(safe-area-inset-bottom));
     z-index: 80;
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
-    gap: .1rem;
-    padding: .35rem max(.4rem, env(safe-area-inset-left)) max(.4rem, env(safe-area-inset-bottom)) max(.4rem, env(safe-area-inset-right));
-    border-top: 1px solid rgba(255,255,255,.09);
-    background: rgba(12, 13, 16, .94);
-    box-shadow: 0 -12px 32px rgba(0,0,0,.3);
+    gap: .15rem;
+    padding: .35rem .45rem;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 999px;
+    background: rgba(28, 29, 34, .82);
+    box-shadow: 0 12px 36px rgba(0,0,0,.38), inset 0 1px rgba(255,255,255,.08);
     -webkit-backdrop-filter: blur(24px) saturate(140%);
     backdrop-filter: blur(24px) saturate(140%);
   }
@@ -4941,20 +4968,20 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .mobile-web-nav__item {
     display: flex;
     min-width: 0;
-    min-height: 3.15rem;
+    min-height: 3rem;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: .2rem;
-    border-radius: .75rem;
+    border-radius: 999px;
     color: rgba(255,255,255,.54);
     text-decoration: none;
     -webkit-tap-highlight-color: transparent;
   }
 
-  html[data-runtime-platform="web"] .mobile-web-nav__item svg { width: 1.15rem; height: 1.15rem; flex: 0 0 auto; }
-  html[data-runtime-platform="web"] .mobile-web-nav__item span { max-width: 100%; overflow: hidden; font-size: .58rem; font-weight: 600; line-height: .75rem; text-overflow: ellipsis; white-space: nowrap; }
-  html[data-runtime-platform="web"] .mobile-web-nav__item.is-active { color: #fff; background: rgba(255,255,255,.105); }
+  html[data-runtime-platform="web"] .mobile-web-nav__item svg { width: 1.2rem; height: 1.2rem; flex: 0 0 auto; }
+  html[data-runtime-platform="web"] .mobile-web-nav__item span { max-width: 100%; overflow: hidden; font-size: .6rem; font-weight: 600; line-height: .75rem; text-overflow: ellipsis; white-space: nowrap; }
+  html[data-runtime-platform="web"] .mobile-web-nav__item.is-active { color: #fff; background: rgba(255,255,255,.13); }
   html[data-runtime-platform="web"] .mobile-web-nav__item:focus-visible { outline: 2px solid rgba(255,255,255,.8); outline-offset: -2px; }
 
   html[data-runtime-platform="web"] { --space-page-inline: .875rem; }
@@ -4993,16 +5020,16 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .app-scroll-root { overscroll-behavior-y: contain; }
 
   /* All shelves use the same compact rhythm across Home, Discover and Catalog. */
-  html[data-runtime-platform="web"] .media-row { margin-bottom: 1rem !important; }
+  html[data-runtime-platform="web"] .media-row { margin-bottom: .35rem !important; }
   html[data-runtime-platform="web"] .media-row > div:first-child,
   html[data-runtime-platform="web"] .media-row > div:last-of-type { padding-inline: .75rem !important; }
   html[data-runtime-platform="web"] .media-row > div:first-child { margin-bottom: .45rem !important; }
   html[data-runtime-platform="web"] .media-row > div:first-child h2 { font-size: .95rem !important; line-height: 1.25rem; }
-  html[data-runtime-platform="web"] .cinematic-row-track { gap: .5rem !important; padding-inline: .75rem !important; padding-bottom: .7rem !important; }
-  html[data-runtime-platform="web"] .media-row--poster .cinematic-row-track > .media-row-card-slot { width: clamp(4rem, 18vw, 4.65rem); }
+  html[data-runtime-platform="web"] .cinematic-row-track { gap: .5rem !important; padding-inline: .75rem !important; padding-bottom: .4rem !important; }
+  html[data-runtime-platform="web"] .media-row--poster .cinematic-row-track > .media-row-card-slot { width: clamp(6.25rem, 28vw, 7.5rem); }
   html[data-runtime-platform="web"] .media-row--ranked .media-row-card-slot > button {
-    --cinematic-special-height: clamp(7.25rem, 31vw, 8.25rem) !important;
-    --ranked-card-height: clamp(7.25rem, 31vw, 8.25rem) !important;
+    --cinematic-special-height: clamp(10.5rem, 42vw, 11.25rem) !important;
+    --ranked-card-height: clamp(10.5rem, 42vw, 11.25rem) !important;
   }
   html[data-runtime-platform="web"] .media-row--feature .media-row-card-slot > button {
     --cinematic-special-height: clamp(7.5rem, 34vw, 9rem) !important;
@@ -5030,11 +5057,12 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .discover-page__heading > span { font-size: .65rem; }
   html[data-runtime-platform="web"] .discover-page__modes { margin-bottom: .75rem; padding-inline: .875rem; }
   html[data-runtime-platform="web"] .discover-page__modes button { min-height: 2.75rem; padding-inline: .8rem; font-size: .7rem; }
-  html[data-runtime-platform="web"] .discover-hero { min-height: 370px !important; margin: 0 .875rem 1.5rem !important; border-radius: 1rem !important; }
+  html[data-runtime-platform="web"] .discover-hero { min-height: 440px !important; margin: 0 .875rem .75rem !important; border-radius: 1rem !important; }
   html[data-runtime-platform="web"] .discover-hero__gradient { background-image: linear-gradient(to top, rgba(0,0,0,.96), rgba(0,0,0,.68) 46%, rgba(0,0,0,.1)) !important; }
-  html[data-runtime-platform="web"] .discover-hero > div.relative { min-height: 370px !important; max-width: none; padding: 1.15rem !important; }
-  html[data-runtime-platform="web"] .discover-hero h2 { font-size: clamp(1.8rem, 8vw, 2.4rem); line-height: 1.05; overflow-wrap: anywhere; }
-  html[data-runtime-platform="web"] .discover-hero > div.relative > p { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: .78rem; }
+  html[data-runtime-platform="web"] .discover-hero > div.relative { min-height: 440px !important; max-width: none; padding: .9rem !important; }
+  html[data-runtime-platform="web"] .discover-hero h2 { font-size: clamp(1.45rem, 6vw, 1.8rem); line-height: 1.1; overflow-wrap: anywhere; }
+  html[data-runtime-platform="web"] .discover-hero > div.relative > img { max-width: 72%; max-height: 3.75rem; }
+  html[data-runtime-platform="web"] .discover-hero > div.relative > p { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: .74rem; line-height: 1.1rem; }
   html[data-runtime-platform="web"] .discover-hero > div.relative > div.flex { gap: .4rem; }
   html[data-runtime-platform="web"] .discover-hero > div.relative > div.flex > button { min-height: 2.65rem; padding: .55rem .8rem; font-size: .75rem; }
   html[data-runtime-platform="web"] .discover-hero > button[aria-label^="Previous"],
@@ -5044,17 +5072,17 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   /* Detail pages keep one readable left edge and a shorter hero so the season
      picker and episode rail are reachable without a long empty backdrop. */
   html[data-runtime-platform="web"] .detail-page { --detail-inline: .9rem; --detail-hero-overlap: 2rem; }
-  html[data-runtime-platform="web"] .detail-page .detail-hero-panel { height: clamp(30rem, 68svh, 36rem) !important; min-height: 0; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-panel { height: clamp(33rem, 68svh, 38rem) !important; min-height: 0; }
   html[data-runtime-platform="web"] .detail-page .detail-hero-panel__content {
     width: 100%; max-width: none; padding-inline: .9rem; padding-bottom: 1.1rem;
     transform: none; margin: 0;
   }
-  html[data-runtime-platform="web"] .detail-page .detail-hero-panel__brand { min-height: 2.5rem; margin-bottom: .5rem; }
-  html[data-runtime-platform="web"] .detail-page .detail-hero-panel__logo { max-width: 82%; max-height: 4.25rem; }
-  html[data-runtime-platform="web"] .detail-page .detail-hero-panel__title { max-width: 100%; font-size: clamp(1.8rem, 8vw, 2.6rem); line-height: 1.05; }
-  html[data-runtime-platform="web"] .detail-page .detail-hero-overview { max-width: 100%; margin-bottom: .65rem; font-size: .78rem; line-height: 1.25rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-panel__brand { min-height: 2.25rem; margin-bottom: .35rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-panel__logo { max-width: 82%; max-height: 3.75rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-panel__title { max-width: 100%; font-size: clamp(1.4rem, 6vw, 1.8rem); line-height: 1.08; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-overview { max-width: 100%; margin-bottom: .45rem; font-size: .72rem; line-height: 1.05rem; }
   html[data-runtime-platform="web"] .detail-page .detail-hero-actions { width: 100%; max-width: 22rem; gap: .45rem; }
-  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__play { min-height: 3rem; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-actions__play { min-height: 2.8rem; }
   html[data-runtime-platform="web"] .detail-page .detail-hero-actions__secondary { gap: .4rem; }
   html[data-runtime-platform="web"] .detail-page .detail-hero-actions__watchlist > button,
   html[data-runtime-platform="web"] .detail-page .detail-hero-actions__mark > button,
@@ -5062,17 +5090,20 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .detail-page .detail-content-shell { padding-top: 1rem; }
   html[data-runtime-platform="web"] .detail-page .detail-content-shell__inner { padding-inline: .875rem; }
   html[data-runtime-platform="web"] .detail-page .detail-content-shell__brand { min-height: 3rem; margin-bottom: .75rem; }
-  html[data-runtime-platform="web"] .detail-page .detail-content-shell__brand h2 { font-size: clamp(1.7rem, 7vw, 2.5rem); }
+  html[data-runtime-platform="web"] .detail-page .detail-content-shell__brand h2 { font-size: clamp(1.35rem, 5.5vw, 1.7rem); line-height: 1.15; }
   html[data-runtime-platform="web"] .detail-page .detail-episodes-section { width: 100%; padding-inline: .875rem !important; }
   html[data-runtime-platform="web"] .detail-page .detail-episodes-heading { margin-bottom: .7rem; }
   html[data-runtime-platform="web"] .detail-page .detail-season-picker { margin-bottom: .75rem !important; }
   html[data-runtime-platform="web"] .detail-page .season-scroll { gap: .45rem; }
   html[data-runtime-platform="web"] .detail-page .season-scroll > button { min-height: 2.55rem; padding-inline: .8rem; font-size: .75rem; }
-  html[data-runtime-platform="web"] .detail-page .detail-episode-track { gap: .65rem; padding-top: .8rem; padding-bottom: 1rem; }
-  html[data-runtime-platform="web"] .detail-page .episode-showcase-card { width: min(48vw, 17rem); }
+  html[data-runtime-platform="web"] .detail-page .detail-episode-track { gap: .5rem; padding-top: .55rem; padding-bottom: .5rem; }
+  html[data-runtime-platform="web"] .detail-page .episode-showcase-card { width: min(44vw, 15rem); }
   html[data-runtime-platform="web"] .episode-card { gap: .6rem; }
-  html[data-runtime-platform="web"] .episode-card__thumbnail { width: clamp(6rem, 29vw, 8rem); }
-  html[data-runtime-platform="web"] .episode-card h3 { font-size: .9rem; line-height: 1.2; }
+  html[data-runtime-platform="web"] .episode-card__thumbnail { width: clamp(5.25rem, 27vw, 7rem); }
+  html[data-runtime-platform="web"] .episode-card h3 { font-size: .78rem; line-height: 1.2; }
+  html[data-runtime-platform="web"] .detail-page .media-row { margin-bottom: .6rem !important; }
+  html[data-runtime-platform="web"] .detail-page .media-row > div:first-child h2 { font-size: .9rem !important; line-height: 1.2rem; }
+  html[data-runtime-platform="web"] .detail-page .media-row--poster .cinematic-row-track > .media-row-card-slot h3 { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: .72rem; line-height: 1rem; }
 
   /* Match the compact streaming-app detail layout: the play action gets the
      available width and the secondary actions stay icon-sized beside it. */
@@ -5113,9 +5144,25 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 
 @media (max-width: 390px) {
   html[data-runtime-platform="web"] .cinematic-nav-link { padding-inline: .38rem; font-size: .68rem; }
-  html[data-runtime-platform="web"] .discover-hero { min-height: 340px !important; }
-  html[data-runtime-platform="web"] .discover-hero > div.relative { min-height: 340px !important; padding: .9rem !important; }
-  html[data-runtime-platform="web"] .detail-page .detail-hero-panel { height: 31rem !important; }
+  html[data-runtime-platform="web"] .discover-hero { min-height: 420px !important; }
+  html[data-runtime-platform="web"] .discover-hero > div.relative { min-height: 420px !important; padding: .85rem !important; }
+  html[data-runtime-platform="web"] .detail-page .detail-hero-panel { height: 33rem !important; }
+}
+
+@media (max-width: 700px) {
+  html[data-runtime-platform="web"] .search-page { padding-bottom: calc(5.25rem + env(safe-area-inset-bottom)); }
+  html[data-runtime-platform="web"] .search-page > .search-overview { align-items: flex-start; gap: .65rem; margin: 0 .875rem .75rem !important; padding: .85rem; }
+  html[data-runtime-platform="web"] .search-title { font-size: 1.45rem !important; line-height: 1.12; letter-spacing: -.02em; overflow-wrap: anywhere; }
+  html[data-runtime-platform="web"] .search-summary { margin-top: .35rem; font-size: .75rem; line-height: 1.15rem; }
+  html[data-runtime-platform="web"] .search-filters { gap: .35rem; margin: 0 .875rem .75rem !important; }
+  html[data-runtime-platform="web"] .search-filter { min-height: 2.5rem; gap: .35rem; padding-inline: .65rem; font-size: .7rem; }
+  html[data-runtime-platform="web"] .search-results { gap: .45rem; }
+  html[data-runtime-platform="web"] .search-results .media-row { margin-bottom: .35rem !important; }
+  html[data-runtime-platform="web"] .search-results .media-row > div:first-child,
+  html[data-runtime-platform="web"] .search-results .media-row > div:last-of-type { padding-inline: .75rem !important; }
+  html[data-runtime-platform="web"] .search-results .media-row > div:first-child h2 { font-size: .9rem !important; line-height: 1.2rem; }
+  html[data-runtime-platform="web"] .search-results .cinematic-row-track { padding-bottom: .4rem !important; }
+  html[data-runtime-platform="web"] .people-results__grid { grid-auto-columns: minmax(7rem, 8.5rem); }
 }
 
 @media (prefers-reduced-motion: reduce) {

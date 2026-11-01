@@ -92,10 +92,40 @@ test('mobile web hides desktop navigation and Home hero layout preferences', asy
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/')
   await page.getByRole('button', { name: /select profile/i }).click()
+  await expect(page.locator('[data-home-card-motion]')).toHaveAttribute('data-home-card-motion', 'off')
   await page.getByRole('link', { name: 'Settings' }).click()
   await page.getByRole('button', { name: /Interface/ }).click()
   await expect(page.getByLabel('Navigation style')).toHaveCount(0)
   await expect(page.getByLabel('Home hero layout')).toHaveCount(0)
+  await expect(page.getByText('Card focus animations')).toHaveCount(0)
+})
+
+test('mobile Search uses compact system typography without horizontal overflow', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/')
+  await page.getByRole('button', { name: /select profile/i }).click()
+  await page.getByRole('link', { name: 'Search' }).click()
+  await expect(page.getByRole('heading', { name: 'Find your next story' })).toBeVisible()
+  const layout = await page.evaluate(() => {
+    const overview = document.querySelector<HTMLElement>('.search-overview')!
+    const title = document.querySelector<HTMLElement>('.search-title')!
+    const summary = document.querySelector<HTMLElement>('.search-summary')!
+    const bounds = (element: HTMLElement) => element.getBoundingClientRect()
+    return {
+      viewport: document.documentElement.clientWidth,
+      document: document.documentElement.scrollWidth,
+      titleFontSize: Number.parseFloat(getComputedStyle(title).fontSize),
+      overview: bounds(overview).toJSON(),
+      title: bounds(title).toJSON(),
+      summary: bounds(summary).toJSON(),
+    }
+  })
+  expect(layout.document).toBeLessThanOrEqual(layout.viewport + 1)
+  expect(layout.titleFontSize).toBeLessThanOrEqual(24)
+  expect(layout.title.x).toBeGreaterThanOrEqual(0)
+  expect(layout.title.right).toBeLessThanOrEqual(layout.viewport)
+  expect(layout.summary.top).toBeGreaterThanOrEqual(layout.title.bottom - 1)
+  expect(layout.overview.bottom).toBeGreaterThanOrEqual(layout.summary.bottom)
 })
 
 test('desktop web still honors the configured sidebar navigation', async ({ page }, testInfo) => {
@@ -157,10 +187,12 @@ test('fixed hero preference uses a swipeable mobile presentation and restores Fi
     return result
   })
   expect(mobileLayout.heroHeight, 'phone Dynamic hero should leave more room for the first shelves').toBeGreaterThan(0)
-  expect(mobileLayout.heroHeight).toBeLessThanOrEqual(340)
+  expect(mobileLayout.heroHeight).toBeGreaterThanOrEqual(520)
+  expect(mobileLayout.heroHeight).toBeLessThanOrEqual(580)
   expect(mobileLayout.gap).toBeLessThanOrEqual(8)
   expect(mobileLayout.posterWidth).toBeGreaterThan(0)
-  expect(mobileLayout.posterWidth).toBeLessThanOrEqual(88)
+  expect(mobileLayout.posterWidth).toBeGreaterThanOrEqual(100)
+  expect(mobileLayout.posterWidth).toBeLessThanOrEqual(124)
 
   await page.setViewportSize({ width: 1280, height: 800 })
   await expect(home).toHaveAttribute('data-home-presentation', 'fixed')
@@ -221,7 +253,8 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
     }
   })
   expect(skeletonMeasurements.gap).toBeLessThanOrEqual(8)
-  expect(skeletonMeasurements.cardWidth).toBeLessThanOrEqual(88)
+  expect(skeletonMeasurements.cardWidth).toBeGreaterThanOrEqual(100)
+  expect(skeletonMeasurements.cardWidth).toBeLessThanOrEqual(124)
   expect(skeletonMeasurements.artHeight).toBeGreaterThan(0)
 
   const hero = page.locator('[data-home-presentation="dynamic"] [data-home-hero] > div:first-child')
@@ -250,30 +283,43 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
     const upcomingControls = upcoming?.querySelectorAll<HTMLButtonElement>('button[aria-label^="Scroll upcoming"]')
     return hero && track && poster && posterHeader && continueEmpty && upcoming && upcomingControls?.length === 2 ? {
       heroHeight: hero.getBoundingClientRect().height,
+      compactHero: hero.hasAttribute('data-hero-compact'),
+      hasCastRow: Boolean(hero.querySelector('.hero-content-overlay > div:has(> div.flex.-space-x-2)')),
       gap: Number.parseFloat(getComputedStyle(track).gap),
       posterWidth: poster.getBoundingClientRect().width,
       heroShelfGap: document.querySelector<HTMLElement>('[data-home-shelves]')!.getBoundingClientRect().top - hero.getBoundingClientRect().bottom,
       continueUpcomingGap: upcoming.getBoundingClientRect().top - continueEmpty.getBoundingClientRect().bottom,
       upcomingPosterHeadingGap: posterHeader.getBoundingClientRect().top - upcoming.getBoundingClientRect().bottom,
+      shelfGaps: (() => {
+        const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-home-shelves] .media-row'))
+        return rows.slice(0, -1).map((row, index) => rows[index + 1].getBoundingClientRect().top - row.getBoundingClientRect().bottom)
+      })(),
       upcomingControlHeights: Array.from(upcomingControls, (button) => button.getBoundingClientRect().height),
       horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
     } : null
   })
   expect(measurements).not.toBeNull()
   expect(measurements!.heroHeight).toBeGreaterThan(0)
-  expect(measurements!.heroHeight).toBeLessThanOrEqual(340)
+  expect(measurements!.heroHeight).toBeGreaterThanOrEqual(520)
+  expect(measurements!.heroHeight).toBeLessThanOrEqual(580)
+  expect(measurements!.compactHero).toBe(true)
+  expect(measurements!.hasCastRow).toBe(false)
   expect(measurements!.gap).toBeLessThanOrEqual(8)
   expect(measurements!.posterWidth).toBeGreaterThan(0)
-  expect(measurements!.posterWidth).toBeLessThanOrEqual(80)
+  expect(measurements!.posterWidth).toBeGreaterThanOrEqual(100)
+  expect(measurements!.posterWidth).toBeLessThanOrEqual(124)
   const rankedMeasurements = await rankedCard.locator('[data-hero-viewport]').evaluate((art) => ({
     width: art.getBoundingClientRect().width,
     height: art.getBoundingClientRect().height,
   }))
-  expect(rankedMeasurements.width, 'mobile ranked artwork should be compact like poster shelves').toBeLessThanOrEqual(96)
-  expect(rankedMeasurements.height, 'mobile ranked cards should not retain desktop poster height').toBeLessThanOrEqual(144)
+  expect(rankedMeasurements.width, 'mobile ranked shelves should match the poster rail width').toBeGreaterThanOrEqual(100)
+  expect(rankedMeasurements.width).toBeLessThanOrEqual(124)
+  expect(rankedMeasurements.height, 'mobile ranked art should retain portrait poster proportions').toBeGreaterThanOrEqual(145)
+  expect(rankedMeasurements.height).toBeLessThanOrEqual(190)
   expect(measurements!.heroShelfGap).toBeLessThanOrEqual(9)
   expect(measurements!.continueUpcomingGap).toBeLessThanOrEqual(21)
   expect(measurements!.upcomingPosterHeadingGap).toBeLessThanOrEqual(21)
+  expect(measurements!.shelfGaps.every((gap) => gap <= 28), JSON.stringify(measurements!.shelfGaps)).toBe(true)
   expect(measurements!.upcomingControlHeights.every((height) => height >= 44)).toBe(true)
   expect(measurements!.horizontalOverflow).toBe(false)
 })
@@ -377,7 +423,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   if (discoveryLayout!.hero) {
     expect(discoveryLayout!.hero.left).toBeGreaterThanOrEqual(0)
     expect(discoveryLayout!.hero.right).toBeLessThanOrEqual(discoveryLayout!.viewport)
-    expect(discoveryLayout!.hero.height).toBeLessThanOrEqual(390)
+    expect(discoveryLayout!.hero.height).toBeLessThanOrEqual(450)
   }
 
   const episodeCardWidth = await page.evaluate(() => {

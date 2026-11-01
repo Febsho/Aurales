@@ -390,11 +390,11 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
                 onUnfocusItem={cinematic && !fixedHome ? handleCardUnfocus : undefined}
                 cinematicMode={cinematic && !fixedHome}
                 cinematicFocused={cinematic && focused}
-                cinematicExpand={cinematicExpand && homeCardAnimations && !fixedHome}
+                cinematicExpand={cinematicExpand && homeCardAnimations && !fixedHome && !isMobileWebViewport()}
                 fixedHome={fixedHome}
               />
               </div>
-              {fixedHome && homeCardAnimations && focused && <FixedShelfDetails item={item} />}
+              {fixedHome && homeCardAnimations && !isMobileWebViewport() && focused && <FixedShelfDetails item={item} />}
             </React.Fragment>
           )
         })}

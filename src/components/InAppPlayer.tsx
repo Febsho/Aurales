@@ -706,7 +706,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
           setPlayerNotice(AUTOPLAY_GESTURE_MESSAGE)
           return
         }
-        const message = 'The embedded WebView player could not start this stream.'
+        const message = 'The browser could not start this stream. Check that the source URL is still valid, then choose another source if playback does not begin.'
         setPaused(true)
         setError(message)
         playbackStartupRef.current.onPlaybackError?.(message, video.currentTime)
@@ -714,7 +714,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
     }, 50)
     const startupTimer = setTimeout(() => {
       if (!isCurrentRun() || playbackStartedRef.current || autoplayBlockedRef.current) return
-      const message = 'The embedded WebView player did not receive a playable video frame. Trying another stream…'
+      const message = 'No playable video frame arrived. Aurales is trying another source…'
       setLoading(false)
       setPaused(true)
       setError(message)
@@ -1009,7 +1009,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
           setPlayerNotice(AUTOPLAY_GESTURE_MESSAGE)
           return
         }
-        setError('The embedded WebView player could not start this stream. Pick another stream if this does not retry.')
+        setError('Browser playback could not start. Check the stream URL or choose another source.')
       })
     } else {
       video.pause()
@@ -1528,8 +1528,15 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
               // that gesture on iPhone and iPad.
               if (isAppleMobile && video.webkitEnterFullscreen) { video.webkitEnterFullscreen(); return }
               if (document.fullscreenElement) { void document.exitFullscreen(); return }
-              if (video.requestFullscreen) { void video.requestFullscreen().catch(() => video.webkitEnterFullscreen?.()); return }
-              video.webkitEnterFullscreen?.()
+              if (video.requestFullscreen) {
+                void video.requestFullscreen().catch(() => {
+                  if (video.webkitEnterFullscreen) video.webkitEnterFullscreen()
+                  else setPlayerNotice('Full screen is not available in this browser for the current stream.')
+                })
+                return
+              }
+              if (video.webkitEnterFullscreen) { video.webkitEnterFullscreen(); return }
+              setPlayerNotice('Full screen is not available in this browser for the current stream.')
             }} aria-label="Full screen" title="Full screen" className="grid h-11 w-11 place-items-center rounded-lg text-white/75 hover:bg-white/10 hover:text-white">
               <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 00-2 2v3M16 3h3a2 2 0 012 2v3M8 21H5a2 2 0 01-2-2v-3M16 21h3a2 2 0 002-2v-3" /></svg>
             </button>

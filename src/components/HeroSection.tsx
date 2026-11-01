@@ -559,6 +559,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
       ref={heroRef}
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
+      data-hero-compact={isSmall || undefined}
       className={`relative overflow-hidden select-none group ${cinematic && fixed && !isSmall ? 'fixed-cinematic-hero' : ''} ${cinematic && !isSmall ? 'home-hero home-hero--inset' : 'w-full'} ${cinematic && !isSmall && usesTopNav ? 'home-hero--under-nav' : ''} ${cinematic && !isSmall && !usesTopNav ? 'mt-8' : ''} ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
       style={{ height: heroHeight, touchAction: count > 1 ? 'pan-y' : undefined }}
     >

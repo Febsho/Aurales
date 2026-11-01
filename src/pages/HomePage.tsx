@@ -611,7 +611,7 @@ function DiscoverRow({ row, headerLeftControls, headerRightControls }: { row: Ho
   )
 }
 
-function HeroCatalogSection({ row, heroMode, onBackdropChange, focusedItem }: { row: HomeRowConfig; heroMode: 'dynamic' | 'fixed' | 'disabled'; onBackdropChange?: (url: string | undefined) => void; focusedItem?: SearchResult | null }) {
+function HeroCatalogSection({ row, heroMode, onBackdropChange, focusedItem, compactViewport = false }: { row: HomeRowConfig; heroMode: 'dynamic' | 'fixed' | 'disabled'; onBackdropChange?: (url: string | undefined) => void; focusedItem?: SearchResult | null; compactViewport?: boolean }) {
   const memCacheGet = useHomeCatalogCache((state) => state.get)
   const memCacheSet = useHomeCatalogCache((state) => state.set)
   const addons = useAppStore((s) => s.addons)
@@ -741,7 +741,7 @@ function HeroCatalogSection({ row, heroMode, onBackdropChange, focusedItem }: { 
     if (focusedItem?.backdrop && focusedItem.backdrop !== focusedItem.poster) heroItems = [focusedItem]
   }
   if (heroItems.length === 0) return null
-  return <div data-home-hero><HeroSection items={heroItems} fixed={heroMode === 'fixed'} enableTrailers onActiveBackdropChange={onBackdropChange} onActiveImageSettled={markHeroImageSettled} /></div>
+  return <div data-home-hero><HeroSection items={heroItems} isSmall={compactViewport} fixed={heroMode === 'fixed'} enableTrailers={!compactViewport} onActiveBackdropChange={onBackdropChange} onActiveImageSettled={markHeroImageSettled} /></div>
 }
 
 // ── Staggered row renderer ─────────────────────────────────────────────────
@@ -859,7 +859,7 @@ function StaggeredRows({ rows, isEditing, onRemove, fixed = false, activeIndex =
   }, [])
 
   return (
-    <div className="space-y-4">
+    <div className="home-shelf-row-list">
       {rows.map((row, idx) => (
         <LazyRow
           key={row.id}
@@ -1159,7 +1159,7 @@ export default function HomePage() {
   );
 
   return (
-    <div ref={homeRootRef} data-home-card-motion={homeCardAnimations ? 'on' : 'off'} data-home-presentation={presentationHeroMode} className={`pb-12 relative ${presentationHeroMode === 'fixed' && !isEditing ? 'fixed-hero-home' : ''} ${presentationHeroMode === 'disabled' && usesTopNav ? 'pt-24' : ''}`}>
+    <div ref={homeRootRef} data-home-card-motion={homeCardAnimations && !isCompactViewport ? 'on' : 'off'} data-home-presentation={presentationHeroMode} className={`pb-12 relative ${presentationHeroMode === 'fixed' && !isEditing ? 'fixed-hero-home' : ''} ${presentationHeroMode === 'disabled' && usesTopNav ? 'pt-24' : ''}`}>
 
       <CatalogKeyNotice />
 
@@ -1174,7 +1174,7 @@ export default function HomePage() {
         </div>
       )}
 
-      {heroRow && presentationHeroMode !== 'disabled' && <HeroCatalogSection row={heroRow} heroMode={presentationHeroMode} focusedItem={focusedHeroItem} onBackdropChange={handleBackdropChange} />}
+      {heroRow && presentationHeroMode !== 'disabled' && <HeroCatalogSection row={heroRow} heroMode={presentationHeroMode} focusedItem={focusedHeroItem} compactViewport={isCompactViewport} onBackdropChange={handleBackdropChange} />}
 
       {activeRows.length === 0 && !heroRow ? (
         <EmptyState

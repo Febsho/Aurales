@@ -12,6 +12,7 @@ import { cardArtworkUrl } from '../services/mediaPresentation'
 import { nativeTrailerPlayerSupported } from '../services/player'
 import { useVisibilityOnce } from '../hooks/useVisibilityOnce'
 import { ensurePosterProgress, getPosterProgressSnapshot, subscribePosterProgress } from '../services/posterProgress'
+import { isMobileWebViewport } from '../platform/mobileWeb'
 
 const TrailerPreview = React.lazy(() => import('./TrailerPreview'))
 const HeroMpvTrailer = React.lazy(() => import('./HeroMpvTrailer'))
@@ -128,7 +129,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   // artwork-rich catalog items does not fan out into dozens of requests.
   const [detailIntent, setDetailIntent] = useState(false)
   const posterSize = useAppStore((s) => s.posterSize)
-  const homeCardAnimations = useAppStore((s) => s.homeCardAnimations)
+  const homeCardAnimations = useAppStore((s) => s.homeCardAnimations) && !isMobileWebViewport()
   const compactSpecialLayouts = useAppStore((s) => s.interfaceTheme) === 'default'
   const showRatingsOnCards = useAppStore((s) => s.showRatingsOnCards)
   const showGenreOnCards = useAppStore((s) => s.showGenreOnCards)

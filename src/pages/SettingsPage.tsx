@@ -2215,9 +2215,9 @@ export default function SettingsPage() {
                     ]}
                   />
                 </SettingRow>}
-                <SettingRow label="Card focus animations" description="Animate focused-card expansion in Dynamic Banner and the artwork/detail handoff in Fixed Focus.">
+                {!mobileWeb && <SettingRow label="Card focus animations" description="Animate focused-card expansion in Dynamic Banner and the artwork/detail handoff in Fixed Focus.">
                   <SettingToggle checked={store.homeCardAnimations} onChange={(enabled) => store.setHomeCardAnimations(enabled)} />
-                </SettingRow>
+                </SettingRow>}
               </SettingSection>
 
               {/* Card overlays */}
