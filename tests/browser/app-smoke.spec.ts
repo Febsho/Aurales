@@ -274,3 +274,107 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
   expect(measurements!.upcomingControlHeights.every((height) => height >= 44)).toBe(true)
   expect(measurements!.horizontalOverflow).toBe(false)
 })
+
+test('mobile Discover and movie details keep text, hero and controls within the viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_app_managed_metadata', 'false')
+    if (location.pathname === '/movie/mobile-layout-fixture') {
+      history.replaceState({
+        usr: {
+          title: 'A Long Mobile Fixture Title That Must Wrap Without Colliding',
+          year: 2026,
+          overview: 'A short fixture description used to verify that title, metadata, actions, and backdrop remain comfortably arranged on a phone screen.',
+          rating: 8.2,
+          poster: 'https://image.tmdb.org/t/p/w500/mobile-poster.jpg',
+          backdrop: 'https://image.tmdb.org/t/p/original/mobile-backdrop.jpg',
+        },
+        key: 'mobile-layout-fixture',
+        idx: 0,
+      }, '', location.href)
+    }
+  })
+
+  await page.goto('/movie/mobile-layout-fixture')
+  await page.getByRole('button', { name: /select profile/i }).click()
+  const detail = page.locator('.detail-page--movie')
+  await expect(detail).toBeVisible()
+  const detailLayout = await page.evaluate(() => {
+    const hero = document.querySelector<HTMLElement>('.detail-page--movie .detail-hero-panel')
+    const title = document.querySelector<HTMLElement>('.detail-page--movie .detail-hero-panel__title')
+    const overview = document.querySelector<HTMLElement>('.detail-page--movie .detail-hero-overview')
+    const actions = document.querySelector<HTMLElement>('.detail-page--movie .detail-hero-actions')
+    const nav = document.querySelector<HTMLElement>('.mobile-web-nav')
+    if (!hero || !title || !overview || !actions || !nav) return null
+    const rect = (element: HTMLElement) => {
+      const value = element.getBoundingClientRect()
+      return { left: value.left, right: value.right, top: value.top, bottom: value.bottom, width: value.width, height: value.height }
+    }
+    return {
+      viewport: document.documentElement.clientWidth,
+      document: document.documentElement.scrollWidth,
+      hero: rect(hero), title: rect(title), overview: rect(overview), actions: rect(actions), nav: rect(nav),
+    }
+  })
+  expect(detailLayout).not.toBeNull()
+  expect(detailLayout!.document).toBeLessThanOrEqual(detailLayout!.viewport + 1)
+  expect(detailLayout!.hero.height).toBeLessThanOrEqual(600)
+  for (const element of [detailLayout!.title, detailLayout!.overview, detailLayout!.actions]) {
+    expect(element.left).toBeGreaterThanOrEqual(-1)
+    expect(element.right).toBeLessThanOrEqual(detailLayout!.viewport + 1)
+  }
+  expect(detailLayout!.overview.top).toBeGreaterThanOrEqual(detailLayout!.title.bottom - 1)
+  expect(detailLayout!.actions.top).toBeGreaterThanOrEqual(detailLayout!.overview.bottom - 1)
+  expect(detailLayout!.nav.bottom).toBeLessThanOrEqual(845)
+
+  await page.getByRole('link', { name: 'Discover' }).click()
+  await expect(page.locator('.discover-page')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Discover' })).toBeVisible()
+  const discoveryLayout = await page.evaluate(() => {
+    const viewport = document.documentElement.clientWidth
+    const heading = document.querySelector<HTMLElement>('.discover-page__heading')
+    const tabs = document.querySelector<HTMLElement>('.discover-page__tabs')
+    const modes = document.querySelector<HTMLElement>('.discover-page__modes')
+    const hero = document.querySelector<HTMLElement>('.discover-hero')
+    if (!heading || !tabs || !modes) return null
+    const contained = (element: HTMLElement) => {
+      const bounds = element.getBoundingClientRect()
+      return bounds.left >= -1 && bounds.right <= viewport + 1
+    }
+    return {
+      viewport,
+      document: document.documentElement.scrollWidth,
+      headingFits: contained(heading),
+      tabsFit: contained(tabs),
+      modesFit: contained(modes),
+      hero: hero ? {
+        width: hero.getBoundingClientRect().width,
+        height: hero.getBoundingClientRect().height,
+        left: hero.getBoundingClientRect().left,
+        right: hero.getBoundingClientRect().right,
+      } : null,
+    }
+  })
+  expect(discoveryLayout).not.toBeNull()
+  expect(discoveryLayout!.document).toBeLessThanOrEqual(discoveryLayout!.viewport + 1)
+  expect(discoveryLayout!.headingFits).toBe(true)
+  expect(discoveryLayout!.tabsFit).toBe(true)
+  expect(discoveryLayout!.modesFit).toBe(true)
+  if (discoveryLayout!.hero) {
+    expect(discoveryLayout!.hero.left).toBeGreaterThanOrEqual(0)
+    expect(discoveryLayout!.hero.right).toBeLessThanOrEqual(discoveryLayout!.viewport)
+    expect(discoveryLayout!.hero.height).toBeLessThanOrEqual(390)
+  }
+
+  const episodeCardWidth = await page.evaluate(() => {
+    const fixture = document.createElement('div')
+    fixture.className = 'detail-page'
+    fixture.innerHTML = '<div class="detail-episodes-section"><div class="detail-episode-track"><button class="episode-showcase-card">Episode</button></div></div>'
+    document.querySelector('.app-theme-shell')!.append(fixture)
+    const card = fixture.querySelector<HTMLElement>('.episode-showcase-card')!
+    const width = card.getBoundingClientRect().width
+    fixture.remove()
+    return width
+  })
+  expect(episodeCardWidth, 'phone episode cards should stay compact and horizontally browsable').toBeLessThanOrEqual(280)
+})
