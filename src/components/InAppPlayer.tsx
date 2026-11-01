@@ -1454,7 +1454,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
         <PlayerChatOverlay visible={controlsVisible} onInteraction={showControlsTemporarily} />
       )}
 
-      {loading && (
+      {loading && !error && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="flex flex-col items-center gap-4">
             <div className="w-12 h-12 border-2 border-white/80 border-t-transparent rounded-full animate-spin" />
