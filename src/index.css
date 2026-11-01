@@ -5102,18 +5102,11 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .discover-page__heading > div:first-child { align-items: flex-start; gap: .75rem; }
   html[data-runtime-platform="web"] .discover-page__heading h1 { font-size: 2rem; line-height: 1.05; }
   html[data-runtime-platform="web"] .discover-page__heading p { margin-top: .4rem; line-height: 1.35rem; }
-  html[data-runtime-platform="web"] .discover-page__tabs { margin-top: .9rem; width: 100%; }
+  html[data-runtime-platform="web"] .discover-page__tabs { margin-top: 0; width: 100%; }
   html[data-runtime-platform="web"] .discover-page__tabs button { min-height: 2.75rem; padding-inline: .75rem; font-size: .78rem; }
   html[data-runtime-platform="web"] .discover-page__heading > span { font-size: .65rem; }
-  html[data-runtime-platform="web"] .discover-page__modes {
-    display: flex; flex-wrap: nowrap; gap: .5rem; margin-bottom: .75rem; padding-inline: .875rem;
-    overflow-x: auto; overscroll-behavior-inline: contain; -webkit-overflow-scrolling: touch;
-    scrollbar-width: none; scroll-snap-type: x proximity;
-  }
-  html[data-runtime-platform="web"] .discover-page__modes::-webkit-scrollbar { display: none; }
-  html[data-runtime-platform="web"] .discover-page__modes button {
-    flex: 0 0 auto; min-height: 2.75rem; padding-inline: .8rem; font-size: .7rem; scroll-snap-align: start;
-  }
+  html[data-runtime-platform="web"] .discover-page__controls { gap: .5rem; }
+  html[data-runtime-platform="web"] .discover-mode-menu { min-height: 2.75rem; }
   html[data-runtime-platform="web"] .discover-hero { min-height: 440px !important; margin: 0 .875rem .75rem !important; border-radius: 1rem !important; }
   html[data-runtime-platform="web"] .discover-hero__gradient { background-image: linear-gradient(to top, rgba(0,0,0,.96), rgba(0,0,0,.68) 46%, rgba(0,0,0,.1)) !important; }
   html[data-runtime-platform="web"] .discover-hero > div.relative { min-height: 440px !important; max-width: none; padding: .9rem !important; }
@@ -5271,13 +5264,19 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-page__notice { padding: 1rem var(--discover-gutter) 0 !important; }
 .discover-page__heading { padding: 1rem var(--discover-gutter) .75rem !important; }
 .discover-page__heading > div:first-child { gap: 1rem; }
-.discover-page__heading h1 { font-size: clamp(1.8rem, 3vw, 2.8rem) !important; line-height: 1.08; }
-.discover-page__heading p { margin-top: .4rem !important; font-size: .9rem; line-height: 1.4; }
-.discover-page__heading > span { padding: .55rem .8rem; font-size: .72rem; }
-.discover-page__tabs { width: fit-content; max-width: 100%; margin-top: 1.1rem !important; }
+.discover-page__heading h1 { font-size: clamp(1.8rem, 3vw, 2.6rem) !important; line-height: 1.08; }
+.discover-page__heading p { margin-top: .4rem !important; font-size: .88rem; line-height: 1.4; }
+.discover-page__heading > span { padding: .5rem .75rem; font-size: .7rem; }
+.discover-page__controls { display: flex; align-items: center; gap: .75rem; margin: .9rem var(--discover-gutter) .75rem; }
+.discover-page__tabs { width: fit-content; max-width: 100%; flex: 1 1 auto; margin: 0 !important; }
 .discover-page__tabs button { min-height: 2.7rem; padding-inline: 1.15rem; }
-.discover-page__modes { gap: .5rem; margin: 0 var(--discover-gutter) 1rem !important; padding: .15rem 0 .5rem !important; }
-.discover-page__modes button { min-height: 2.65rem; padding: .55rem .95rem; font-size: .74rem; }
+.discover-surprise-trigger { flex: 0 0 auto; min-height: 2.7rem; margin: 0; }
+.discover-page__modes { margin: 0 var(--discover-gutter) 1rem !important; padding: 0 !important; }
+.discover-mode-menu { position: relative; display: inline-grid; min-height: 2.7rem; grid-template-columns: auto minmax(0, 13rem) auto; align-items: center; gap: .65rem; padding: .35rem .7rem .35rem .9rem; border: 1px solid rgba(255,255,255,.12); border-radius: .85rem; background: rgba(255,255,255,.055); color: rgba(255,255,255,.55); }
+.discover-mode-menu > span { font-size: .75rem; font-weight: 600; }
+.discover-mode-menu select { width: 100%; min-width: 0; min-height: 2rem; appearance: none; border: 0; outline: 0; background: transparent; color: white; font: inherit; font-size: .82rem; font-weight: 650; cursor: pointer; }
+.discover-mode-menu select option { background: #19191d; color: white; }
+.discover-mode-menu > svg { pointer-events: none; color: rgba(255,255,255,.65); }
 .discover-spotlight {
   position: relative;
   display: grid;
@@ -5450,10 +5449,13 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-page__heading h1 { font-size: 1.65rem !important; }
   .discover-page__heading p { font-size: .78rem; line-height: 1.25rem; }
   .discover-page__heading > span { padding: .4rem .55rem; font-size: .62rem; }
-  .discover-page__tabs { width: 100%; margin-top: .75rem !important; padding: .25rem !important; }
+  .discover-page__controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .45rem; margin-top: .7rem; }
+  .discover-page__tabs { width: 100%; min-width: 0; padding: .25rem !important; }
   .discover-page__tabs button { flex: 1 1 0; min-width: 0; min-height: 44px; padding-inline: .5rem !important; font-size: .74rem !important; }
+  .discover-surprise-trigger { min-height: 44px; gap: .35rem; padding-inline: .65rem; font-size: .69rem; }
   .discover-page__modes { margin-bottom: .8rem !important; }
-  .discover-page__modes button { min-height: 44px; padding-inline: .75rem; font-size: .68rem; }
+  .discover-mode-menu { display: grid; width: min(100%, 22rem); min-height: 44px; grid-template-columns: auto minmax(0, 1fr) auto; padding: .25rem .7rem; }
+  .discover-mode-menu select { min-height: 40px; font-size: .78rem; }
   .discover-spotlight { min-height: 14.5rem; margin-bottom: 1.2rem; padding: 1rem; grid-template-columns: minmax(0, 1fr) 6.2rem; gap: .8rem; border-radius: 1.1rem; }
   .discover-spotlight__ambient img { opacity: .18; filter: blur(12px); }
   .discover-spotlight__ambient::after { background: linear-gradient(90deg, rgba(16,16,19,.96), rgba(16,16,19,.86) 65%, rgba(16,16,19,.64)); }

@@ -459,9 +459,10 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     const heading = document.querySelector<HTMLElement>('.discover-page__heading')
     const tabs = document.querySelector<HTMLElement>('.discover-page__tabs')
     const modes = document.querySelector<HTMLElement>('.discover-page__modes')
+    const modeSelect = modes?.querySelector<HTMLSelectElement>('select')
     const hero = document.querySelector<HTMLElement>('.discover-spotlight')
     const poster = document.querySelector<HTMLElement>('.discover-spotlight__poster')
-    if (!heading || !tabs || !modes) return null
+    if (!heading || !tabs || !modes || !modeSelect) return null
     const contained = (element: HTMLElement) => {
       const bounds = element.getBoundingClientRect()
       return bounds.left >= -1 && bounds.right <= viewport + 1
@@ -472,10 +473,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       headingFits: contained(heading),
       tabsFit: contained(tabs),
       modesFit: contained(modes),
-      modeButtons: modes ? Array.from(modes.querySelectorAll<HTMLButtonElement>('button'), (button) => {
-        const bounds = button.getBoundingClientRect()
-        return { left: bounds.left, right: bounds.right, height: bounds.height }
-      }) : [],
+      modeMenu: { height: modeSelect.closest('label')!.getBoundingClientRect().height, options: modeSelect.options.length, value: modeSelect.value },
       hero: hero ? {
         width: hero.getBoundingClientRect().width,
         height: hero.getBoundingClientRect().height,
@@ -491,11 +489,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(discoveryLayout!.headingFits).toBe(true)
   expect(discoveryLayout!.tabsFit).toBe(true)
   expect(discoveryLayout!.modesFit).toBe(true)
-  expect(discoveryLayout!.modeButtons.length).toBeGreaterThan(1)
-  expect(discoveryLayout!.modeButtons.every((button) => button.height >= 44), JSON.stringify(discoveryLayout!.modeButtons)).toBe(true)
-  for (let index = 1; index < discoveryLayout!.modeButtons.length; index += 1) {
-    expect(discoveryLayout!.modeButtons[index]!.left).toBeGreaterThanOrEqual(discoveryLayout!.modeButtons[index - 1]!.right + 3)
-  }
+  expect(discoveryLayout!.modeMenu.options).toBe(6)
+  expect(discoveryLayout!.modeMenu.height).toBeGreaterThanOrEqual(44)
+  await expect(page.getByRole('combobox', { name: 'Browse recommendations' })).toHaveValue('for-you')
   if (discoveryLayout!.hero) {
     expect(discoveryLayout!.hero.left).toBeGreaterThanOrEqual(0)
     expect(discoveryLayout!.hero.right).toBeLessThanOrEqual(discoveryLayout!.viewport)

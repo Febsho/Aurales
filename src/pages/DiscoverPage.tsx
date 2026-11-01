@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { RefreshCw, RotateCcw, Search, Shuffle, X } from 'lucide-react'
+import { ChevronDown, RefreshCw, RotateCcw, Search, Shuffle, X } from 'lucide-react'
 import type { DiscoverConfig, SearchResult, WatchProgress } from '../types'
 import { discoverTmdbWithCache, getTmdbPerson, tmdbProvider } from '../services/tmdb'
 import MediaRow from '../components/MediaRow'
@@ -116,6 +116,15 @@ const DISCOVERY_SECTION_TITLES: Record<string, string> = {
   new: 'Recently Released',
   critics: 'Critically Acclaimed',
 }
+
+const DISCOVERY_MODES = [
+  ['for-you', 'Recommended'],
+  ['new', 'Something New'],
+  ['hidden-gems', 'Hidden Gems'],
+  ['critically-acclaimed', 'Critically Acclaimed'],
+  ['recently-released', 'Recently Released'],
+  ['quick-watch', 'Quick Watch'],
+] as const
 
 function readDiscoveryPicks(key: string): string[] {
   try {
@@ -967,30 +976,32 @@ export default function DiscoverPage() {
           <span className="rounded-full border border-white/[0.09] bg-white/[0.035] px-4 py-2 text-xs font-medium text-white/50">Daily picks <span className="mx-1.5 text-white/20">·</span> {region} <span className="mx-1.5 text-white/20">·</span> {minRating > 0 ? `${minRating}+ rating` : 'All ratings'}</span>
         </div>
 
-        <div className="discover-page__tabs mt-8 inline-flex max-w-full gap-1 overflow-x-auto rounded-2xl border border-white/[.08] bg-white/[.035] p-1.5">
-          {(['movies', 'series', 'anime'] as DiscoverTab[]).map((item) => (
-            <button
-              key={item}
-              onClick={() => handleTabChange(item)}
-              className={`whitespace-nowrap rounded-xl px-5 py-2.5 text-sm font-semibold transition-all cursor-pointer ${
-                tab === item
-                  ? 'bg-white text-black shadow-lg shadow-black/20'
-                  : 'text-white/55 hover:bg-white/[.06] hover:text-white'
-              }`}
-            >
-              {item === 'movies' ? 'Movies' : item === 'series' ? 'Series' : 'Anime'}
-            </button>
-          ))}
+        <div className="discover-page__controls">
+          <div className="discover-page__tabs mt-8 inline-flex max-w-full gap-1 overflow-x-auto rounded-2xl border border-white/[.08] bg-white/[.035] p-1.5">
+            {(['movies', 'series', 'anime'] as DiscoverTab[]).map((item) => (
+              <button
+                key={item}
+                onClick={() => handleTabChange(item)}
+                className={`whitespace-nowrap rounded-xl px-5 py-2.5 text-sm font-semibold transition-all cursor-pointer ${
+                  tab === item
+                    ? 'bg-white text-black shadow-lg shadow-black/20'
+                    : 'text-white/55 hover:bg-white/[.06] hover:text-white'
+                }`}
+              >
+                {item === 'movies' ? 'Movies' : item === 'series' ? 'Series' : 'Anime'}
+              </button>
+            ))}
+          </div>
+          <button className="discover-surprise-trigger" type="button" onClick={() => { setPickerOpen(true); spinPicker() }} disabled={!pickerPool.length}>
+            <Shuffle size={16} aria-hidden="true" /> Surprise Me
+          </button>
         </div>
-        <button className="discover-surprise-trigger" type="button" onClick={() => { setPickerOpen(true); spinPicker() }} disabled={!pickerPool.length}>
-          <Shuffle size={16} aria-hidden="true" /> Surprise Me
-        </button>
       </div>
 
       <>
 
-          <div className="discover-page__modes mb-7 flex gap-2 overflow-x-auto px-6 pb-1 md:px-10" aria-label="Browse recommendations">
-            {([['for-you','Recommended'],['new','Something New'],['hidden-gems','Hidden Gems'],['critically-acclaimed','Critically Acclaimed'],['recently-released','Recently Released'],['quick-watch','Quick Watch']] as const).map(([value,label]) => <button key={value} onClick={() => changeMode(value)} className={`focus-ring flex-none whitespace-nowrap rounded-full border px-4 py-2 text-xs font-semibold transition-colors ${mode === value ? 'border-white bg-white text-black' : 'border-white/10 bg-transparent text-white/55 hover:border-white/25 hover:text-white'}`}>{label}</button>)}
+          <div className="discover-page__modes" aria-label="Browse recommendations">
+            <label className="discover-mode-menu"><span>Browse</span><select aria-label="Browse recommendations" value={mode} onChange={(event) => changeMode(event.target.value as DiscoveryMode)}>{DISCOVERY_MODES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><ChevronDown size={16} aria-hidden="true" /></label>
           </div>
           {viewState==='content'&&heroRecommendation ? <section className="discover-spotlight">
             <div className="discover-spotlight__ambient" aria-hidden="true">{heroRecommendation.item.backdrop && <img src={heroRecommendation.item.backdrop} alt="" draggable={false} decoding="async" />}</div>
