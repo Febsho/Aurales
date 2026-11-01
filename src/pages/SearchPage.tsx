@@ -21,7 +21,9 @@ const DEFAULT_SEARCH_ENGINES = {
 }
 const STANDALONE_FALLBACK_ENGINES = {
   movie: ['cinemeta'] as SearchEngineId[],
-  series: ['cinemeta', 'tvmaze'] as SearchEngineId[],
+  // Search TMDB alongside TVDB. TVDB stays the primary metadata source, but
+  // a search should still find common titles when its TVDB index is sparse.
+  series: ['tmdb', 'cinemeta', 'tvmaze'] as SearchEngineId[],
 }
 
 function loadSearchHistory(): string[] {

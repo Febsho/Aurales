@@ -87,4 +87,25 @@ describe('non-anime metadata provider operation', () => {
     expect(loadDetailPageMock).toHaveBeenNthCalledWith(3, 'tmdb', 'tmdb-7', expect.any(Object))
     expect(result).toMatchObject({ sourceMetadataProvider: 'tvdb', poster: 'tmdb-poster', backdrop: 'tmdb-backdrop', logo: 'tmdb-logo', overview: 'TMDB overview', rating: 8 })
   })
+
+  it('keeps TVDB primary but resolves the title from TMDB when TVDB has no match', async () => {
+    settings = { seriesMetadataSource: 'tvdb', seriesMetadataFallback: true }
+    loadDetailPageMock
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(tmdbShow)
+
+    await fetchAppProviderMetadata(input, ids, 'show')
+
+    expect(loadDetailPageMock).toHaveBeenNthCalledWith(1, 'tvdb', 'tvdb-9', expect.any(Object))
+    expect(loadDetailPageMock).toHaveBeenNthCalledWith(2, 'tmdb', 'tmdb-7', expect.any(Object))
+  })
+
+  it('respects an explicit opt-out of the TMDB fallback', async () => {
+    settings = { seriesMetadataSource: 'tvdb', seriesMetadataFallback: false }
+    loadDetailPageMock.mockResolvedValue(null)
+
+    await expect(fetchAppProviderMetadata(input, ids, 'show')).resolves.toBeNull()
+    expect(loadDetailPageMock).toHaveBeenCalledTimes(1)
+    expect(loadDetailPageMock).toHaveBeenCalledWith('tvdb', 'tvdb-9', expect.any(Object))
+  })
 })

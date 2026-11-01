@@ -47,6 +47,11 @@ function loadNumberOption(key: string, fallback: number, options: readonly numbe
   return options.includes(value) ? value : fallback
 }
 
+function loadStoredBoolean(key: string, fallback: boolean): boolean {
+  const stored = localStorage.getItem(key)
+  return stored == null ? fallback : stored === 'true'
+}
+
 function loadProfileNumberOption(key: string, fallback: number, options: readonly number[]): number {
   const raw = getProfileSetting(key)
   if (raw == null || raw.trim() === '') return fallback
@@ -1537,9 +1542,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   movieMetadataSource: 'tmdb',
   seriesMetadataSource: 'tvdb',
   animeMetadataSource: 'tvdb',
-  movieMetadataFallback: false,
-  seriesMetadataFallback: false,
-  animeMetadataFallback: false,
+  movieMetadataFallback: loadStoredBoolean('aurales_movie_meta_fb', false),
+  // TVDB remains the primary source. TMDB fills gaps for titles without a
+  // usable TVDB mapping, which is especially common in addon-free installs.
+  seriesMetadataFallback: loadStoredBoolean('aurales_series_meta_fb', true),
+  animeMetadataFallback: loadStoredBoolean('aurales_anime_meta_fb', true),
   enableCommunityRatings: localStorage.getItem('aurales_community_ratings') !== 'false',
   appManagedMetadata: localStorage.getItem('aurales_app_managed_metadata') !== 'false',
   useAddonMetadataFallback: localStorage.getItem('aurales_addon_metadata_fallback') !== 'false',

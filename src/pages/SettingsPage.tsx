@@ -2366,6 +2366,12 @@ export default function SettingsPage() {
                 <SettingRow label="Prefer TVDB season structure for anime" description="Anime uses TVDB-style seasons so episodes are not grouped into one giant season.">
                   <SettingToggle checked={store.preferTvdbAnimeSeasons} onChange={store.setPreferTvdbAnimeSeasons} />
                 </SettingRow>
+                <SettingRow label="Use TMDB when TVDB has no series match" description="TVDB stays preferred for series and anime seasons. TMDB supplies title details when a TVDB mapping or record is missing.">
+                  <SettingToggle checked={store.seriesMetadataFallback} onChange={store.setSeriesMetadataFallback} />
+                </SettingRow>
+                <SettingRow label="Use TMDB fallback for anime metadata" description="Keep TVDB season mapping when available; use TMDB details if TVDB cannot resolve the anime.">
+                  <SettingToggle checked={store.animeMetadataFallback} onChange={store.setAnimeMetadataFallback} />
+                </SettingRow>
                 <SettingRow label="Anime titles" description="English is preferred in Auto mode, followed by Romaji and native titles.">
                   <SelectMenu value={store.animeTitleLanguage} onChange={(event) => store.setAnimeTitleLanguage(event.target.value as typeof store.animeTitleLanguage)} className="w-48 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white">
                     <option value="auto">Auto</option>
