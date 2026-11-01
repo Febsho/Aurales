@@ -785,7 +785,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
   if (loading || (itemsCacheKey !== cwKey && !streamSelectorData)) {
     return (
-      <div className="mb-8 select-none">
+      <div data-home-row="continue-loading" className="cw-loading-home-row mb-8 select-none">
         <div className="flex items-center justify-between px-6 mb-4">
           <div className="flex items-center gap-2.5">
             {headerLeftControls}
@@ -807,7 +807,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
 
   if (((itemsCacheKey === cwKey || streamSelectorData) && error) || displayItems.length === 0) {
     return (
-      <div className="mb-8 select-none">
+      <div data-home-row="continue-empty" className="cw-empty-home-row mb-8 select-none">
         <div className="flex items-center justify-between px-6 mb-4">
           <div className="flex items-center gap-2.5">
             {headerLeftControls}

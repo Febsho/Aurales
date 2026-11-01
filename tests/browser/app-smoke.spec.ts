@@ -234,15 +234,27 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
   await expect(page.locator('[data-home-presentation="dynamic"] [data-home-hero]')).toBeVisible()
   const posterShelf = page.locator('[data-home-shelves] .media-row--poster .cinematic-row-track')
   await expect(posterShelf.locator('.media-row-card-slot').first()).toBeVisible()
+  const continueEmpty = page.locator('[data-home-shelves] [data-home-row="continue-empty"]')
+  const upcomingRow = page.locator('[data-home-shelves] [data-home-row="upcoming"]')
+  await expect(continueEmpty.locator('.cw-empty-state')).toBeVisible()
+  await expect(upcomingRow.locator('[data-home-upcoming-empty]')).toBeVisible()
 
   const measurements = await page.evaluate(() => {
     const hero = document.querySelector<HTMLElement>('[data-home-presentation="dynamic"] [data-home-hero] > div:first-child')
     const track = document.querySelector<HTMLElement>('[data-home-shelves] .media-row--poster .cinematic-row-track')
     const poster = document.querySelector<HTMLElement>('[data-home-shelves] .media-row--poster .cinematic-row-track .media-row-card-slot')
-    return hero && track && poster ? {
+    const posterHeader = poster?.closest('.media-row')?.querySelector<HTMLElement>(':scope > div:first-child')
+    const continueEmpty = document.querySelector<HTMLElement>('[data-home-shelves] [data-home-row="continue-empty"]')
+    const upcoming = document.querySelector<HTMLElement>('[data-home-shelves] [data-home-row="upcoming"]')
+    const upcomingControls = upcoming?.querySelectorAll<HTMLButtonElement>('button[aria-label^="Scroll upcoming"]')
+    return hero && track && poster && posterHeader && continueEmpty && upcoming && upcomingControls?.length === 2 ? {
       heroHeight: hero.getBoundingClientRect().height,
       gap: Number.parseFloat(getComputedStyle(track).gap),
       posterWidth: poster.getBoundingClientRect().width,
+      heroShelfGap: document.querySelector<HTMLElement>('[data-home-shelves]')!.getBoundingClientRect().top - hero.getBoundingClientRect().bottom,
+      continueUpcomingGap: upcoming.getBoundingClientRect().top - continueEmpty.getBoundingClientRect().bottom,
+      upcomingPosterHeadingGap: posterHeader.getBoundingClientRect().top - upcoming.getBoundingClientRect().bottom,
+      upcomingControlHeights: Array.from(upcomingControls, (button) => button.getBoundingClientRect().height),
       horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
     } : null
   })
@@ -251,6 +263,10 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
   expect(measurements!.heroHeight).toBeLessThanOrEqual(340)
   expect(measurements!.gap).toBeLessThanOrEqual(8)
   expect(measurements!.posterWidth).toBeGreaterThan(0)
-  expect(measurements!.posterWidth).toBeLessThanOrEqual(88)
+  expect(measurements!.posterWidth).toBeLessThanOrEqual(80)
+  expect(measurements!.heroShelfGap).toBeLessThanOrEqual(9)
+  expect(measurements!.continueUpcomingGap).toBeLessThanOrEqual(21)
+  expect(measurements!.upcomingPosterHeadingGap).toBeLessThanOrEqual(21)
+  expect(measurements!.upcomingControlHeights.every((height) => height >= 44)).toBe(true)
   expect(measurements!.horizontalOverflow).toBe(false)
 })

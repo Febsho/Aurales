@@ -93,12 +93,12 @@ export default function UpcomingHomeRow() {
   const visible = events.filter((event) => !prefs.hidden[event.id] && isReleaseInHorizon(event, prefs.horizonDays)).slice(0, 12)
   const scroll = (direction: number) => scrollRef.current?.scrollBy({ left: direction * Math.max(640, Math.floor(scrollRef.current.clientWidth * 0.85)), behavior: 'smooth' })
 
-  return <section className="mb-8">
-    <div className="mb-4 flex items-center justify-between px-6">
+  return <section data-home-row="upcoming" className="home-upcoming-row mb-8">
+    <div className="home-upcoming-header mb-4 flex items-center justify-between px-6">
       <div><h2 className="text-xl font-bold tracking-tight text-white">Upcoming</h2><p className="mt-0.5 text-xs text-white/45">Personalized releases in the next {prefs.horizonDays} days</p></div>
       <div className="flex items-center gap-3"><button onClick={() => navigate('/upcoming')} className="text-sm font-semibold text-white/65 hover:text-white">View all</button><button aria-label="Scroll upcoming left" onClick={() => scroll(-1)} className="rounded-full bg-white/[.08] p-2 text-white/75 hover:bg-white/[.14]">‹</button><button aria-label="Scroll upcoming right" onClick={() => scroll(1)} className="rounded-full bg-white/[.08] p-2 text-white/75 hover:bg-white/[.14]">›</button></div>
     </div>
-    {visible.length === 0 ? <div className="mx-6 rounded-xl border border-dashed border-white/[.12] bg-white/[.025] px-5 py-6 text-sm text-white/55">No releases are scheduled in the next {prefs.horizonDays} days for your tracked titles yet.</div> : <div ref={scrollRef} className="cw-track flex gap-4 overflow-x-auto px-6 pb-2" style={{ scrollbarWidth: 'none' }}>
+    {visible.length === 0 ? <div data-home-upcoming-empty className="mx-6 rounded-xl border border-dashed border-white/[.12] bg-white/[.025] px-5 py-6 text-sm text-white/55">No releases are scheduled in the next {prefs.horizonDays} days for your tracked titles yet.</div> : <div ref={scrollRef} className="cw-track flex gap-4 overflow-x-auto px-6 pb-2" style={{ scrollbarWidth: 'none' }}>
       {visible.map((event) => <button key={event.id} onClick={() => {
         const routeId = event.media.tmdbId ? `tmdb-${String(event.media.tmdbId).replace(/^tmdb[-:]/i, '')}` : event.media.id
         navigate(`/${event.media.type === 'movie' ? 'movie' : 'series'}/${routeId}`, { state: { ...event.media, backdrop: event.media.backdrop || event.artwork, poster: event.media.poster || event.artwork } })

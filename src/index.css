@@ -4572,6 +4572,74 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     height: clamp(280px, 36svh, 340px) !important;
   }
 
+  /* Use the Home viewport for catalogue content instead of stacking desktop
+     empty-state margins between the hero and the first poster shelf. */
+  [data-home-shelves] {
+    margin-top: .5rem !important;
+  }
+
+  [data-home-shelves] [data-fixed-hero-row] + [data-fixed-hero-row] {
+    margin-top: .25rem !important;
+  }
+
+  [data-home-shelves] [data-home-row="continue-empty"] {
+    margin-bottom: .25rem;
+  }
+
+  [data-home-shelves] [data-home-row="continue-loading"] {
+    margin-bottom: .25rem;
+  }
+
+  [data-home-shelves] [data-home-row="continue-loading"] > div:first-child {
+    margin-bottom: .5rem;
+  }
+
+  [data-home-shelves] [data-home-row="continue-loading"] > div:nth-child(2) {
+    gap: .5rem;
+    margin-top: 0;
+    padding: 0 .65rem .5rem;
+  }
+
+  [data-home-shelves] [data-home-row="continue-loading"] > div:nth-child(2) > :not(:first-child) {
+    display: none;
+  }
+
+  [data-home-shelves] [data-home-row="continue-loading"] > div:nth-child(2) > :first-child {
+    width: clamp(10rem, 52vw, 14rem);
+  }
+
+  [data-home-shelves] [data-home-row="continue-empty"] > div:first-child {
+    margin-bottom: .5rem;
+  }
+
+  [data-home-shelves] .cw-empty-state {
+    padding-block: .5rem;
+    font-size: .8rem;
+  }
+
+  [data-home-shelves] .home-upcoming-row {
+    margin-bottom: .25rem;
+  }
+
+  [data-home-shelves] .home-upcoming-header {
+    margin-bottom: .5rem;
+  }
+
+  [data-home-shelves] .media-row > div:first-child {
+    margin-bottom: .5rem !important;
+  }
+
+  [data-home-shelves] [data-home-upcoming-empty] {
+    padding: .5rem .75rem;
+    font-size: .75rem;
+    line-height: 1.2rem;
+  }
+
+  [data-home-shelves] .home-upcoming-row button[aria-label^="Scroll upcoming"] {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
   [data-home-shelves] .media-row {
     margin-bottom: .9rem;
   }
@@ -4596,7 +4664,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   }
 
   [data-home-shelves] .home-row-skeleton[data-layout="poster"] [data-home-skeleton-card] {
-    width: clamp(4.5rem, 19vw, 5.5rem);
+    width: clamp(4rem, 17vw, 5rem);
   }
 
   [data-home-shelves] .home-row-skeleton[data-layout="poster"] [data-home-skeleton-art] {
@@ -4628,7 +4696,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   }
 
   [data-home-shelves] .media-row--poster .cinematic-row-track > .media-row-card-slot {
-    width: clamp(4.5rem, 19vw, 5.5rem);
+    width: clamp(4rem, 17vw, 5rem);
   }
 
   [data-home-shelves] .media-row--poster .cinematic-row-track > .media-row-card-slot > button,
