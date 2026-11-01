@@ -45,7 +45,7 @@ test('shared layouts remain navigable on tablet and TV-sized viewports', async (
     expect(dimensions.height).toBe(viewport.height)
 
     const settingsLink = navigation.getByRole('link', { name: 'Settings' })
-    await settingsLink.focus()
+    await settingsLink.evaluate((link: HTMLAnchorElement) => link.focus({ preventScroll: true }))
     await expect(settingsLink).toBeFocused()
   }
 })

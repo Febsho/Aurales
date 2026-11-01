@@ -36,7 +36,7 @@ import { audioLanguageOrder, selectPreferredLanguageTrack, selectStartupSubtitle
 import { subtitleToVtt } from '../services/player/subtitleFormats'
 import { getPlatformCapabilities, isHlsUrl, togglePictureInPicture } from '../platform/capabilities'
 import { getHttpText } from '../platform/httpText'
-import { AUTOPLAY_GESTURE_MESSAGE, browserPlaybackFailureMessage, isAutoplayGestureError, isMediaSessionExpired } from '../services/player/browserPlayback'
+import { AUTOPLAY_GESTURE_MESSAGE, browserPlaybackFailureMessage, isAutoplayGestureError, isMediaSessionExpired, isPlaybackInterruptedError } from '../services/player/browserPlayback'
 import { createMediaSession, getMediaConversionStatus, getMediaWorkerCapabilities, getMediaWorkerConfig, startMediaConversion, type MediaConversionMode } from '../services/mediaWorker'
 
 interface InAppPlayerProps {
@@ -698,7 +698,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
         // The user can start playback while the initial autoplay request is
         // still pending. Ignore a late rejection once the video has produced
         // a frame; it belongs to the superseded play attempt, not this session.
-        if (!isCurrentRun() || playbackStartedRef.current || !video.paused) return
+        if (!isCurrentRun() || playbackStartedRef.current || !video.paused || isPlaybackInterruptedError(error)) return
         if (isAutoplayGestureError(error)) {
           autoplayBlockedRef.current = true
           setLoading(false)
@@ -1002,7 +1002,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
         // A prior play request can reject after this video has already started
         // (notably while HLS.js replaces the source through MediaSource). That
         // rejection must not turn working playback into a fatal player error.
-        if (playbackRun !== playbackRunRef.current || playbackStartedRef.current || !video.paused) return
+        if (playbackRun !== playbackRunRef.current || playbackStartedRef.current || !video.paused || isPlaybackInterruptedError(error)) return
         if (isAutoplayGestureError(error)) {
           autoplayBlockedRef.current = true
           setPaused(true)

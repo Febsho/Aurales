@@ -6,6 +6,11 @@ export function isAutoplayGestureError(error: unknown): boolean {
   return Boolean(error && typeof error === 'object' && 'name' in error && error.name === 'NotAllowedError')
 }
 
+/** A play request may be rejected after pause/load replaces its pending media operation. */
+export function isPlaybackInterruptedError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'name' in error && error.name === 'AbortError')
+}
+
 /** Worker session expiries are Unix seconds; use this to renew only expired sessions. */
 export function isMediaSessionExpired(expiresAt: number, nowSeconds = Date.now() / 1000): boolean {
   return Number.isFinite(expiresAt) && nowSeconds >= expiresAt
