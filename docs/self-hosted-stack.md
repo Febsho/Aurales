@@ -21,7 +21,7 @@ The private API key is not embedded in `dist-web` or sent to browsers.
 ## Start the complete stack
 
 ```sh
-git clone <your-aurales-repository-url> Aurales
+git clone --branch master https://github.com/Febsho/Aurales.git Aurales
 cd Aurales
 cp .env.docker.example .env
 openssl rand -hex 32
