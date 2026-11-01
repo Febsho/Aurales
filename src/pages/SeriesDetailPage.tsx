@@ -311,9 +311,9 @@ function artworkSettingsKey(): string {
 
 function seriesDetailCacheKeys(id: string | undefined, state: LocationState): string[] {
   const animeRoute = Boolean(state.isAnime || state.anilistId || state.malId || state.provider === 'anilist' || (id && /^(mal|anilist)[-:]/i.test(id)))
-  // Invalidate only anime entries that may contain Japanese TVDB prose. Keep
-  // the established v2 cache hot for ordinary shows.
-  const versions = animeRoute ? ['v10'] : ['v2', 'v10']
+  // v11 restores episodes that have valid TVDB metadata but no air date. Old
+  // cache entries may have persisted the resulting empty/incomplete season.
+  const versions = animeRoute ? ['v11'] : ['v2', 'v11']
   const cleanStateImdb = cleanId(state.imdbId)
   const cleanStateTmdb = cleanId(state.tmdbId)
   const cleanStateTvdb = cleanId(state.tvdbId)
@@ -372,7 +372,7 @@ async function readSeriesDetailCache(id: string | undefined, state: LocationStat
 }
 
 function writeSeriesDetailCache(id: string | undefined, state: LocationState, entry: SeriesDetailCacheEntry): void {
-  const settingsKey = `${entry.show.isAnime ? 'v10' : 'v2'}:${animeStructureSettingsKey()}:${artworkSettingsKey()}`
+  const settingsKey = `${entry.show.isAnime ? 'v11' : 'v2'}:${animeStructureSettingsKey()}:${artworkSettingsKey()}`
   const cleanShowId = cleanId(entry.show.id)
   const cleanShowImdb = cleanId(entry.show.imdbId)
   const cleanShowTmdb = cleanId(entry.show.tmdbId)
@@ -578,10 +578,13 @@ function processSeasons(seasons: ShowDetails['seasons'], isAnime = false): ShowD
 }
 
 function isReleasedEpisode(episode: SeasonDetails['episodes'][number]): boolean {
-  // No date means the episode has not been announced with a release date yet.
-  // It must not render as a blank, playable-looking episode card.
   const dateKey = episode.airDate?.slice(0, 10)
-  return Boolean(dateKey && isValidDateKey(dateKey) && dateKey <= localDateKey())
+  if (dateKey && isValidDateKey(dateKey)) return dateKey <= localDateKey()
+
+  // Providers often omit air dates for older TV/anime episodes. Keep episodes
+  // with real metadata; only drop truly empty placeholders. Future episodes
+  // with a valid date are still filtered above until their release.
+  return Boolean(episode.name?.trim() || episode.overview?.trim() || episode.still)
 }
 
 function rotateFallback<T>(items: T[], seed: string): T[] {
@@ -1187,12 +1190,12 @@ export default function SeriesDetailPage() {
         const cachedSeasonEpisodes = cached.selectedSeason == null
           ? undefined
           : cached.episodeMap[cached.selectedSeason]
-        // Cached details may outlive an episode's release date. Never restore
-        // a future or undated episode from disk as if it were playable.
-        const releasedCachedEpisodes = cachedSeasonEpisodes?.filter(isReleasedEpisode)
+        // Cached details may outlive an episode's release date. Keep the same
+        // release-date and placeholder rules as the live provider path.
+        const availableCachedEpisodes = cachedSeasonEpisodes?.filter(isReleasedEpisode)
         const cachedShow = cached.selectedSeason != null
           && cachedSeasonEpisodes?.length
-          && !releasedCachedEpisodes?.length
+          && !availableCachedEpisodes?.length
           ? { ...cached.show, seasons: cached.show.seasons.filter((season) => season.seasonNumber !== cached.selectedSeason) }
           : cached.show
         showRef.current = cachedShow
@@ -1205,14 +1208,14 @@ export default function SeriesDetailPage() {
         // selected season as well as the show shell; previously we returned
         // early with an empty season cache, forcing the page to wait again (or
         // render no episodes) despite already having the data on disk.
-        if (releasedCachedEpisodes?.length && cached.selectedSeason != null) {
+        if (availableCachedEpisodes?.length && cached.selectedSeason != null) {
           setDetailResolved(true)
           const seasonInfo = cachedShow.seasons.find((season) => season.seasonNumber === cached.selectedSeason)
           setSeasonCache({
             [cached.selectedSeason]: {
               seasonNumber: cached.selectedSeason,
               name: seasonInfo?.name || `Season ${cached.selectedSeason}`,
-              episodes: releasedCachedEpisodes,
+              episodes: availableCachedEpisodes,
             },
           })
           return
