@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { getMediaWorkerConfig, proxyAuralesSyncRequest } from '../mediaWorker'
 import type { SyncRecord } from './syncQueue'
+import { requestSyncEndpoint } from './apiTransport'
 
 const SYNC_BATCH_TIMEOUT_MS = 30_000
 const MAX_SYNC_RESPONSE_BYTES = 16 * 1024 * 1024
@@ -115,12 +116,12 @@ export async function runSyncBatch(
         if (!result.ok) throw new Error(`${input.mode === 'download' ? 'Download' : 'Sync'} failed (${result.status})`)
         return new Response(result.body, { status: 200, headers: { 'content-type': 'application/json' } })
       })
-      : await fetcher(`${input.endpoint.replace(/\/$/, '')}/v1/sync`, {
+      : await requestSyncEndpoint(input.endpoint, '/v1/sync', {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${input.accessToken}` },
         body,
         signal: controller.signal,
-      })
+      }, fetcher)
     if (!response.ok) throw new Error(`${input.mode === 'download' ? 'Download' : 'Sync'} failed (${response.status})`)
     return await readSyncResponse(response)
   } finally {

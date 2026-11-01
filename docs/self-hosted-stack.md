@@ -67,6 +67,13 @@ require both a configured worker and an allowlisted upstream host. FFmpeg is
 included in the worker image; the worker will report only the conversion modes
 supported by the included build.
 
+Local Vite web development and preview also provide a same-origin proxy for
+Aurales Sync, so `localhost` and private-LAN test origins do not need to be
+added to the hosted Sync server's CORS allow-list. For a production static web
+deployment without the integrated worker, the Sync server's `CORS_ORIGIN` must
+include that deployment's exact HTTPS origin. The integrated deployment above
+uses the worker relay after the instance service has been unlocked.
+
 ## Security and browser limits
 
 Treat `.env` as a server secret and expose only the Caddy web ports. Do not add

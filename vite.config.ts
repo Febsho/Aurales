@@ -4,6 +4,12 @@ import tailwindcss from '@tailwindcss/vite'
 import { readFileSync } from 'fs'
 
 const tauriConf = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf-8'))
+const auralesSyncProxy = {
+  target: 'https://sync.febsho.me',
+  changeOrigin: true,
+  secure: true,
+  rewrite: (path: string) => path.replace(/^\/__aurales_sync/, ''),
+}
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -14,7 +20,9 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    proxy: { '/__aurales_sync': auralesSyncProxy },
   },
+  preview: { proxy: { '/__aurales_sync': auralesSyncProxy } },
   envPrefix: ['VITE_', 'TAURI_'],
   build: {
     target: 'esnext',

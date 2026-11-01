@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { getMediaWorkerConfig, isIntegratedMediaWorkerBuild, isIntegratedMediaWorkerConnected, proxyAuralesSyncRequest } from '../mediaWorker'
 import { readBoundedResponseJson } from '../network/boundedResponse'
 import { DEFAULT_SYNC_ENDPOINT } from './auralesSync'
+import { requestSyncEndpoint } from './apiTransport'
 
 const MAX_SYNC_AUTH_RESPONSE_BYTES = 256 * 1024
 
@@ -58,7 +59,7 @@ export async function requestSyncAuth(action: 'register' | 'login', email: strin
         result = parseResponse(relayed.body, status)
         if (!relayed.ok) throw new Error(result.error || `Authentication failed (${status})`)
       } else {
-        const response = await fetch(`${DEFAULT_SYNC_ENDPOINT}${path}`, {
+        const response = await requestSyncEndpoint(DEFAULT_SYNC_ENDPOINT, path, {
           method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: controller.signal,
         })
         status = response.status

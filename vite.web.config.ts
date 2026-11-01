@@ -6,6 +6,12 @@ import { resolve } from 'node:path'
 
 const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }
 const root = process.cwd()
+const auralesSyncProxy = {
+  target: 'https://sync.febsho.me',
+  changeOrigin: true,
+  secure: true,
+  rewrite: (path: string) => path.replace(/^\/__aurales_sync/, ''),
+}
 
 export default defineConfig(({ command }) => ({
   configFile: false,
@@ -49,5 +55,6 @@ export default defineConfig(({ command }) => ({
     },
   ],
   build: { outDir: 'dist-web', emptyOutDir: true, target: 'esnext' },
-  server: { port: 5174, strictPort: true },
+  server: { port: 5174, strictPort: true, proxy: { '/__aurales_sync': auralesSyncProxy } },
+  preview: { proxy: { '/__aurales_sync': auralesSyncProxy } },
 }))
