@@ -1,4 +1,4 @@
-import { tvdbProvider } from '../tvdb'
+import { loadAnimeSeason } from './animeSeasonLoader'
 import { isLikelyJapaneseOnly } from './animeTitleResolver'
 import type { AppEpisode, AppSeason } from './types'
 import type { SeasonDetails } from '../../types'
@@ -82,14 +82,15 @@ export async function mapTvdbSeasons(
       // The open page awaits this mapping; paused background work must not
       // prevent its Promise.all from completing.
       const priority = 'interactive'
-      const getSeason = tvdbProvider.getSeason as (
-        showId: string,
-        seasonNumber: number,
-        requestPriority?: 'interactive' | 'background',
-      ) => Promise<SeasonDetails>
       recordDetailProviderRequest()
       const data = await settleWithin(
-        getSeason(`tvdb-${tvdbId}`, season.seasonNumber, priority),
+        loadAnimeSeason(tvdbId, season.seasonNumber, {
+          priority,
+          // Mapping may request adjacent seasons concurrently. Keep each
+          // native cancellation group scoped to its season so requests do not
+          // supersede one another while sharing the same loader/cache path.
+          cancelGroup: `detail:anime-season:map:${tvdbId}:${season.seasonNumber}`,
+        }),
         opts.requestTimeoutMs,
       )
       seasonsData.push({ season, data })

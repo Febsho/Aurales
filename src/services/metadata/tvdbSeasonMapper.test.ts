@@ -1,17 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { AppSeason } from './types'
 
-// Mock the tvdbProvider.getSeason so we don't need a real TVDB API call
-vi.mock('../tvdb', () => ({
-  tvdbProvider: {
-    getSeason: vi.fn(),
-  },
-}))
+// Mock the shared platform-aware loader so no native IPC or TVDB request runs.
+vi.mock('./animeSeasonLoader', () => ({ loadAnimeSeason: vi.fn() }))
 
 import { mapTvdbSeasons } from './tvdbSeasonMapper'
-import { tvdbProvider } from '../tvdb'
+import { loadAnimeSeason } from './animeSeasonLoader'
 
-const mockedGetSeason = vi.mocked(tvdbProvider.getSeason)
+const mockedGetSeason = vi.mocked(loadAnimeSeason)
 
 // Test fixture: multi-season anime with season 3 unreleased
 const SEASON_1_EPISODES = [
@@ -64,13 +60,31 @@ describe('mapTvdbSeasons', () => {
     }))
     const request = mapTvdbSeasons(123, [1, 2, 3, 4].map(n => makeSeasonSummary(n)), { prioritySeason: 3 })
     expect(mockedGetSeason).toHaveBeenCalledTimes(2)
-    expect(mockedGetSeason.mock.calls[0]).toEqual(['tvdb-123', 3, 'interactive'])
+    expect(mockedGetSeason.mock.calls[0]).toEqual([123, 3, {
+      priority: 'interactive',
+      cancelGroup: 'detail:anime-season:map:123:3',
+    }])
     releases.shift()!()
     await vi.waitFor(() => expect(mockedGetSeason).toHaveBeenCalledTimes(3))
     releases.shift()!()
     await vi.waitFor(() => expect(mockedGetSeason).toHaveBeenCalledTimes(4))
     for (const release of releases) release()
     await request
+  })
+
+  it('uses distinct cancellation groups for concurrent season requests', async () => {
+    mockedGetSeason.mockImplementation(async (_id, season) => ({
+      seasonNumber: season,
+      name: `Season ${season}`,
+      episodes: [{ id: `${season}-1`, seasonNumber: season, episodeNumber: 1, name: `S${season}E1`, airDate: '2020-01-01' }],
+    }))
+
+    await mapTvdbSeasons(42, [makeSeasonSummary(1), makeSeasonSummary(2)])
+
+    expect(mockedGetSeason.mock.calls.map(([, season, options]) => [season, options?.cancelGroup])).toEqual([
+      [1, 'detail:anime-season:map:42:1'],
+      [2, 'detail:anime-season:map:42:2'],
+    ])
   })
 
   beforeEach(() => {
@@ -92,7 +106,7 @@ describe('mapTvdbSeasons', () => {
   })
 
   it('preserves TVDB season numbers for multi-season anime', async () => {
-    mockedGetSeason.mockImplementation(async (_showId: string, season: number) => {
+    mockedGetSeason.mockImplementation(async (_showId: string | number, season: number) => {
       if (season === 1) return { seasonNumber: 1, name: 'Season 1', episodes: SEASON_1_EPISODES }
       if (season === 2) return { seasonNumber: 2, name: 'Season 2', episodes: SEASON_2_EPISODES }
       if (season === 3) return { seasonNumber: 3, name: 'Season 3', episodes: SEASON_3_EPISODES }
@@ -128,7 +142,7 @@ describe('mapTvdbSeasons', () => {
   })
 
   it('stores absoluteEpisodeNumber separately from display numbers', async () => {
-    mockedGetSeason.mockImplementation(async (_showId: string, season: number) => {
+    mockedGetSeason.mockImplementation(async (_showId: string | number, season: number) => {
       if (season === 1) return { seasonNumber: 1, name: 'Season 1', episodes: SEASON_1_EPISODES }
       if (season === 2) return { seasonNumber: 2, name: 'Season 2', episodes: SEASON_2_EPISODES }
       return { seasonNumber: season, name: `Season ${season}`, episodes: [] }
@@ -158,7 +172,7 @@ describe('mapTvdbSeasons', () => {
   })
 
   it('does not put all episodes into Season 1', async () => {
-    mockedGetSeason.mockImplementation(async (_showId: string, season: number) => {
+    mockedGetSeason.mockImplementation(async (_showId: string | number, season: number) => {
       if (season === 1) return { seasonNumber: 1, name: 'Season 1', episodes: SEASON_1_EPISODES }
       if (season === 2) return { seasonNumber: 2, name: 'Season 2', episodes: SEASON_2_EPISODES }
       return { seasonNumber: season, name: `Season ${season}`, episodes: [] }
@@ -184,7 +198,7 @@ describe('mapTvdbSeasons', () => {
   })
 
   it('includes specials (season 0) when enabled', async () => {
-    mockedGetSeason.mockImplementation(async (_showId: string, season: number) => {
+    mockedGetSeason.mockImplementation(async (_showId: string | number, season: number) => {
       if (season === 0) return { seasonNumber: 0, name: 'Specials', episodes: SPECIALS_EPISODES }
       if (season === 1) return { seasonNumber: 1, name: 'Season 1', episodes: SEASON_1_EPISODES }
       return { seasonNumber: season, name: `Season ${season}`, episodes: [] }
@@ -201,7 +215,7 @@ describe('mapTvdbSeasons', () => {
   })
 
   it('excludes specials when disabled', async () => {
-    mockedGetSeason.mockImplementation(async (_showId: string, season: number) => {
+    mockedGetSeason.mockImplementation(async (_showId: string | number, season: number) => {
       if (season === 0) return { seasonNumber: 0, name: 'Specials', episodes: SPECIALS_EPISODES }
       if (season === 1) return { seasonNumber: 1, name: 'Season 1', episodes: SEASON_1_EPISODES }
       return { seasonNumber: season, name: `Season ${season}`, episodes: [] }
