@@ -108,8 +108,11 @@ test('desktop web still honors the configured sidebar navigation', async ({ page
   await expect(page.locator('.app-theme-shell')).not.toHaveAttribute('data-mobile-web', 'true')
   await expect(page.locator('.app-theme-shell')).toHaveAttribute('data-nav-mode', 'sidebar-overlay')
   await page.getByRole('button', { name: /open navigation/i }).click()
+  await page.mouse.move(1200, 760)
   await expect(page.locator('.app-sidebar__nav')).toBeVisible()
   await expect(page.getByRole('navigation', { name: 'Mobile navigation' })).toHaveCount(0)
+  await page.locator('.app-sidebar__nav').getByRole('link', { name: 'Search' }).click()
+  await expect(page).toHaveURL(/\/search$/)
 })
 
 test('fixed hero preference uses a swipeable mobile presentation and restores Fixed Focus on desktop', async ({ page }) => {

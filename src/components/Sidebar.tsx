@@ -23,6 +23,7 @@ export default function Sidebar() {
   const autoHide = useAppStore((s) => s.sidebarCollapsed)
   const toggle = useAppStore((s) => s.toggleSidebar)
   const [hovered, setHovered] = useState(false)
+  const [manuallyOpened, setManuallyOpened] = useState(false)
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const [switchingProfileId, setSwitchingProfileId] = useState<string | null>(null)
   const [profileMenuPosition, setProfileMenuPosition] = useState({ left: 0, bottom: 0 })
@@ -38,10 +39,21 @@ export default function Sidebar() {
   }, [])
 
   const handleMouseLeave = useCallback(() => {
-    if (profileMenuOpen) return
+    if (profileMenuOpen || manuallyOpened) return
     if (hideTimer.current) clearTimeout(hideTimer.current)
     hideTimer.current = setTimeout(() => setHovered(false), 400)
-  }, [profileMenuOpen])
+  }, [manuallyOpened, profileMenuOpen])
+
+  useEffect(() => {
+    if (!manuallyOpened) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setManuallyOpened(false)
+      setHovered(false)
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [manuallyOpened])
 
   useEffect(() => {
     return () => { if (hideTimer.current) clearTimeout(hideTimer.current) }
@@ -92,7 +104,7 @@ export default function Sidebar() {
   // Pinned = always visible, shifts content. Auto-hide keeps an active-page
   // pill on screen, then opens a floating menu over the page.
   const pinned = !autoHide
-  const visible = pinned || hovered
+  const visible = pinned || hovered || manuallyOpened
   const activeNavItem = navItems.find((item) => item.exact
     ? location.pathname === item.path
     : location.pathname.startsWith(item.path)) || navItems[0]
@@ -129,7 +141,7 @@ export default function Sidebar() {
       {!pinned && (
         <button
           type="button"
-          onClick={handleMouseEnter}
+          onClick={() => { setManuallyOpened(true); handleMouseEnter() }}
           className="app-sidebar__collapsed-trigger flex h-11 items-center gap-2.5 whitespace-nowrap px-3.5 text-sm font-bold tracking-wide text-white/95 hover:bg-white/[0.14] hover:text-white focus:outline-none"
           aria-label={`Open navigation; current page ${activeNavItem.label}`}
           aria-expanded={visible}
@@ -182,7 +194,7 @@ export default function Sidebar() {
               to={item.path}
               onMouseEnter={() => prefetchRoute(item.path)}
               onFocus={() => { prefetchRoute(item.path); if (!pinned) setHovered(true) }}
-              onClick={() => { if (!pinned) setHovered(false) }}
+              onClick={() => { if (!pinned) { setManuallyOpened(false); setHovered(false) } }}
               tabIndex={visible ? 0 : -1}
               style={{ '--sidebar-item-index': index } as CSSProperties}
               className={[
