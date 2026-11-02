@@ -172,6 +172,16 @@ describe('discovery recommendation engine', () => {
 
     expect(ranked[0]?.item.tmdbId).toBe(114)
   })
+  it('lets a verified weekly trend beat a stale low-momentum title in the default feed', () => {
+    const archive = candidate(136, { year: new Date().getFullYear() - 12, rating: 8 })
+    archive.popularity = 1
+    const weeklyTrend = candidate(137, { year: new Date().getFullYear() - 7, rating: 8 })
+    weeklyTrend.popularity = 0
+    weeklyTrend.source = 'tmdb-trending'
+    const ranked = rankCandidates([archive, weeklyTrend], buildTasteProfile(activity()), activity(), [], 'for-you')
+
+    expect(ranked[0]?.item.tmdbId).toBe(137)
+  })
   it('does not mistake missing popularity metadata for a hidden gem', () => {
     const year = new Date().getFullYear() - 3
     const established = Array.from({ length: 10 }, (_, index) => {

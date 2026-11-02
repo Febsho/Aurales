@@ -276,10 +276,12 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
     // Use a stable popularity scale across candidate pools. Relative
     // normalization made a low-momentum title look like a blockbuster when
     // the current pool happened to contain only older or niche titles.
-    const popularityMomentum = popularitySignal(candidate.popularity) * 20 * wPopularity
-    const trendSourceBoost = candidate.trendSignal || candidate.source === 'tmdb-trending' ? 28 * wPopularity : 0
+    // Keep public momentum visible beside personal affinity. Trending-source
+    // provenance is a stronger signal than a high lifetime popularity score.
+    const popularityMomentum = popularitySignal(candidate.popularity) * 24 * wPopularity
+    const trendSourceBoost = candidate.trendSignal || candidate.source === 'tmdb-trending' ? 34 * wPopularity : 0
     const trend = Math.max(popularityMomentum, trendSourceBoost)
-    const releaseFreshness = item.year ? Math.max(0, 1 - yearAge / 6) * 5 * wRecency : 0
+    const releaseFreshness = item.year ? Math.max(0, 1 - yearAge / 6) * 6 * wRecency : 0
     const hiddenGem = candidate.popularity != null && candidate.popularity < 35 && (item.rating || 0) >= 7
     const quick = (candidate.runtimeMinutes || 999) <= (item.type === 'movie' ? 105 : 40)
     const runtimeScore = profile.preferredRuntimeMinutes && candidate.runtimeMinutes
@@ -519,7 +521,7 @@ export function chooseSurpriseRecommendation(pool: RankedRecommendation[], curre
     // Live trends and established hits lead the draw, while fresh releases
     // still beat equally popular catalogue staples. A fresh obscure title
     // does not crowd out a known hit, and old low-momentum titles stay rare.
-    return 1 + popularity * 14 + (isWeeklyTrend ? 24 : 0) + freshness * 9 + rankPreference * .25
+    return 1 + popularity * 16 + (isWeeklyTrend ? 28 : 0) + freshness * 10 + rankPreference * .25
   })
   const total = weights.reduce((sum, weight) => sum + weight, 0)
   let target = Math.min(.999999999, Math.max(0, random())) * total
