@@ -203,7 +203,7 @@ function compareReleaseRecency(left: SearchResult, right: SearchResult): number 
   return 0
 }
 
-function recommendationReleaseYear(item: SearchResult, now: number): number | undefined {
+function recommendationReleaseYear(item: SearchResult): number | undefined {
   const timestamp = releaseDateTimestamp(item)
   return timestamp == null ? item.year : new Date(timestamp).getUTCFullYear()
 }
@@ -270,7 +270,7 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
 
     // Quality
     const quality = Math.max(0, ((item.rating || 5) - 5) * RECOMMENDATION_WEIGHTS.quality) * wQuality
-    const releaseYear = recommendationReleaseYear(item, now)
+    const releaseYear = recommendationReleaseYear(item)
     const yearAge = releaseYear ? Math.max(0, new Date(now).getFullYear() - releaseYear) : 8
     const novelty = (Math.max(0, 8 - Math.min(8, yearAge)) / 2) * wNovelty
     // Use a stable popularity scale across candidate pools. Relative
@@ -487,7 +487,7 @@ export function chooseSurpriseRecommendation(pool: RankedRecommendation[], curre
     // provenance here so popularity is counted once and live weekly trends
     // receive their own clear preference.
     const isWeeklyTrend = entry.trendSignal || entry.source === 'tmdb-trending'
-    const releaseYear = recommendationReleaseYear(entry.item, Date.now())
+    const releaseYear = recommendationReleaseYear(entry.item)
     const age = releaseYear ? Math.max(0, year - releaseYear) : 8
     const freshness = Math.max(0, 1 - age / 6)
     const rankPreference = choices.length > 1 ? 1 - index / (choices.length - 1) : 1
