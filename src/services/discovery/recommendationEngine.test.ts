@@ -39,6 +39,20 @@ describe('discovery recommendation engine', () => {
     const oldFirst = [...ranked].sort((a, b) => Number(a.item.tmdbId) - Number(b.item.tmdbId))
     expect(chooseSurpriseRecommendation(oldFirst, undefined, () => 0.5)?.item.tmdbId).toBe(102)
   })
+  it('keeps ordinary popularity on an absolute scale when the candidate pool changes', () => {
+    const profile = buildTasteProfile(activity())
+    const nicheArchive = candidate(130, { year: 2008, rating: 7 })
+    nicheArchive.popularity = 2
+    const blockbuster = candidate(131, { year: 2026, rating: 7 })
+    blockbuster.popularity = 500
+
+    const alone = rankCandidates([nicheArchive], profile, activity(), [], 'for-you')[0]
+    const besideBlockbuster = rankCandidates([nicheArchive, blockbuster], profile, activity(), [], 'for-you')
+      .find((entry) => entry.item.tmdbId === 130)
+
+    expect(alone?.score.trend).toBeLessThan(5)
+    expect(besideBlockbuster?.score.trend).toBe(alone?.score.trend)
+  })
   it('gives a current title a better Surprise Me chance than an equally popular older title', () => {
     const currentYear = new Date().getFullYear()
     const old = candidate(103, { year: currentYear - 10, rating: 8 })

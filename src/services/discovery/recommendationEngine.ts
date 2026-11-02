@@ -197,7 +197,6 @@ function compareReleaseRecency(left: SearchResult, right: SearchResult): number 
 
 export function rankCandidates(candidates: RecommendationCandidate[], profile: TasteProfile, activity: DiscoveryActivity, feedback: RecommendationFeedback[], mode: DiscoveryMode, now = Date.now(), impressions: Record<string,number> = {}, weights: RankingWeightOverrides = {}): RankedRecommendation[] {
   const uniqueCandidates = dedupeCandidates(candidates)
-  const maxPopularityLog = uniqueCandidates.reduce((max, candidate) => Math.max(max, Math.log1p(Math.max(0, candidate.popularity || 0))), 0)
   const completed = watchedKeys(activity)
   const rewatchKeys=new Set((activity.rewatches||[]).flatMap((item)=>[item.id,normalizedTmdbId(item.tmdbId),normalizedImdbId(item.imdbId)]).filter(Boolean))
   const feedbackMap = new Map<string, RecommendationFeedback>()
@@ -260,14 +259,14 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
     const quality = Math.max(0, ((item.rating || 5) - 5) * RECOMMENDATION_WEIGHTS.quality) * wQuality
     const yearAge = item.year ? Math.max(0, new Date(now).getFullYear() - item.year) : 8
     const novelty = (Math.max(0, 8 - Math.min(8, yearAge)) / 2) * wNovelty
-    // TMDB popularity is a relative momentum signal. Normalize its logarithm
-    // within this candidate pool so blockbuster-scale values do not swamp all
-    // other recommendation signals while current/trending titles still rise.
-    const relativeTrend = maxPopularityLog > 0
-      ? Math.max(0, Math.min(20, Math.log1p(Math.max(0, candidate.popularity || 0)) / maxPopularityLog * 20)) * wPopularity
-      : 0
+    // Use a stable popularity scale across candidate pools. Relative
+    // normalization made a low-momentum title look like a blockbuster when
+    // the current pool happened to contain only older or niche titles.
+    const popularityMomentum = Math.max(0, Math.min(20,
+      Math.log1p(Math.max(0, candidate.popularity || 0)) / Math.log1p(250) * 20,
+    )) * wPopularity
     const trendSourceBoost = candidate.trendSignal || candidate.source === 'tmdb-trending' ? 28 * wPopularity : 0
-    const trend = Math.max(relativeTrend, trendSourceBoost)
+    const trend = Math.max(popularityMomentum, trendSourceBoost)
     const releaseFreshness = item.year ? Math.max(0, 1 - yearAge / 6) * 5 * wRecency : 0
     const hiddenGem = candidate.popularity != null && candidate.popularity < 35 && (item.rating || 0) >= 7
     const quick = (candidate.runtimeMinutes || 999) <= (item.type === 'movie' ? 105 : 40)

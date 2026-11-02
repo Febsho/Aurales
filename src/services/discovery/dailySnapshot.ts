@@ -1,7 +1,7 @@
 import type { RankedRecommendation } from './types'
 
-// Version 11 keeps weekly trends ordered by their public popularity signal.
-export const DISCOVERY_ALGORITHM_VERSION = 11
+// Version 12 uses a stable popularity scale across recommendation pools.
+export const DISCOVERY_ALGORITHM_VERSION = 12
 
 export interface DailySnapshotMeta {
   dateKey: string
