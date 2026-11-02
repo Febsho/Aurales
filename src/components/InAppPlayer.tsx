@@ -38,7 +38,7 @@ import { subtitleToVtt } from '../services/player/subtitleFormats'
 import { getPlatformCapabilities, isHlsUrl, togglePictureInPicture } from '../platform/capabilities'
 import { getHttpText } from '../platform/httpText'
 import { AUTOPLAY_GESTURE_MESSAGE, browserPlaybackFailureMessage, isAutoplayGestureError, isMediaSessionExpired, isPlaybackInterruptedError, nextPlaybackConversionAfterDecodeFailure } from '../services/player/browserPlayback'
-import { cancelMediaConversion, createMediaSession, getMediaConversionStatus, getMediaWorkerCapabilities, getMediaWorkerConfig, startMediaConversion, type MediaConversionMode, type PlaybackRequestHeaders } from '../services/mediaWorker'
+import { cancelMediaConversion, createMediaSession, getMediaConversionOutputFormat, getMediaConversionStatus, getMediaWorkerCapabilities, getMediaWorkerConfig, startMediaConversion, type MediaConversionMode, type PlaybackRequestHeaders } from '../services/mediaWorker'
 import { buildExternalPlayerUrl, getPreferredExternalPlayer, setPreferredExternalPlayer, type ExternalPlayer } from '../services/player/externalPlayers'
 import { createExternalPlaybackReturnUrl } from '../services/player/externalPlaybackReturn'
 
@@ -241,6 +241,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [externalPlayerMenuOpen, setExternalPlayerMenuOpen] = useState(false)
   const [preferredExternalPlayer, setPreferredExternalPlayerState] = useState<ExternalPlayer | null>(() => getPreferredExternalPlayer())
+  const isAndroidDevice = /Android/i.test(navigator.userAgent)
+  const externalPlayerName = (player: ExternalPlayer) => ({ infuse: 'Infuse', aether: 'Aether', nextplayer: 'Next Player', mxplayer: 'MX Player', justplayer: 'Just Player', vlc: 'VLC' })[player]
   const [nextEpisode, setNextEpisode] = useState<NextEpInfo | null>(null)
   const [selectedSubtitle, setSelectedSubtitle] = useState('off')
   const [audioTracks, setAudioTracks] = useState<AudioTrackInfo[]>([])
@@ -1460,7 +1462,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         ? 'Converting audio to AAC while copying the video unchanged…'
         : 'Encoding video to H.264 and audio to AAC. This can take several minutes…')
     try {
-      const jobId = await startMediaConversion(url, mode, controller.signal, playbackRequestHeaders, 'hls')
+      const outputFormat = getMediaConversionOutputFormat()
+      const jobId = await startMediaConversion(url, mode, controller.signal, playbackRequestHeaders, outputFormat)
       conversionJobId = jobId
       const startedAt = Date.now()
       while (Date.now() - startedAt < 2 * 60 * 60 * 1000) {
@@ -1493,7 +1496,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         .map((stream) => stream.codec_name && `${stream.codec_type || 'stream'}: ${stream.codec_name}${stream.profile ? ` (${stream.profile})` : ''}`)
         .filter((value): value is string => Boolean(value))
         .join(', ')
-      const description = `Playing worker-converted HLS (${status.mode === 'remux' ? 'stream copy' : status.mode === 'audioAac' ? 'AAC audio with copied video' : 'H.264/AAC'}).${inputCodecs ? ` Source detected as ${status.sourceInfo?.container}: ${inputCodecs}.` : ''}`
+      const description = `Playing worker-prepared ${outputFormat.toUpperCase()} stream (${status.mode === 'remux' ? 'stream copy' : status.mode === 'audioAac' ? 'AAC audio with copied video' : 'H.264/AAC'}).${inputCodecs ? ` Source detected as ${status.sourceInfo?.container}: ${inputCodecs}.` : ''}`
       workerPlaybackDescriptionRef.current = description
       setPlayerNotice(description)
       setWorkerPlaybackUrl(status.url)
@@ -1849,14 +1852,21 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
                   onClick={() => preferredExternalPlayer ? openExternalPlayer(preferredExternalPlayer) : setExternalPlayerMenuOpen((open) => !open)}
                   className="min-h-11 px-4 py-2 text-sm hover:bg-white/10"
                 >
-                  {preferredExternalPlayer ? `Open in ${preferredExternalPlayer === 'infuse' ? 'Infuse' : 'Aether'}` : 'Open with…'}
+                  {preferredExternalPlayer ? `Open in ${externalPlayerName(preferredExternalPlayer)}` : 'Open with…'}
                 </button>
                 <button type="button" aria-label="Choose another player" aria-haspopup="menu" aria-expanded={externalPlayerMenuOpen} onClick={() => setExternalPlayerMenuOpen((open) => !open)} className="min-h-11 border-l border-white/10 px-3 text-sm hover:bg-white/10">▾</button>
               </div>
               {externalPlayerMenuOpen && (
                 <div role="menu" className="absolute bottom-full left-0 z-50 mb-2 min-w-52 rounded-xl border border-white/15 bg-black/95 p-1.5 shadow-2xl backdrop-blur-xl">
-                  <button type="button" role="menuitem" onClick={() => openExternalPlayer('infuse')} className="block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-white/10">Play in Infuse</button>
-                  <button type="button" role="menuitem" onClick={() => openExternalPlayer('aether')} className="block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-white/10">Play in Aether</button>
+                  {isAndroidDevice ? <>
+                    <button type="button" role="menuitem" onClick={() => openExternalPlayer('nextplayer')} className="block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-white/10">Play in Next Player</button>
+                    <button type="button" role="menuitem" onClick={() => openExternalPlayer('mxplayer')} className="block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-white/10">Play in MX Player</button>
+                    <button type="button" role="menuitem" onClick={() => openExternalPlayer('justplayer')} className="block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-white/10">Play in Just Player</button>
+                    <button type="button" role="menuitem" onClick={() => openExternalPlayer('vlc')} className="block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-white/10">Play in VLC</button>
+                  </> : <>
+                    <button type="button" role="menuitem" onClick={() => openExternalPlayer('infuse')} className="block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-white/10">Play in Infuse</button>
+                    <button type="button" role="menuitem" onClick={() => openExternalPlayer('aether')} className="block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-white/10">Play in Aether</button>
+                  </>}
                   <a href={playbackSourceUrl || url} target="_blank" rel="noreferrer" onClick={() => setExternalPlayerMenuOpen(false)} className="block rounded-lg px-3 py-2 text-sm text-white/75 hover:bg-white/10">Open video directly</a>
                 </div>
               )}

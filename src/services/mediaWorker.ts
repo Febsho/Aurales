@@ -20,6 +20,13 @@ export interface MediaWorkerCapabilities {
 }
 
 export type MediaConversionMode = 'auto' | 'remux' | 'audioAac' | 'h264Aac'
+export type MediaConversionOutputFormat = 'mp4' | 'hls'
+
+/** MP4 has broader native playback support on phones; desktop can use HLS/MSE. */
+export function getMediaConversionOutputFormat(userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : ''): MediaConversionOutputFormat {
+  const iPadDesktopMode = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 1 && /Macintosh/i.test(userAgent)
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(userAgent) || iPadDesktopMode ? 'mp4' : 'hls'
+}
 
 export type MediaConversionStatus =
   | { jobId: string; status: 'processing' }
@@ -46,7 +53,7 @@ export async function createMediaSession(url: string, signal?: AbortSignal, requ
   return { url: validateMediaSessionUrl(data.url, config.baseUrl), expiresAt: data.expiresAt }
 }
 
-export async function startMediaConversion(url: string, mode: MediaConversionMode, signal?: AbortSignal, requestHeaders: PlaybackRequestHeaders = {}, outputFormat: 'mp4' | 'hls' = 'mp4'): Promise<string> {
+export async function startMediaConversion(url: string, mode: MediaConversionMode, signal?: AbortSignal, requestHeaders: PlaybackRequestHeaders = {}, outputFormat: MediaConversionOutputFormat = 'mp4'): Promise<string> {
   const config = requireConfig()
   const response = await fetch(`${config.baseUrl}/v1/media/conversions`, {
     method: 'POST',

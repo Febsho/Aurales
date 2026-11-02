@@ -3256,8 +3256,8 @@ export default function SettingsPage() {
 
               {getPlatformCapabilities().platform === 'web' && <MediaWorkerSettings />}
 
-              {getPlatformCapabilities().platform === 'web' && (
-                <SettingSection title="External video player" description="Choose which iOS player Aurales opens when you use ‘Open with …’ during playback. App installation cannot be checked from the web app.">
+              {(getPlatformCapabilities().platform === 'web' || /Android/i.test(navigator.userAgent)) && (
+                <SettingSection title="External video player" description={/Android/i.test(navigator.userAgent) ? 'Choose the preferred Android player for external playback. The app must be installed to open streams.' : 'Choose which iOS player Aurales opens when you use ‘Open with …’ during playback. App installation cannot be checked from the web app.'}>
                   <SettingRow label="Preferred player" description="You can still choose another player from the playback controls.">
                     <SelectMenu
                       aria-label="Preferred external video player"
@@ -3271,8 +3271,15 @@ export default function SettingsPage() {
                       className="w-44"
                     >
                       <option value="">Ask each time</option>
-                      <option value="infuse">Infuse</option>
-                      <option value="aether">Aether</option>
+                      {/Android/i.test(navigator.userAgent) ? <>
+                        <option value="nextplayer">Next Player</option>
+                        <option value="mxplayer">MX Player</option>
+                        <option value="justplayer">Just Player</option>
+                        <option value="vlc">VLC</option>
+                      </> : <>
+                        <option value="infuse">Infuse</option>
+                        <option value="aether">Aether</option>
+                      </>}
                     </SelectMenu>
                   </SettingRow>
                 </SettingSection>

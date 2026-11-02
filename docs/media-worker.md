@@ -12,8 +12,9 @@ executable path is configured, and capabilities report detected encoders.
 
 The browser first plays the provider URL directly. If the browser reports an
 unsupported media format, it asks the configured worker for `mode: "auto"`.
-Converted output is requested as HLS so playback can use native Safari/iOS HLS
-or hls.js over Media Source Extensions in other browsers.
+Desktop converted output is requested as HLS for hls.js over Media Source
+Extensions. Mobile browsers receive a seekable MP4 instead, which uses the
+browser's native video decoder and avoids mobile HLS/MSE compatibility differences.
 The worker downloads the allowlisted HTTPS source into its private conversion
 directory, lets FFmpeg inspect the actual streams, and tries these HLS outputs
 in order:
@@ -64,7 +65,8 @@ source for the worker's remux/transcode ladder.
 The repository's FFmpeg integration fixtures exercise these paths: H.264/AAC
 MP4 is stream-copy remuxed; H.264/Opus Matroska becomes AAC audio with copied
 H.264 video; VP8/Opus WebM reaches the H.264/AAC video fallback. The browser
-matrix exercises HLS VOD seeking through MSE and native HLS on WebKit/iOS WebKit.
+matrix covers HLS VOD seeking through MSE on desktop; mobile conversion uses
+native MP4 playback.
 
 ## Build and run
 

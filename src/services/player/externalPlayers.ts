@@ -1,11 +1,11 @@
-export type ExternalPlayer = 'infuse' | 'aether'
+export type ExternalPlayer = 'infuse' | 'aether' | 'nextplayer' | 'mxplayer' | 'justplayer' | 'vlc'
 
 const PREFERRED_PLAYER_KEY = 'aurales.externalPlayer'
 
 export function getPreferredExternalPlayer(): ExternalPlayer | null {
   try {
     const value = window.localStorage.getItem(PREFERRED_PLAYER_KEY)
-    return value === 'infuse' || value === 'aether' ? value : null
+    return value === 'infuse' || value === 'aether' || value === 'nextplayer' || value === 'mxplayer' || value === 'justplayer' || value === 'vlc' ? value : null
   } catch {
     return null
   }
@@ -39,6 +39,26 @@ export function buildExternalPlayerUrl(
     return null
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
+
+  const androidPackages: Partial<Record<ExternalPlayer, string>> = {
+    nextplayer: 'dev.anilbeesetti.nextplayer',
+    mxplayer: 'com.mxtech.videoplayer.ad',
+    justplayer: 'com.brouken.player',
+    vlc: 'org.videolan.vlc',
+  }
+  const androidPackage = androidPackages[player]
+  if (androidPackage) {
+    const intent = new URL(videoUrl)
+    const title = options.title || options.filename
+    const intentParams = [
+      `scheme=${intent.protocol.slice(0, -1)}`,
+      'type=video/*',
+      `package=${androidPackage}`,
+      ...(title ? [`S.title=${encodeURIComponent(title)}`] : []),
+      'end',
+    ]
+    return `intent://${intent.host}${intent.pathname}${intent.search}#Intent;${intentParams.join(';')}`
+  }
 
   const params = new URLSearchParams({ url: videoUrl })
   if (player === 'infuse') {
