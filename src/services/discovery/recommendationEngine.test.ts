@@ -322,6 +322,41 @@ describe('discovery recommendation engine', () => {
   it('never emits empty invalid sections', () => expect(generateDiscoverySections(rankCandidates([candidate(2)],buildTasteProfile(activity()),activity(),[],'for-you'),buildTasteProfile(activity()),'for-you',5)).toEqual([]))
   it('does not duplicate a title across generated sections',()=>{const ranked=rankCandidates(Array.from({length:30},(_,index)=>candidate(index+2)),buildTasteProfile(activity()),activity(),[],'for-you');const sections=generateDiscoverySections(ranked,buildTasteProfile(activity()),'for-you',1);const keys=sections.flatMap((section)=>section.items.map((entry)=>mediaKey(entry.item)));expect(new Set(keys).size).toBe(keys.length)})
   it('keeps Discovery to compact, distinct recommendation shelves',()=>{const year=new Date().getFullYear();const pool=Array.from({length:60},(_,index)=>{const item=candidate(index+100,{rating:8,year:index<40?year:2020});item.popularity=index<20?100:10;item.voteCount=500;item.runtimeMinutes=90;return item});const profile=buildTasteProfile(activity());const sections=generateDiscoverySections(rankCandidates(pool,profile,activity(),[],'for-you'),profile,'for-you');expect(sections.length).toBeGreaterThan(1);expect(sections[0].title).toBe('Recommended');expect(sections[0].items.length).toBeLessThanOrEqual(10);expect(sections.map((section)=>section.id)).not.toContain('actors');expect(sections.map((section)=>section.id)).not.toContain('directors');expect(sections.map((section)=>section.id)).not.toContain('critics')})
+  it('adds separate favorite shelves and a popularity-ranked shelf for the strongest genre', () => {
+    const tasteActivity = activity([], [{ ...sciFi, genreIds: [18] }])
+    const profile = buildTasteProfile(tasteActivity)
+    const general = Array.from({ length: 20 }, (_, index) => {
+      const entry = candidate(700 + index, { genreIds: [18], year: 2020, rating: 7.5 })
+      entry.popularity = 220 - index * 4
+      return entry
+    })
+    const similar = Array.from({ length: 3 }, (_, seedIndex) => Array.from({ length: 6 }, (_, index) => {
+      const entry = candidate(800 + seedIndex * 10 + index, { genreIds: [18], year: 2020, rating: 7.5 })
+      entry.source = 'tmdb-similar'
+      entry.seedTitle = `Favorite Seed ${seedIndex + 1}`
+      entry.seedKind = 'favorited'
+      entry.seedYear = 2019 + seedIndex
+      entry.popularity = 140 - index * 10
+      return entry
+    })).flat()
+
+    const ranked = rankCandidates([...general, ...similar], profile, tasteActivity, [], 'for-you')
+    const sections = generateDiscoverySections(ranked, profile, 'for-you')
+    const favoriteSections = sections.filter((section) => section.id.startsWith('because-favorited'))
+    const genreSection = sections.find((section) => section.id === 'because-genre-18')
+
+    expect(favoriteSections).toHaveLength(3)
+    expect(favoriteSections.map((section) => section.title)).toEqual(expect.arrayContaining([
+      'Because You Favorited Favorite Seed 1 (2019)',
+      'Because You Favorited Favorite Seed 2 (2020)',
+      'Because You Favorited Favorite Seed 3 (2021)',
+    ]))
+    expect(genreSection?.title).toBe('Because You Love Drama')
+    expect(genreSection?.items).toHaveLength(10)
+    expect(genreSection?.items.map((entry) => entry.popularity)).toEqual([...genreSection!.items.map((entry) => entry.popularity)].sort((left, right) => (right || 0) - (left || 0)))
+    const topTenIds = new Set(sections.find((section) => section.id === 'made-for-you')?.items.map((entry) => mediaKey(entry.item)))
+    expect(genreSection?.items.every((entry) => !topTenIds.has(mediaKey(entry.item)))).toBe(true)
+  })
   it('surfaces weekly trending as its own general catalog shelf without duplicating Recommended',()=>{
     const profile=buildTasteProfile(activity())
     const general=Array.from({length:6},(_,index)=>candidate(300+index))

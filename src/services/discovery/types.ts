@@ -73,6 +73,7 @@ export interface RecommendationCandidate {
   fetchedAt?: number
   seedTitle?: string
   seedKind?: 'watched' | 'favorited'
+  seedYear?: number
   /** Optional enrichment from title details; catalog-only candidates can omit it. */
   cast?: string[]
   directors?: string[]

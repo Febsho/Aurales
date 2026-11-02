@@ -772,7 +772,7 @@ export default function DiscoverPage() {
       const id = `tmdb-${seed.tmdbId}`
       const details = seed.type === 'movie' ? await tmdbProvider.getMovie(id) : await tmdbProvider.getShow(id)
       metadata.push({ item: seed, runtimeMinutes: 'runtime' in details ? details.runtime : undefined, cast: details.cast.slice(0, 5).map((person) => person.name), directors: details.crew.filter((person) => person.job === 'Director' || person.job === 'Creator').slice(0, 3).map((person) => person.name) })
-      const candidates = details.recommendations.map((item) => recommendationCandidate(item, 'tmdb-similar', { seedTitle: seed.title, seedKind: kind }))
+      const candidates = details.recommendations.map((item) => recommendationCandidate(item, 'tmdb-similar', { seedTitle: seed.title, seedKind: kind, seedYear: seed.year }))
       const director = details.crew.find((person) => person.job === 'Director' || person.job === 'Creator')
       const people = [details.cast[0] ? { id: details.cast[0].id, name: details.cast[0].name, source: 'tmdb-cast' as const } : null, director ? { id: director.id, name: director.name, source: 'tmdb-director' as const } : null].filter((person): person is NonNullable<typeof person> => Boolean(person))
       const credits = await Promise.allSettled(people.map(async (person) => ({ person, details: await getTmdbPerson(person.id) })))

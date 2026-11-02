@@ -157,7 +157,7 @@ function watchedKeys(activity: DiscoveryActivity): Set<string> {
 
 export function dedupeCandidates(candidates: RecommendationCandidate[]): RecommendationCandidate[] {
   const merged = new Map<string,RecommendationCandidate>()
-  for(const candidate of candidates){const key=mediaKey(candidate.item);const existing=merged.get(key);if(!existing){merged.set(key,candidate);continue}const informativeSource=candidate.source==='tmdb-similar'||candidate.source==='tmdb-cast'||candidate.source==='tmdb-director';const favoriteSeed=existing.seedKind==='favorited'?existing:candidate.seedKind==='favorited'?candidate:undefined;merged.set(key,{...existing,source:informativeSource?candidate.source:existing.source,item:{...candidate.item,...existing.item,genreIds:existing.item.genreIds||candidate.item.genreIds,genres:existing.item.genres||candidate.item.genres},runtimeMinutes:existing.runtimeMinutes??candidate.runtimeMinutes,voteCount:Math.max(existing.voteCount||0,candidate.voteCount||0)||undefined,popularity:Math.max(existing.popularity||0,candidate.popularity||0)||undefined,trendSignal:Boolean(existing.trendSignal||candidate.trendSignal||existing.source==='tmdb-trending'||candidate.source==='tmdb-trending'),releaseDate:existing.releaseDate??candidate.releaseDate,seedTitle:favoriteSeed?.seedTitle??existing.seedTitle??candidate.seedTitle,seedKind:favoriteSeed?.seedKind??existing.seedKind??candidate.seedKind})}
+  for(const candidate of candidates){const key=mediaKey(candidate.item);const existing=merged.get(key);if(!existing){merged.set(key,candidate);continue}const informativeSource=candidate.source==='tmdb-similar'||candidate.source==='tmdb-cast'||candidate.source==='tmdb-director';const favoriteSeed=existing.seedKind==='favorited'?existing:candidate.seedKind==='favorited'?candidate:undefined;merged.set(key,{...existing,source:informativeSource?candidate.source:existing.source,item:{...candidate.item,...existing.item,genreIds:existing.item.genreIds||candidate.item.genreIds,genres:existing.item.genres||candidate.item.genres},runtimeMinutes:existing.runtimeMinutes??candidate.runtimeMinutes,voteCount:Math.max(existing.voteCount||0,candidate.voteCount||0)||undefined,popularity:Math.max(existing.popularity||0,candidate.popularity||0)||undefined,trendSignal:Boolean(existing.trendSignal||candidate.trendSignal||existing.source==='tmdb-trending'||candidate.source==='tmdb-trending'),releaseDate:existing.releaseDate??candidate.releaseDate,seedTitle:favoriteSeed?.seedTitle??existing.seedTitle??candidate.seedTitle,seedKind:favoriteSeed?.seedKind??existing.seedKind??candidate.seedKind,seedYear:favoriteSeed?.seedYear??existing.seedYear??candidate.seedYear})}
   return [...merged.values()]
 }
 
@@ -404,24 +404,41 @@ export function applyRecommendationFeedback(snapshot: RankedRecommendation[], fe
     .sort((a,b) => b.score.total - a.score.total || mediaKey(a.item).localeCompare(mediaKey(b.item)))
 }
 
-export function generateDiscoverySections(ranked: RankedRecommendation[], _profile: TasteProfile, mode: DiscoveryMode, minSize = 5, now = Date.now()): DiscoverySection[] {
+export function generateDiscoverySections(ranked: RankedRecommendation[], profile: TasteProfile, mode: DiscoveryMode, minSize = 5, now = Date.now()): DiscoverySection[] {
   const used = new Set<string>()
   // Keep one broad section from exhausting the entire ranked pool before the
   // specialized catalogs get a chance to select their titles.
   const take = (predicate: (item: RankedRecommendation) => boolean, count = 10) => ranked.filter((item) => predicate(item) && !used.has(mediaKey(item.item))).slice(0, count).filter((item) => { used.add(mediaKey(item.item)); return true })
-  const similaritySeed=ranked.find((item)=>item.source==='tmdb-similar'&&item.seedTitle&&item.seedKind==='favorited')
-    ?? ranked.find((item)=>item.source==='tmdb-similar'&&item.seedTitle)
+  const similaritySeeds = [...new Map(ranked
+    .filter((item) => item.source === 'tmdb-similar' && item.seedTitle && item.seedKind)
+    .map((item) => [`${item.seedKind}:${item.seedTitle!.trim().toLocaleLowerCase()}`, item] as const))
+    .values()]
+    .slice(0, 3)
   const mainTitle = mode === 'for-you' ? 'Recommended'
     : mode === 'new' || mode === 'recently-released' ? 'New & Trending'
       : mode === 'hidden-gems' ? 'Hidden Gems'
         : mode === 'critically-acclaimed' ? 'Critically Acclaimed'
           : 'Quick Watches'
-  const similarityDefinition: [string, string, (item: RankedRecommendation) => boolean] | undefined = similaritySeed
-    ? [
-      similaritySeed.seedKind === 'favorited' ? 'because-favorited' : 'because-watched',
-      `Because You ${similaritySeed.seedKind === 'favorited' ? 'Favorited' : 'Watched'} ${similaritySeed.seedTitle}`,
-      (item) => item.source === 'tmdb-similar' && item.seedKind === similaritySeed.seedKind && item.seedTitle === similaritySeed.seedTitle,
+  const seedKindCounts = new Map<string, number>()
+  const similarityDefinitions: Array<[string, string, (item: RankedRecommendation) => boolean]> = similaritySeeds.map((seed, index) => {
+    const kind = seed.seedKind!
+    const seedTitle = seed.seedTitle!.trim()
+    const slug = seedTitle.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 36) || `pick-${index + 1}`
+    const kindIndex = seedKindCounts.get(kind) || 0
+    seedKindCounts.set(kind, kindIndex + 1)
+    const seedLabel = `${seedTitle}${seed.seedYear ? ` (${seed.seedYear})` : ''}`
+    return [
+      `because-${kind}${kindIndex === 0 ? '' : `-${slug}`}`,
+      `Because You ${kind === 'favorited' ? 'Favorited' : 'Watched'} ${seedLabel}`,
+      (item) => item.source === 'tmdb-similar' && item.seedKind === kind && item.seedTitle?.trim().toLocaleLowerCase() === seedTitle.toLocaleLowerCase(),
     ]
+  })
+  const favoriteGenre = Object.entries(profile.genreWeights)
+    .filter(([, weight]) => weight > 0)
+    .sort((left, right) => right[1] - left[1])[0]
+  const favoriteGenreId = favoriteGenre ? Number(favoriteGenre[0]) : undefined
+  const genreDefinition: [string, string, (item: RankedRecommendation) => boolean] | undefined = favoriteGenreId != null
+    ? [`because-genre-${favoriteGenreId}`, `Because You Love ${GENRES[favoriteGenreId] || `Genre ${favoriteGenreId}`}`, (item) => item.source !== 'tmdb-similar' && Boolean(item.item.genreIds?.includes(favoriteGenreId))]
     : undefined
   // Weekly TMDB trending is a general catalog source, independent from user
   // history. Give it a visible shelf while reserving those titles from the
@@ -445,9 +462,10 @@ export function generateDiscoverySections(ranked: RankedRecommendation[], _profi
   const definitions: Array<[string,string,(item:RankedRecommendation)=>boolean]> = [
     ['made-for-you', mainTitle, (item) => broad.includes(item)],
     ['trending-this-week', 'Trending This Week', (item) => trending.includes(item)],
-    ...(similarityDefinition ? [similarityDefinition] : []),
+    ...similarityDefinitions,
     ['hidden-gems','Hidden Gems',(item) => item.popularity != null && item.popularity < 35 && (item.item.rating || 0) >= 7],
     ['new','Recently Released',(item) => isRecentlyReleased(item.item, now)],
+    ...(genreDefinition ? [genreDefinition] : []),
   ]
   const filteredDefinitions = definitions.filter(([id]) => !(mode === 'hidden-gems' && id === 'hidden-gems') && ((mode !== 'new' && mode !== 'recently-released') || id !== 'new'))
   return filteredDefinitions.map(([id,title,predicate]) => {
