@@ -4,12 +4,13 @@ import { describe, expect, it } from 'vitest'
 // @ts-expect-error node:fs is available in the test runtime.
 import { readFileSync } from 'node:fs'
 
-const css = readFileSync(new URL('../../index.css', import.meta.url), 'utf8')
-const shellSource = readFileSync(new URL('./DetailContentShell.tsx', import.meta.url), 'utf8')
-const stickySource = readFileSync(new URL('./DetailStickyHeader.tsx', import.meta.url), 'utf8')
-const seriesSource = readFileSync(new URL('../../pages/SeriesDetailPage.tsx', import.meta.url), 'utf8')
-const discoverSource = readFileSync(new URL('../../pages/DiscoverPage.tsx', import.meta.url), 'utf8')
-const mobileNavigationSource = readFileSync(new URL('../MobileWebNavigation.tsx', import.meta.url), 'utf8')
+const readSource = (url: URL) => readFileSync(url, 'utf8').replace(/\r\n/g, '\n')
+const css = readSource(new URL('../../index.css', import.meta.url))
+const shellSource = readSource(new URL('./DetailContentShell.tsx', import.meta.url))
+const stickySource = readSource(new URL('./DetailStickyHeader.tsx', import.meta.url))
+const seriesSource = readSource(new URL('../../pages/SeriesDetailPage.tsx', import.meta.url))
+const discoverSource = readSource(new URL('../../pages/DiscoverPage.tsx', import.meta.url))
+const mobileNavigationSource = readSource(new URL('../MobileWebNavigation.tsx', import.meta.url))
 
 describe('cinematic detail responsive and scroll contracts', () => {
   it('keeps the hero within the requested cinematic viewport range', () => {
