@@ -271,7 +271,7 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
     // Quality
     const quality = Math.max(0, ((item.rating || 5) - 5) * RECOMMENDATION_WEIGHTS.quality) * wQuality
     const releaseYear = recommendationReleaseYear(item)
-    const yearAge = releaseYear ? Math.max(0, new Date(now).getFullYear() - releaseYear) : 8
+    const yearAge = releaseYear ? Math.max(0, new Date(now).getUTCFullYear() - releaseYear) : 8
     const novelty = (Math.max(0, 8 - Math.min(8, yearAge)) / 2) * wNovelty
     // Use a stable popularity scale across candidate pools. Relative
     // normalization made a low-momentum title look like a blockbuster when
@@ -476,7 +476,7 @@ export function chooseSurpriseRecommendation(pool: RankedRecommendation[], curre
   if (!pool.length) return undefined
   const alternatives = pool.filter((entry) => String(entry.item.id) !== String(currentId))
   const choices = alternatives.length ? alternatives : pool
-  const year = new Date().getFullYear()
+  const year = new Date().getUTCFullYear()
   const weights = choices.map((entry, index) => {
     // Keep popularity on an absolute scale. Normalizing to the current pool's
     // maximum made a stale title look like a blockbuster whenever every item
