@@ -937,10 +937,15 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   }
   await page.evaluate(() => { document.documentElement.dataset.runtimePlatform = 'web' })
   await page.setViewportSize({ width: 1440, height: 900 })
+  const spotlightBeforeAlternate = await page.locator('.discover-next-hero').getAttribute('data-title')
+  await page.locator('.discover-next-hero').getByRole('button', { name: 'Another option' }).click()
+  await expect.poll(() => page.locator('.discover-next-hero').getAttribute('data-title')).not.toBe(spotlightBeforeAlternate)
+  const spotlightAfterAlternate = await page.locator('.discover-next-hero').getAttribute('data-title')
   await surpriseButton.click()
   await expect(pickerDialog).toBeVisible()
   const pickerTitle = await pickerDialog.locator('#discover-picker-title').innerText()
-  expect(pickerTitle, 'Your Next Obsession is a separate editorial pick, never the randomizer result').not.toBe(firstSpotlightTitle)
+  expect(pickerTitle, 'Your Next Obsession is a separate editorial pick, never the randomizer result').not.toBe(spotlightAfterAlternate)
+  await expect(page.locator('.discover-next-hero')).toHaveAttribute('data-title', spotlightAfterAlternate!)
   const desktopPickerLayout = await pickerDialog.evaluate((dialog) => {
     const bounds = dialog.getBoundingClientRect()
     const poster = dialog.querySelector<HTMLElement>('.discover-picker__poster')!.getBoundingClientRect()

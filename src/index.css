@@ -6621,6 +6621,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-spotlight__actions > button:not(.discover-spotlight__play) { min-height: 44px; padding-inline: .2rem; border-color: transparent; background: transparent; }
   .discover-spotlight__actions > .discover-spotlight__secondary { min-width: 0; padding-inline: .35rem !important; }
   .discover-spotlight__secondary > span { display: none; }
+  .discover-spotlight__another-option > span { display: none; }
   .discover-spotlight__another:not(.discover-spotlight__secondary) { display: inline-flex; }
   .discover-spotlight__poster { position: absolute; z-index: 1; right: 1rem; bottom: 4.25rem; width: clamp(6rem, 24vw, 7.2rem); grid-column: auto; grid-row: auto; align-self: auto; aspect-ratio: 2 / 3; margin: 0; border-radius: .65rem; box-shadow: 0 8px 22px rgba(0,0,0,.32); }
   .discover-spotlight__trailer,

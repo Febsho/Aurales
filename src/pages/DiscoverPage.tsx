@@ -477,6 +477,7 @@ export default function DiscoverPage() {
   watchProgressRef.current = watchProgress
   const [starterGenres]=useState<number[]>(()=>{try{const saved=JSON.parse(localStorage.getItem('aurales_discovery_starter_genres')||'[]');return Array.isArray(saved)?saved.filter((value):value is number=>Number.isFinite(value)):[]}catch{return[]}})
   const [pickerSelectionKey, setPickerSelectionKey] = useState<string | null>(null)
+  const [spotlightSelectionKey, setSpotlightSelectionKey] = useState<string | null>(null)
   const [pickerLogoError,setPickerLogoError]=useState(false)
   const [heroLogoError,setHeroLogoError]=useState(false)
   const preferencesWereOpenRef = useRef(false)
@@ -917,7 +918,8 @@ export default function DiscoverPage() {
   [snapshotIsValid, validRankedSnapshot, feedback, dailySnapshotMeta, dailySnapshotKey, fallbackRankedSnapshot, tab, liveRanked])
   // Keep the editorial extra out of adjacent shelves so it reads as its own
   // recommendation instead of a repeated catalog card.
-  const heroRecommendation = ranked.find((entry) => Boolean(entry.item.poster)) ?? ranked[0]
+  const spotlightCandidates = useMemo(() => ranked.filter((entry) => Boolean(entry.item.poster)), [ranked])
+  const heroRecommendation = spotlightCandidates.find((entry) => mediaIdentity(entry.item) === spotlightSelectionKey) ?? spotlightCandidates[0] ?? ranked[0]
   const heroItem = heroRecommendation?.item
   const heroMediaKey = heroItem ? mediaIdentity(heroItem) : null
   const shelfRanked = useMemo(() => heroMediaKey ? ranked.filter((entry) => mediaIdentity(entry.item) !== heroMediaKey) : ranked, [heroMediaKey, ranked])
@@ -1175,6 +1177,7 @@ export default function DiscoverPage() {
   }, [ranked, pickedIds, tasteQuery])
   const tastePickCandidates = useMemo(() => tastePickPool.slice(0, 10 + pickOffset), [tastePickPool, pickOffset])
   useEffect(() => { setPickerSelectionKey(null); setPickerLogoError(false); setHeroLogoError(false) }, [tab, mode, discoveryQueryKey])
+  useEffect(() => { setSpotlightSelectionKey(null) }, [tab, mode, discoveryQueryKey])
   useEffect(() => { setHeroLogoError(false) }, [heroItem?.id])
   useEffect(() => { setLoadedHeroBackdrop(null) }, [heroItem?.id])
   useEffect(() => { setPickerLogoError(false) }, [pickerItem?.id])
@@ -1349,6 +1352,12 @@ export default function DiscoverPage() {
     setPickerOpen(true)
     spinPicker(pickerItem?.id, (item) => setPickerSelectionKey(mediaIdentity(item)))
   }
+  const chooseAnotherSpotlight = () => {
+    if (spotlightCandidates.length < 2) return
+    const currentIndex = spotlightCandidates.findIndex((entry) => mediaIdentity(entry.item) === heroMediaKey)
+    const next = spotlightCandidates[(Math.max(0, currentIndex) + 1) % spotlightCandidates.length]
+    if (next) setSpotlightSelectionKey(mediaIdentity(next.item))
+  }
   const selectTastePick = (item: SearchResult) => {
     const id = mediaIdentity(item)
     if (pickedIds.includes(id) || pickedIds.length >= 3) return
@@ -1436,6 +1445,7 @@ export default function DiscoverPage() {
                       <button type="button" className="discover-spotlight__play" onClick={() => openHeroDetail(true)}>▶ <span>Play</span></button>
                       <button type="button" className="discover-spotlight__another discover-spotlight__secondary" onClick={() => openHeroDetail(false)} aria-label="Details"><Info size={17} aria-hidden="true"/><span>Details</span></button>
                       <button type="button" className="discover-spotlight__another" aria-label="Not for me" onClick={() => submitFeedback(heroRecommendation.item, 'not-interested')}><ThumbsDown size={17} aria-hidden="true"/><span>Not for me</span></button>
+                      <button type="button" className="discover-spotlight__another discover-spotlight__another-option" aria-label="Another option" onClick={chooseAnotherSpotlight} disabled={spotlightCandidates.length < 2}><Shuffle size={17} aria-hidden="true"/><span>Another option</span></button>
                     </div>
                   </div>
                 </div>
