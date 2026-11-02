@@ -946,12 +946,18 @@ export default function DiscoverPage() {
     moreToDiscoverStatusRef.current = 'loading'
     setMoreToDiscoverStatus('loading')
     try {
-      const pages = await Promise.all(activeSources.map(({ type, config }) => {
+      const pageResults = await Promise.allSettled(activeSources.map(({ type, config }) => {
         const page = Math.min(500, moreToDiscoverPagesRef.current[type] + 1)
         return discoverTmdbPageWithCache(config, `discover-infinite-${tab}-${type}-${discoveryQueryKey}`, page)
           .then((result) => ({ type, requestedPage: page, result }))
       }))
       if (moreToDiscoverScopeRef.current !== requestScope) return
+      const pages = pageResults.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
+      const hadPageErrors = pages.length !== activeSources.length
+      if (pages.length === 0) {
+        const firstError = pageResults.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+        throw firstError?.reason ?? new Error('No Discovery continuation page could be loaded')
+      }
 
       const existingIds = new Set([
         ...ranked.map((entry) => mediaIdentity(entry.item)),
@@ -986,7 +992,7 @@ export default function DiscoverPage() {
         setMoreToDiscover(moreToDiscoverItemsRef.current)
       }
       const hasActiveSources = sources.some(({ type }) => !moreToDiscoverExhaustedRef.current[type])
-      moreToDiscoverStatusRef.current = hasActiveSources ? 'idle' : 'done'
+      moreToDiscoverStatusRef.current = hadPageErrors ? 'error' : hasActiveSources ? 'idle' : 'done'
       setMoreToDiscoverStatus(moreToDiscoverStatusRef.current)
     } catch {
       if (moreToDiscoverScopeRef.current === requestScope) {

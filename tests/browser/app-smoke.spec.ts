@@ -347,6 +347,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const tmdbRequestPaths = new Set<string>()
   const discoveryRuntimeQueries = new Set<string>()
   const continuationPages = new Set<number>()
+  const animeContinuationResponses: string[] = []
+  let animeMovieContinuationFailuresRemaining = 0
   await page.route('https://api.ids.moe/**', (route) => route.fulfill({ json: {} }))
   await page.route('https://api.themoviedb.org/**', async (route) => {
     const requestUrl = new URL(route.request().url())
@@ -360,12 +362,55 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       return
     }
     const requestedPage = Number(requestUrl.searchParams.get('page') || 1)
+    const isAnimeQuery = requestUrl.searchParams.get('with_original_language') === 'ja'
+      && (requestUrl.searchParams.get('with_genres') || '').split(/[|,]/).includes('16')
+    const animeMediaType = requestUrl.pathname.endsWith('/discover/movie') ? 'movie' : 'series'
+    if (isAnimeQuery && requestedPage >= 4 && animeMovieContinuationFailuresRemaining > 0 && animeMediaType === 'movie') {
+      animeMovieContinuationFailuresRemaining -= 1
+      animeContinuationResponses.push('movie:4:failed')
+      await route.fulfill({ status: 503, json: { status_message: 'Temporary test failure' } })
+      return
+    }
+    if (isAnimeQuery && requestedPage >= 4) {
+      animeContinuationResponses.push(`${animeMediaType}:${requestedPage}:ok`)
+      const results = Array.from({ length: 8 }, (_, index) => ({
+        id: (animeMediaType === 'movie' ? 87000 : 88000) + requestedPage * 10 + index,
+        title: `Anime ${animeMediaType} continuation page ${requestedPage} title ${index + 1}`,
+        name: `Anime ${animeMediaType} continuation page ${requestedPage} title ${index + 1}`,
+        poster_path: '/anime-continuation-poster.jpg',
+        release_date: '2026-05-01',
+        first_air_date: '2026-05-01',
+        vote_average: 8.1,
+        vote_count: 900,
+        popularity: 180 - index,
+        genre_ids: [16, 18, 878],
+        original_language: 'ja',
+      }))
+      await route.fulfill({ json: { page: requestedPage, total_pages: animeMediaType === 'series' ? 5 : 4, total_results: results.length, results } })
+      return
+    }
     const isUnfilteredMoviePage = requestUrl.pathname.endsWith('/discover/movie')
       && !requestUrl.searchParams.has('with_genres')
       && !requestUrl.searchParams.has('with_runtime.gte')
       && !requestUrl.searchParams.has('with_runtime.lte')
     if (isUnfilteredMoviePage) continuationPages.add(requestedPage)
-    const results = requestedPage === 4 && isUnfilteredMoviePage
+    const results = isAnimeQuery
+      ? Array.from({ length: 12 }, (_, index) => ({
+        id: 86000 + requestedPage * 20 + index,
+        title: `Anime discovery fixture ${requestedPage}-${index + 1}`,
+        name: `Anime discovery fixture ${requestedPage}-${index + 1}`,
+        poster_path: '/anime-discovery-fixture-poster.jpg',
+        backdrop_path: '/anime-discovery-fixture-backdrop.jpg',
+        overview: 'Japanese animation fixture for Discovery pagination.',
+        first_air_date: '2026-05-01',
+        release_date: '2026-05-01',
+        vote_average: 8.2,
+        vote_count: 1200,
+        popularity: 160 - index,
+        genre_ids: [16, 18, 878],
+        original_language: 'ja',
+      }))
+      : requestedPage === 4 && isUnfilteredMoviePage
       ? Array.from({ length: 20 }, (_, index) => ({
         id: 83000 + index,
         title: `More discovery fixture ${index + 1}`,
@@ -1015,6 +1060,28 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect.poll(() => page.locator('.catalog-page__items > button').count()).toBeGreaterThanOrEqual(5)
   const recentCatalogColumns = await page.locator('.catalog-page__items').evaluate((grid) => new Set(Array.from(grid.children).map((card) => Math.round(card.getBoundingClientRect().left))).size)
   expect(recentCatalogColumns).toBe(3)
+  await page.goBack()
+  await expect(page.locator('.discover-page')).toBeVisible()
+  // TMDB interactive requests retry once; fail both attempts to exercise a
+  // true partial response, then let the user's explicit retry succeed.
+  animeMovieContinuationFailuresRemaining = 2
+  await contentTypeControls.getByRole('button', { name: 'Anime' }).click()
+  await expect(contentTypeControls.getByRole('button', { name: 'Anime' })).toHaveAttribute('aria-pressed', 'true')
+  const animeMoreHeader = page.getByRole('heading', { name: 'Keep Exploring', exact: true })
+  await animeMoreHeader.scrollIntoViewIfNeeded()
+  const animeAppScrollRoot = page.locator('.app-scroll-root')
+  for (let attempt = 0; attempt < 8 && !animeContinuationResponses.includes('movie:4:failed'); attempt += 1) {
+    await animeAppScrollRoot.evaluate((root) => root.scrollTo({ top: root.scrollHeight, behavior: 'instant' }))
+    await page.waitForTimeout(150)
+  }
+  await expect.poll(() => animeContinuationResponses).toContain('movie:4:failed')
+  const animeContinuationGrid = page.locator('.discover-more__grid')
+  await expect(animeContinuationGrid.getByText('Anime series continuation page 4 title 1', { exact: true })).toBeVisible()
+  const retryAnimeContinuation = page.getByRole('button', { name: 'Retry loading titles' })
+  await expect(retryAnimeContinuation).toBeVisible()
+  await retryAnimeContinuation.click()
+  await expect.poll(() => animeContinuationResponses).toContain('movie:4:ok')
+  await expect(animeContinuationGrid.getByText('Anime movie continuation page 4 title 1', { exact: true })).toBeVisible()
 
   const episodeCardWidth = await page.evaluate(() => {
     const fixture = document.createElement('div')
