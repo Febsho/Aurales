@@ -450,6 +450,7 @@ export default function DiscoverPage() {
   const loadMoreDiscoveryRef = useRef<() => Promise<void>>(async () => undefined)
   const genrePicksRef = useRef<HTMLDivElement>(null)
   const surpriseButtonRef = useRef<HTMLButtonElement>(null)
+  const pickerDialogRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
     if (selectedGenreId == null) return
@@ -1150,6 +1151,21 @@ export default function DiscoverPage() {
   }, [heroMediaKey, ranked])
   const pickerRecommendation = (pickerSelectionKey ? pickerPool.find((entry) => mediaIdentity(entry.item) === pickerSelectionKey) : undefined) || pickerPool[0]
   const pickerItem = pickerRecommendation?.item
+  const pickerFrameId = pickerItem ? mediaIdentity(pickerItem) : null
+  useEffect(() => {
+    if (!surpriseSpinning || !pickerFrameId || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const surfaces = pickerDialogRef.current?.querySelectorAll<HTMLElement>(
+      '.discover-picker__poster > img, .discover-picker__copy h2:not(.sr-only), .discover-picker__logo',
+    )
+    if (!surfaces?.length) return
+    surfaces.forEach((surface) => {
+      surface.getAnimations().forEach((animation) => animation.cancel())
+      surface.animate([
+        { opacity: 0.28, transform: 'translateY(5px) scale(.985)' },
+        { opacity: 1, transform: 'translateY(0) scale(1)' },
+      ], { duration: 180, easing: 'cubic-bezier(.2,.75,.25,1)', fill: 'both' })
+    })
+  }, [pickerFrameId, surpriseSpinning])
   const tastePickPool = useMemo(() => {
     if (!ranked.length) return []
     const query = tasteQuery.trim().toLocaleLowerCase()
@@ -1545,7 +1561,7 @@ export default function DiscoverPage() {
           </section></DiscoveryReveal>}
       </>
       {pickerOpen && pickerRecommendation && <div className={`discover-picker-backdrop${pickerClosing ? ' is-closing' : ''}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closePicker() }}>
-        <section className={`discover-picker${surpriseSpinning ? ' is-spinning' : ''}${pickerClosing ? ' is-closing' : ''}`} role="dialog" aria-modal="true" aria-labelledby="discover-picker-title" aria-busy={surpriseSpinning} onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => {
+        <section ref={pickerDialogRef} className={`discover-picker${surpriseSpinning ? ' is-spinning' : ''}${pickerClosing ? ' is-closing' : ''}`} role="dialog" aria-modal="true" aria-labelledby="discover-picker-title" aria-busy={surpriseSpinning} onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => {
           if (event.key !== 'Tab') return
           const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), [tabindex]:not([tabindex="-1"])'))
           const first = focusable[0]

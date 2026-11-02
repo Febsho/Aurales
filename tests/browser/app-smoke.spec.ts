@@ -690,6 +690,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const pickerPosterImage = await pickerDialog.locator('.discover-picker__poster > img').elementHandle()
   await expect(pickerDialog).toHaveAttribute('aria-busy', 'true')
   await expect.poll(() => pickerDialog.locator('.discover-picker__poster').evaluate((poster) => getComputedStyle(poster).animationName)).toBe('discover-picker-rolling')
+  await expect.poll(() => pickerDialog.locator('.discover-picker__poster > img').evaluate((image) => image.getAnimations().some((animation) => animation.playState === 'running'))).toBe(true)
   await expect(pickerDialog.getByRole('button', { name: 'Open', exact: true })).toBeVisible()
   await expect(pickerDialog.getByRole('button', { name: 'Spin again', exact: true })).toBeVisible()
   await expect(surpriseButton).toHaveAttribute('aria-busy', 'false', { timeout: 5000 })
