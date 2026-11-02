@@ -1,5 +1,5 @@
 import { applySyncedProfile, clearPendingProfileDeletions, getActiveProfileId, getPendingProfileDeletions, getProfiles, profileStorageKey, type AuralesProfile } from '../profiles'
-import { isSyncVaultUnlocked, restoreEncryptedVault, type EncryptedVault } from './encryptedVault'
+import { acknowledgeEncryptedVault, isSyncVaultUnlocked, restoreEncryptedVault, type EncryptedVault } from './encryptedVault'
 import { outboxReady, removeOutboxRecords, takeOutboxBatch } from './outbox'
 import { runSyncBatch } from './syncBatch'
 import {
@@ -298,6 +298,7 @@ async function syncNowUnlocked(fetcher: typeof fetch): Promise<{ uploaded: numbe
   }
   const activeVaultRestored = await applyRemoteRecords(body.records || [])
   removeOutboxRecords(outbox)
+  await acknowledgeEncryptedVault(outbox)
   setSyncConfig({ cursor: body.cursor, lastSyncAt: new Date().toISOString(), lastError: undefined })
   return { uploaded: outbox.length, downloaded: body.records?.length || 0, activeVaultRestored }
 }

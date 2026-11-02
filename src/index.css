@@ -632,6 +632,33 @@ select option {
   padding-block: clamp(7.5rem, 15vh, 11rem) clamp(3rem, 8vh, 7rem);
 }
 
+/* The desktop app has a persistent top navigation. Keep the Settings hub in
+   normal grid flow so its identity, docs card, and categories cannot overlap. */
+@media (min-width: 781px) {
+  html[data-runtime-platform="tauri"] .settings-hub {
+    grid-template-areas: "identity docs" "identity categories";
+    grid-template-columns: minmax(17rem, .72fr) minmax(0, 1.7fr);
+    align-content: start;
+    align-items: start;
+    column-gap: clamp(2.5rem, 6vw, 8rem);
+    row-gap: 0;
+  }
+  html[data-runtime-platform="tauri"] .settings-hub__identity {
+    grid-area: identity;
+    position: static;
+    align-self: center;
+    transform: none;
+  }
+  html[data-runtime-platform="tauri"] .settings-hub__docs {
+    grid-area: docs;
+    min-height: 7rem;
+    align-self: start;
+    margin: 0 0 1.5rem;
+  }
+  html[data-runtime-platform="tauri"] .settings-hub__categories { grid-area: categories; }
+  html[data-runtime-platform="tauri"] .settings-page__content-inner { width: min(100%, 72rem); }
+}
+
 .settings-hub__identity {
   align-self: start;
   position: sticky;
@@ -5765,6 +5792,34 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   width: min(100%, 1560px);
   margin-inline: auto;
   padding-bottom: calc(2rem + env(safe-area-inset-bottom));
+}
+
+/* Give the desktop app's editorial sections a shared, generous measure.
+   Several sections otherwise cap at 74rem and look detached on wide windows. */
+@media (min-width: 781px) {
+  html[data-runtime-platform="tauri"] .discover-page {
+    --discover-gutter: clamp(2rem, 3vw, 3.5rem);
+    width: min(100%, 1840px);
+  }
+  html[data-runtime-platform="tauri"] .discover-time,
+  html[data-runtime-platform="tauri"] .discover-refine,
+  html[data-runtime-platform="tauri"] .discover-calendar,
+  html[data-runtime-platform="tauri"] .discover-libraries,
+  html[data-runtime-platform="tauri"] .discover-color {
+    width: calc(100% - 2 * var(--discover-gutter));
+    max-width: 112rem;
+  }
+  html[data-runtime-platform="tauri"] .discover-more {
+    width: calc(100% - 2 * var(--discover-gutter));
+    max-width: 112rem;
+  }
+  html[data-runtime-platform="tauri"] .discover-next,
+  html[data-runtime-platform="tauri"] .discover-binge,
+  html[data-runtime-platform="tauri"] .discover-weekend-plan,
+  html[data-runtime-platform="tauri"] .discover-spotlight,
+  html[data-runtime-platform="tauri"] .discover-spotlight-heading {
+    margin-inline: var(--discover-gutter);
+  }
 }
 .discover-page__notice { padding: 1rem var(--discover-gutter) 0 !important; }
 .discover-page__heading { padding: 1rem var(--discover-gutter) .75rem !important; }

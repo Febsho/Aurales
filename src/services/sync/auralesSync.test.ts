@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const { runSyncBatchMock } = vi.hoisted(() => ({ runSyncBatchMock: vi.fn() }))
 vi.mock('./syncBatch', () => ({ runSyncBatch: runSyncBatchMock }))
 vi.mock('./outbox', () => ({ outboxReady: vi.fn(async () => undefined), removeOutboxRecords: vi.fn(), takeOutboxBatch: vi.fn(() => []) }))
-vi.mock('./encryptedVault', () => ({ isSyncVaultUnlocked: vi.fn(() => false), restoreEncryptedVault: vi.fn() }))
+vi.mock('./encryptedVault', () => ({ acknowledgeEncryptedVault: vi.fn(), isSyncVaultUnlocked: vi.fn(() => false), restoreEncryptedVault: vi.fn() }))
 vi.mock('./syncQueue', () => ({
   AURALES_SYNC_SCHEMA_VERSION: 1,
   enqueueSyncRecord: vi.fn(),

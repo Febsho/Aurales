@@ -1952,7 +1952,7 @@ export default function SettingsPage() {
             <input type="search" value={settingsSearch} onChange={(event) => setSettingsSearch(event.target.value)} placeholder="Search settings" aria-label="Search settings" />
           </label>
 
-          <Link to="/docs" className="mb-6 flex items-center justify-between gap-4 rounded-2xl border border-accent/20 bg-accent/[.07] p-4 text-left transition-colors hover:bg-accent/[.12]">
+          <Link to="/docs" className="settings-hub__docs mb-6 flex items-center justify-between gap-4 rounded-2xl border border-accent/20 bg-accent/[.07] p-4 text-left transition-colors hover:bg-accent/[.12]">
             <span><span className="block text-sm font-bold text-white">Webversion selbst hosten</span><span className="mt-1 block text-xs text-white/55">Installation, Media Worker und Webplayer erklärt</span></span>
             <svg className="h-5 w-5 shrink-0 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="m9 18 6-6-6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
           </Link>

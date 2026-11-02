@@ -10,6 +10,7 @@ pub mod anime_lookup;
 pub mod anime_season;
 pub mod cache;
 pub mod catalog;
+pub mod credential_vault;
 pub mod detail_page;
 pub mod discord;
 pub mod metadata;

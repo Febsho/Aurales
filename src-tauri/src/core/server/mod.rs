@@ -1009,14 +1009,28 @@ fn connection_id(request: &SaveServerConnectionRequest) -> String {
     format!("server-{:016x}", h.finish())
 }
 
+#[cfg(not(windows))]
 fn keyring_entry(id: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, id).map_err(|e| e.to_string())
 }
+
+#[cfg(windows)]
+fn store_secret(id: &str, secret: &StoredSecret) -> Result<(), String> {
+    crate::core::credential_vault::store(KEYRING_SERVICE, id, &serde_json::to_string(secret).map_err(|e| e.to_string())?)
+}
+#[cfg(not(windows))]
 fn store_secret(id: &str, secret: &StoredSecret) -> Result<(), String> {
     keyring_entry(id)?
         .set_password(&serde_json::to_string(secret).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())
 }
+#[cfg(windows)]
+fn load_secret(id: &str) -> Result<Option<StoredSecret>, String> {
+    crate::core::credential_vault::load(KEYRING_SERVICE, id)?
+        .map(|value| serde_json::from_str(&value).map_err(|e| e.to_string()))
+        .transpose()
+}
+#[cfg(not(windows))]
 fn load_secret(id: &str) -> Result<Option<StoredSecret>, String> {
     match keyring_entry(id)?.get_password() {
         Ok(v) => serde_json::from_str(&v)
@@ -1026,6 +1040,11 @@ fn load_secret(id: &str) -> Result<Option<StoredSecret>, String> {
         Err(e) => Err(e.to_string()),
     }
 }
+#[cfg(windows)]
+fn delete_secret(id: &str) -> Result<(), String> {
+    crate::core::credential_vault::delete(KEYRING_SERVICE, id)
+}
+#[cfg(not(windows))]
 fn delete_secret(id: &str) -> Result<(), String> {
     match keyring_entry(id)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),

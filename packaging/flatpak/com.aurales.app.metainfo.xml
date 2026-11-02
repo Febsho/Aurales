@@ -19,6 +19,14 @@
   <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.5.4" date="2026-11-02">
+      <description>
+        <p>
+          Fixes desktop Settings and Discovery layouts, Windows media server
+          credentials, and repeated pending changes in Aurales Sync.
+        </p>
+      </description>
+    </release>
     <release version="0.5.0" date="2026-10-17">
       <description>
         <p>

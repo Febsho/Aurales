@@ -1,7 +1,8 @@
-import { enqueueSyncRecord } from './syncQueue'
+import { enqueueSyncRecord, getSyncOutbox } from './syncQueue'
 import { getActiveProfileId, getActiveProfile, getStoredProfileOwnedState, isProfileOwnedStorageKey, isProfileRuntimeLoaded, storeProfileOwnedValues } from '../profiles'
 
 const vaultId = (profileId: string) => `profile-settings-v1:${profileId}`
+const VAULT_FINGERPRINTS_KEY = 'aurales_sync_vault_fingerprints_v1'
 const ITERATIONS = 600_000
 let vaultPassphrase: string | null = null
 
@@ -14,6 +15,11 @@ export interface EncryptedVault {
   salt: string
   iv: string
   ciphertext: string
+}
+
+interface VaultSyncFingerprints {
+  committed: Record<string, string>
+  pending: Record<string, { content: string; envelope: string }>
 }
 
 const included = (key: string, profileId: string) => isProfileOwnedStorageKey(key) || key.endsWith(`:profile:${profileId}`)
@@ -92,13 +98,77 @@ export async function queueEncryptedVault(profileId = getActiveProfileId()): Pro
     const belongsToTarget = runtimeBelongsToTarget ? included(key, profileId) : key.endsWith(`:profile:${profileId}`)
     if (belongsToTarget) entries[key] = localStorage.getItem(key) || ''
   }
+  const stableEntries = JSON.stringify(Object.fromEntries(Object.entries(entries).sort(([left], [right]) => left.localeCompare(right))))
+  const fingerprint = await hashString(stableEntries)
+  const fingerprintKey = `${getSyncAccountKey()}:${profileId}`
+  const fingerprints = readVaultFingerprints()
+  const outboxId = `${profileId}:encrypted-vault:${vaultId(profileId)}`
+  const pendingVault = getSyncOutbox().find((record) => record.recordId === outboxId)
+  if (pendingVault) {
+    const pendingFingerprint = fingerprints.pending[fingerprintKey]
+    if (pendingFingerprint?.content === fingerprint
+      && pendingFingerprint.envelope === await hashVaultEnvelope(pendingVault.payload as EncryptedVault)) return Object.keys(entries).length
+  } else if (fingerprints.committed[fingerprintKey] === fingerprint) {
+    return Object.keys(entries).length
+  }
   const salt = crypto.getRandomValues(new Uint8Array(16))
   const iv = crypto.getRandomValues(new Uint8Array(12))
   const additionalData = new TextEncoder().encode(vaultId(profileId))
   const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: bufferSource(iv), additionalData: bufferSource(additionalData) }, await vaultKey(vaultPassphrase, salt), new TextEncoder().encode(JSON.stringify(entries)))
   const payload: EncryptedVault = { formatVersion: 2, profileId, algorithm: 'AES-GCM', kdf: 'PBKDF2-SHA-256', iterations: ITERATIONS, salt: bytesToBase64(salt), iv: bytesToBase64(iv), ciphertext: bytesToBase64(new Uint8Array(encrypted)) }
   enqueueSyncRecord('encrypted-vault', vaultId(profileId), payload, profileId)
+  const queued = getSyncOutbox().find((record) => record.recordId === outboxId)
+  if (queued?.payload === payload) {
+    fingerprints.pending[fingerprintKey] = { content: fingerprint, envelope: await hashVaultEnvelope(payload) }
+    writeVaultFingerprints(fingerprints)
+  }
   return Object.keys(entries).length
+}
+
+/** Records a vault snapshot as current only after the server accepted it. */
+export async function acknowledgeEncryptedVault(records: Array<{ profileId: string; type: string; payload: unknown }>): Promise<void> {
+  const fingerprints = readVaultFingerprints()
+  let changed = false
+  for (const record of records) {
+    if (record.type !== 'encrypted-vault' || !record.payload || typeof record.payload !== 'object') continue
+    const key = `${getSyncAccountKey()}:${record.profileId}`
+    const pending = fingerprints.pending[key]
+    if (!pending || pending.envelope !== await hashVaultEnvelope(record.payload as EncryptedVault)) continue
+    fingerprints.committed[key] = pending.content
+    delete fingerprints.pending[key]
+    changed = true
+  }
+  if (changed) writeVaultFingerprints(fingerprints)
+}
+
+async function hashString(value: string): Promise<string> {
+  return bytesToBase64(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))))
+}
+
+async function hashVaultEnvelope(payload: EncryptedVault): Promise<string> {
+  return hashString(JSON.stringify({ salt: payload.salt, iv: payload.iv, ciphertext: payload.ciphertext }))
+}
+
+function getSyncAccountKey(): string {
+  try {
+    const config = JSON.parse(localStorage.getItem('aurales_sync_config_v1') || '{}') as { email?: string }
+    return config.email?.trim().toLowerCase() || 'default'
+  } catch { return 'default' }
+}
+
+function readVaultFingerprints(): VaultSyncFingerprints {
+  try {
+    const value = JSON.parse(localStorage.getItem(VAULT_FINGERPRINTS_KEY) || '{}') as unknown
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const state = value as Partial<VaultSyncFingerprints>
+      return { committed: state.committed || {}, pending: state.pending || {} }
+    }
+  } catch { /* Start with an empty fingerprint cache. */ }
+  return { committed: {}, pending: {} }
+}
+
+function writeVaultFingerprints(value: VaultSyncFingerprints): void {
+  try { localStorage.setItem(VAULT_FINGERPRINTS_KEY, JSON.stringify(value)) } catch { /* The outbox remains authoritative if storage is full. */ }
 }
 
 /** Applies only a vault encrypted with the passphrase currently in memory. */

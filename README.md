@@ -488,7 +488,7 @@ More information is available in [`RUST_CORE_ARCHITECTURE.md`](./RUST_CORE_ARCHI
 
 The latest release is:
 
-## Aurales v0.5.3
+## Aurales v0.5.4
 
 **[Download from GitHub Releases](https://github.com/Febsho/Aurales/releases/latest)**
 
@@ -508,7 +508,7 @@ Available for:
 The recommended Windows package is the NSIS installer:
 
 ```text
-Aurales_0.5.3_x64-setup.exe
+Aurales_0.5.4_x64-setup.exe
 ```
 
 The MSI package is also available for managed installations.
@@ -522,7 +522,7 @@ The MSI package is also available for managed installations.
 Download:
 
 ```text
-Aurales_0.5.3_amd64.flatpak
+Aurales_0.5.4_amd64.flatpak
 ```
 
 Install:
@@ -542,7 +542,7 @@ flatpak run com.aurales.app
 Download:
 
 ```text
-Aurales_0.5.3_amd64.AppImage
+Aurales_0.5.4_amd64.AppImage
 ```
 
 Make it executable:
@@ -570,6 +570,18 @@ so separate media packages are normally unnecessary.
 
 
 
+
+# v0.5.4
+
+Version 0.5.4 fixes desktop layout, media server credentials, and Aurales Sync.
+
+* Correct the desktop Settings overview and Discovery content widths without changing the web layout.
+* Fix adding media servers on Windows by storing credentials with local Windows Credential Manager persistence.
+* Stop unchanged encrypted settings from reappearing as pending Sync changes, and restore the Sync vault automatically on Windows app startup.
+
+See the full release notes on the **[v0.5.4 release page](https://github.com/Febsho/Aurales/releases/tag/v0.5.4)**.
+
+---
 
 # v0.5.3
 

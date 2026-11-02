@@ -10,16 +10,27 @@ use std::time::Duration;
 const KEYRING_SERVICE: &str = "com.aurales.app.sync";
 const MAX_SYNC_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
+#[cfg(not(windows))]
 fn keyring_entry(email: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, email).map_err(|error| error.to_string())
 }
 
+#[cfg(windows)]
+pub fn store_password(email: String, password: String) -> Result<(), String> {
+    crate::core::credential_vault::store(KEYRING_SERVICE, &email, &password)
+}
+#[cfg(not(windows))]
 pub fn store_password(email: String, password: String) -> Result<(), String> {
     keyring_entry(&email)?
         .set_password(&password)
         .map_err(|error| error.to_string())
 }
 
+#[cfg(windows)]
+pub fn load_password(email: String) -> Result<Option<String>, String> {
+    crate::core::credential_vault::load(KEYRING_SERVICE, &email)
+}
+#[cfg(not(windows))]
 pub fn load_password(email: String) -> Result<Option<String>, String> {
     match keyring_entry(&email)?.get_password() {
         Ok(password) => Ok(Some(password)),
@@ -28,6 +39,11 @@ pub fn load_password(email: String) -> Result<Option<String>, String> {
     }
 }
 
+#[cfg(windows)]
+pub fn delete_password(email: String) -> Result<(), String> {
+    crate::core::credential_vault::delete(KEYRING_SERVICE, &email)
+}
+#[cfg(not(windows))]
 pub fn delete_password(email: String) -> Result<(), String> {
     match keyring_entry(&email)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
