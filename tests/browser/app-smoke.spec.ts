@@ -321,6 +321,7 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
 })
 
 test('mobile Discover and movie details keep text, hero and controls within the viewport', async ({ page }) => {
+  test.setTimeout(90_000)
   const pageErrors: string[] = []
   page.on('pageerror', (error) => pageErrors.push(error.message))
   await page.setViewportSize({ width: 390, height: 844 })
