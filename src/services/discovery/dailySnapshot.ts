@@ -1,7 +1,7 @@
 import type { RankedRecommendation } from './types'
 
-// Version 12 uses a stable popularity scale across recommendation pools.
-export const DISCOVERY_ALGORITHM_VERSION = 12
+// Version 13 includes precise release dates in freshness scoring.
+export const DISCOVERY_ALGORITHM_VERSION = 13
 
 export interface DailySnapshotMeta {
   dateKey: string
