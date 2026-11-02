@@ -532,6 +532,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(obsessionLayout.poster.width).toBeLessThanOrEqual(124)
   expect(obsessionLayout.poster.right).toBeLessThanOrEqual(obsessionLayout.card.right - 10)
   expect(obsessionLayout.copy.right).toBeLessThanOrEqual(obsessionLayout.card.right - 8)
+  const editorialPoster = heroSpotlight.locator('.discover-spotlight__poster img')
+  await expect(editorialPoster).toHaveAttribute('data-artwork-loaded', 'true')
+  await expect(editorialPoster).toHaveCSS('opacity', '1')
   const obsessionTop = (await page.getByRole('heading', { name: 'Your Next Obsession' }).boundingBox())!.y
   const trendingTop = (await page.getByRole('heading', { name: 'OR TRY', exact: true }).boundingBox())!.y
   const topTenTop = (await page.getByRole('heading', { name: 'Top 10 For You', exact: true }).boundingBox())!.y
