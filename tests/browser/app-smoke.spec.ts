@@ -883,6 +883,13 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         ambientArtwork: Boolean(hero.querySelector('.discover-spotlight__ambient img')),
         backgroundColor: getComputedStyle(hero).backgroundColor,
         tonightFontSize: Number.parseFloat(getComputedStyle(hero.querySelector<HTMLElement>('.discover-spotlight__eyebrow')!).fontSize),
+        overview: (() => {
+          const element = hero.querySelector<HTMLElement>('.discover-spotlight__overview')
+          if (!element) return null
+          const bounds = element.getBoundingClientRect()
+          return { visible: getComputedStyle(element).display !== 'none' && bounds.height > 0, left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom }
+        })(),
+        actionsTop: hero.querySelector<HTMLElement>('.discover-spotlight__actions')?.getBoundingClientRect().top ?? 0,
       } : null,
       posterVisible: Boolean(poster && poster.getBoundingClientRect().width > 0),
       posterRightAligned: Boolean(poster && hero && poster.getBoundingClientRect().left > hero.getBoundingClientRect().left + hero.getBoundingClientRect().width * .55 && poster.getBoundingClientRect().right <= hero.getBoundingClientRect().right + 1),
@@ -912,6 +919,10 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(discoveryLayout!.hero.ambientArtwork).toBe(true)
     expect(discoveryLayout!.hero.backgroundColor).toBe('rgb(39, 39, 43)')
     expect(discoveryLayout!.hero.tonightFontSize).toBeGreaterThan(18)
+    expect(discoveryLayout!.hero.overview?.visible, 'the phone spotlight should include the compact synopsis shown in the reference').toBe(true)
+    expect(discoveryLayout!.hero.overview?.left).toBeGreaterThanOrEqual(0)
+    expect(discoveryLayout!.hero.overview?.right).toBeLessThanOrEqual(discoveryLayout!.viewport)
+    expect(discoveryLayout!.hero.actionsTop).toBeGreaterThanOrEqual(discoveryLayout!.hero.overview!.bottom - 1)
     expect(discoveryLayout!.posterVisible).toBe(true)
     expect(discoveryLayout!.posterRightAligned).toBe(true)
     expect(discoveryLayout!.actionsFit).toBe(true)
@@ -962,6 +973,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       const hero = document.querySelector<HTMLElement>('.discover-next-hero')!
       const copy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
       const poster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
+      const binge = page.querySelector<HTMLElement>('.discover-binge__feature')
       const contentSections = Array.from(page.querySelectorAll<HTMLElement>(
         '.discover-next-hero, .discover-shelf, .discover-refine, .discover-genres, .discover-binge, .discover-more',
       )).map((section) => section.getBoundingClientRect())
@@ -971,6 +983,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         page: page.getBoundingClientRect().toJSON(),
         sectionsInside: contentSections.every((bounds) => bounds.left >= -1 && bounds.right <= viewport + 1),
         heroColumnsSeparated: copy.right <= poster.left + 1,
+        bingeColumns: binge ? getComputedStyle(binge).gridTemplateColumns.split(' ').length : 0,
       }
     })
     expect(desktopBounds.documentWidth, `document overflow at ${width}px`).toBeLessThanOrEqual(width + 1)
@@ -978,6 +991,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopBounds.page.right, `Discovery exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
     expect(desktopBounds.sectionsInside, `a Discovery section exceeds the viewport at ${width}px`).toBe(true)
     expect(desktopBounds.heroColumnsSeparated, `hero copy overlaps its poster at ${width}px`).toBe(true)
+    if (width >= 900 && desktopBounds.bingeColumns > 0) expect(desktopBounds.bingeColumns, `binge feature should use a horizontal desktop composition at ${width}px`).toBe(2)
   }
   await page.evaluate(() => { document.documentElement.dataset.runtimePlatform = 'tauri' })
   for (const width of [1024, 1440, 1920]) {

@@ -6516,6 +6516,29 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-color__filters button > span { width: .68rem; height: .68rem; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(255,255,255,.22); }
 .discover-color__filters button[aria-pressed="true"] > span { box-shadow: inset 0 0 0 1px rgba(0,0,0,.25); }
 .discover-color__status { min-height: 2.5rem; margin: .6rem 0 .9rem; color: rgba(255,255,255,.58); font-size: .8rem; }
+@media (min-width: 900px) {
+  .discover-binge__feature {
+    grid-template-columns: minmax(15rem, .8fr) minmax(0, 1.2fr);
+    align-items: center;
+    gap: clamp(1.1rem, 2.5vw, 2rem);
+    padding: clamp(1rem, 2vw, 1.5rem);
+  }
+  .discover-binge__copy {
+    min-height: 100%;
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .discover-binge__actions { margin-top: .6rem; }
+  .discover-binge__gallery {
+    height: clamp(17rem, 27vw, 23rem);
+    grid-column: 2;
+    grid-row: 1;
+    grid-template-columns: minmax(8rem, .9fr) minmax(0, 1.1fr);
+    align-self: center;
+  }
+  .discover-binge__main-poster { height: 100%; }
+}
 @media (max-width: 640px) {
   .discover-time { width: calc(100% - 2 * var(--discover-gutter)); margin-block: .8rem 1.1rem; }
   .discover-time__heading h2 { font-size: 1.08rem; }
@@ -6643,7 +6666,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-spotlight__meta { gap: .2rem .4rem; margin-top: .3rem; font-size: .68rem; }
   .discover-spotlight__meta > span + span::before { margin-right: .4rem; }
   .discover-spotlight__reason { margin-top: .25rem !important; font-size: .7rem; line-height: 1.25; }
-  .discover-spotlight__overview { display: none; }
+  .discover-spotlight__overview { display: -webkit-box; margin-top: .25rem !important; font-size: .68rem; line-height: 1.3; -webkit-line-clamp: 2; }
   .discover-spotlight__actions { width: calc(100% + clamp(6.5rem, 25vw, 7.5rem)); flex-wrap: nowrap; gap: .2rem; margin-top: .55rem; }
   .discover-spotlight__actions > button,
   .discover-spotlight__actions .discover-spotlight__watchlist > button { min-height: 44px; }

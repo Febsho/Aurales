@@ -1155,14 +1155,13 @@ export default function DiscoverPage() {
     const seen = new Set<string>()
     return ranked.filter((entry) => {
       const key = mediaIdentity(entry.item)
-      // The editorial spotlight and randomizer are separate features. Keeping
-      // the spotlight item eligible here prevents the hero from biasing the
-      // randomizer's pool or its available choices.
-      if (!entry.item.poster || seen.has(key)) return false
+      // The spotlight is an extra editorial recommendation, not one of the
+      // randomizer's choices. Keep its title and the randomizer pool distinct.
+      if (!entry.item.poster || key === heroMediaKey || seen.has(key)) return false
       seen.add(key)
       return true
     })
-  }, [ranked])
+  }, [heroMediaKey, ranked])
   const pickerRecommendation = (pickerSelectionKey ? pickerPool.find((entry) => mediaIdentity(entry.item) === pickerSelectionKey) : undefined) || pickerPool[0]
   const pickerItem = pickerRecommendation?.item
   const pickerFrameId = pickerItem ? mediaIdentity(pickerItem) : null
