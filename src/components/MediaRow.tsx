@@ -24,6 +24,10 @@ interface MediaRowProps {
   showAllPath?: string
   showAllItems?: SearchResult[]
   forceShowAll?: boolean
+  /** Use a section-specific preview size instead of the profile-wide row count. */
+  previewLimit?: number
+  /** Render the entire capped preview at once, for small editorial lists like Top 10. */
+  renderAllPreviewItems?: boolean
   disableArtOverride?: boolean
   disableTrailerPreview?: boolean
   showRank?: boolean
@@ -92,7 +96,7 @@ function FixedShelfDetails({ item }: { item: SearchResult }) {
   )
 }
 
-function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, forceShowAll = false, disableArtOverride = false, disableTrailerPreview = false, headerLeftControls, headerRightControls, cinematicExpand = true, disableCinematic = false }: MediaRowProps) {
+function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, forceShowAll = false, previewLimit, renderAllPreviewItems = false, disableArtOverride = false, disableTrailerPreview = false, headerLeftControls, headerRightControls, cinematicExpand = true, disableCinematic = false }: MediaRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
   const location = useLocation()
@@ -199,17 +203,18 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
     () => dedupeMediaItems(items.filter((item) => item.poster || item.backdrop || item.tmdbId || item.imdbId)),
     [items],
   )
-  const shouldShowAll = Boolean(showAllPath && (forceShowAll || visibleItems.length > rowEntryCount))
+  const rowLimit = previewLimit ?? rowEntryCount
+  const shouldShowAll = Boolean(showAllPath && (forceShowAll || visibleItems.length > rowLimit))
   const rowItems = useMemo(
-    () => shouldShowAll ? visibleItems.slice(0, rowEntryCount) : visibleItems,
-    [rowEntryCount, shouldShowAll, visibleItems],
+    () => shouldShowAll ? visibleItems.slice(0, rowLimit) : visibleItems,
+    [rowLimit, shouldShowAll, visibleItems],
   )
   const renderedItems = useMemo(
     // A list is vertically laid out and has no horizontal edge at which to
     // request another batch, so applying shelf progressive rendering here
     // would permanently hide everything after the initial batch.
-    () => layout === 'list' ? rowItems : rowItems.slice(0, renderedCount),
-    [layout, rowItems, renderedCount],
+    () => layout === 'list' || renderAllPreviewItems ? rowItems : rowItems.slice(0, renderedCount),
+    [layout, renderAllPreviewItems, rowItems, renderedCount],
   )
   useLayoutEffect(() => {
     const element = scrollRef.current
