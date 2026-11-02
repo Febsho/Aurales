@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SearchResult, WatchProgress } from '../../types'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, rankCandidates, selectTopRatedRecommendations } from './recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, rankCandidates, selectTopRatedRecommendations } from './recommendationEngine'
 import type { DiscoveryActivity, RecommendationCandidate, RecommendationFeedback } from './types'
 
 const sciFi: SearchResult = { id:'seed',title:'Seed',type:'movie',provider:'tmdb',tmdbId:1,genreIds:[878],year:2020,rating:8 }
@@ -104,6 +104,20 @@ describe('discovery recommendation engine', () => {
     const [trendingRanked] = rankCandidates([trending], profile, activity(), [], 'for-you')
 
     expect(chooseSurpriseRecommendation([ordinaryRanked!, trendingRanked!], undefined, () => 0.5)?.item.tmdbId).toBe(106)
+  })
+  it('keeps the Surprise Me animation moving when only two titles are available', () => {
+    const pool = rankCandidates([candidate(132), candidate(133)], buildTasteProfile(activity()), activity(), [], 'for-you')
+    const winner = pool[0]!
+    let previousId = pool[1]!.item.id
+    const frames = Array.from({ length: 8 }, () => {
+      const next = chooseSurpriseAnimationFrame(pool, winner.item.id, previousId, () => 0.5)
+      expect(next).toBeDefined()
+      expect(next!.item.id).not.toBe(previousId)
+      previousId = next!.item.id
+      return next!.item.id
+    })
+
+    expect(new Set(frames)).toEqual(new Set(pool.map((entry) => entry.item.id)))
   })
   it('strongly favors weekly trends over stale, low-momentum titles in Surprise Me', () => {
     const stale = candidate(111, { year: new Date().getFullYear() - 8 })

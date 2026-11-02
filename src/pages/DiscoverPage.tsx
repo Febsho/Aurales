@@ -11,7 +11,7 @@ import { useCatalogStore } from '../stores/catalogStore'
 import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
 import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseRecommendation, generateDiscoverySections, rankCandidates } from '../services/discovery/recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, rankCandidates } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
 import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktWatchedShows, getRatings as getTraktRatings } from '../services/trakt/sync'
@@ -1266,20 +1266,17 @@ export default function DiscoverPage() {
     setSurpriseSpinning(true)
     // Keep the winner out of the rolling frames and exclude the previously
     // displayed title on each tick so the roulette visibly advances.
-    const rollingPool = pickerPool.filter((entry) => mediaIdentity(entry.item) !== mediaIdentity(winner.item))
     let previousId = currentId
-    if (rollingPool.length > 1) {
-      const first = chooseSurpriseRecommendation(rollingPool, previousId)
-      if (first) {
-        onSelect(first.item)
-        previousId = first.item.id
-      }
+    const first = chooseSurpriseAnimationFrame(pickerPool, winner.item.id, previousId)
+    if (first) {
+      onSelect(first.item)
+      previousId = first.item.id
     }
     void (async () => {
       for (const delay of delays) {
         await new Promise<void>((resolve) => window.setTimeout(resolve, delay))
         if (surpriseRunRef.current !== runId) return
-        const next = chooseSurpriseRecommendation(rollingPool, previousId)
+        const next = chooseSurpriseAnimationFrame(pickerPool, winner.item.id, previousId)
         if (next) {
           onSelect(next.item)
           previousId = next.item.id

@@ -497,3 +497,17 @@ export function chooseSurpriseRecommendation(pool: RankedRecommendation[], curre
   }
   return choices[choices.length - 1]
 }
+
+/** Pick a distinct animation frame while saving the final winner for the end. */
+export function chooseSurpriseAnimationFrame(
+  pool: RankedRecommendation[],
+  winnerId: string | number,
+  previousId?: string | number,
+  random = Math.random,
+): RankedRecommendation | undefined {
+  const winnerKey = String(winnerId)
+  const previousKey = previousId == null ? undefined : String(previousId)
+  const nonWinningFrames = pool.filter((entry) => String(entry.item.id) !== winnerKey && String(entry.item.id) !== previousKey)
+  const anyDifferentFrame = pool.filter((entry) => String(entry.item.id) !== previousKey)
+  return chooseSurpriseRecommendation(nonWinningFrames.length ? nonWinningFrames : anyDifferentFrame, previousId, random)
+}
