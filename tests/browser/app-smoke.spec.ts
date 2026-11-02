@@ -590,6 +590,16 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await trendingShelf.scrollIntoViewIfNeeded()
   await expect.poll(() => trendingShelf.evaluate((element) => element.parentElement?.getAttribute('data-revealed'))).toBe('true')
   await expect.poll(() => trendingShelf.locator('.media-row-card-slot').first().evaluate((card) => getComputedStyle(card).animationName)).toBe('discover-card-arrive')
+  const loadedPoster = trendingShelf.locator('.media-row-card-slot').first().locator('img.media-card-artwork')
+  await expect(loadedPoster).toHaveAttribute('data-artwork-loaded', 'true')
+  const loadedPosterMotion = await loadedPoster.evaluate((image) => ({
+    opacity: getComputedStyle(image).opacity,
+    transitionProperty: getComputedStyle(image).transitionProperty,
+    transitionDuration: getComputedStyle(image).transitionDuration,
+  }))
+  expect(loadedPosterMotion.opacity).toBe('1')
+  expect(loadedPosterMotion.transitionProperty).toContain('opacity')
+  expect(parseFloat(loadedPosterMotion.transitionDuration)).toBeGreaterThan(0)
   const trendingRail = trendingShelf.locator('.media-row > div.overflow-x-auto')
   const rightArrow = trendingShelf.getByRole('button', { name: 'Scroll right' })
   for (let pageIndex = 0; pageIndex < 8 && await rightArrow.isEnabled(); pageIndex += 1) {

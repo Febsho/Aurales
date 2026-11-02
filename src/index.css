@@ -3718,6 +3718,18 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focu
   gap: clamp(.75rem, 1.25vw, 1.25rem);
 }
 
+/* Lazy catalog artwork fades in only after its image has loaded. The card's
+   elevated surface stays visible underneath, preventing blank flashes while
+   scrolling in Discovery, catalogs and library grids on both web and desktop. */
+.media-card-artwork {
+  opacity: 0;
+  transition: opacity 240ms ease-out;
+}
+.media-card-artwork[data-artwork-loaded="true"] { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .media-card-artwork { transition: none; }
+}
+
 .media-grid > button {
   width: 100% !important;
   max-width: 15rem;

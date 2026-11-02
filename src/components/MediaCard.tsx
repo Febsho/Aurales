@@ -37,8 +37,19 @@ function useStalledArtwork(url?: string) {
   const cleanupRef = useRef<(() => void) | undefined>(undefined)
   return useCallback((image: HTMLImageElement | null) => {
     cleanupRef.current?.()
+    // When a card resolves new artwork, keep the slot's existing surface as a
+    // placeholder until that exact image has decoded instead of flashing the
+    // unloaded image element into view. Ref callbacks change with `url`, so a
+    // reused card resets this state whenever its artwork source changes.
+    if (image?.classList.contains('media-card-artwork')) {
+      image.dataset.artworkLoaded = String(image.complete && image.naturalWidth > 0)
+    }
     cleanupRef.current = image ? watchStalledImage(image, url) : undefined
   }, [url])
+}
+
+function revealLoadedArtwork(event: React.SyntheticEvent<HTMLImageElement>): void {
+  event.currentTarget.dataset.artworkLoaded = 'true'
 }
 
 function getLocalProgressIndex(entries: Map<string, WatchProgress>): Map<string, number> {
@@ -1028,9 +1039,10 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
               ref={backdropImageRef}
               src={cachedImage(landscapeBackdrop)}
               alt={displayItem.title}
-              className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
+              className="media-card-artwork w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
               loading="lazy"
               decoding="async"
+              onLoad={revealLoadedArtwork}
               onError={(event) => handleImageError(event, landscapeBackdrop)}
             />
           ) : posterUrl ? (
@@ -1038,9 +1050,10 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
               ref={posterImageRef}
               src={cachedImage(posterUrl)}
               alt={displayItem.title}
-              className={`w-full h-full ${item.mediaType === 'collection' ? 'object-contain bg-black/70' : 'object-cover'} transition-transform duration-500 ease-out group-hover:scale-105`}
+              className={`media-card-artwork w-full h-full ${item.mediaType === 'collection' ? 'object-contain bg-black/70' : 'object-cover'} transition-transform duration-500 ease-out group-hover:scale-105`}
               loading="lazy"
               decoding="async"
+              onLoad={revealLoadedArtwork}
               onError={(event) => handleImageError(event, posterUrl)}
             />
           ) : (
@@ -1239,9 +1252,10 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
             ref={posterImageRef}
             src={cachedImage(posterUrl)}
             alt={displayItem.title}
-            className={`w-full h-full object-cover transition-transform duration-500 ease-out ${posterImageHoverClass}`}
+            className={`media-card-artwork w-full h-full object-cover transition-transform duration-500 ease-out ${posterImageHoverClass}`}
             loading="lazy"
             decoding="async"
+            onLoad={revealLoadedArtwork}
             onError={(event) => handleImageError(event, posterUrl)}
           />
         ) : (
