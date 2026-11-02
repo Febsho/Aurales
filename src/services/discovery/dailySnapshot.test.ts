@@ -12,8 +12,26 @@ describe('daily discovery snapshots', () => {
       [makeDailySnapshotKey('2026-08-28', scope)]: entry('yesterday'),
       [today]: entry('today'),
     }
+    const metadata = {
+      [makeDailySnapshotKey('2026-08-28', scope)]: { dateKey: '2026-08-28', generatedAt: 1, profileFingerprint: 'a', algorithmVersion: 12 },
+      [today]: { dateKey: '2026-08-29', generatedAt: 2, profileFingerprint: 'a', algorithmVersion: 12 },
+    }
     expect(today).toBe(makeDailySnapshotKey('2026-08-29', scope))
-    expect(latestSnapshotForScope(snapshots, scope)?.[0].item.id).toBe('today')
+    expect(latestSnapshotForScope(snapshots, metadata, scope, 12)?.[0].item.id).toBe('today')
+  })
+
+  it('skips newer snapshots produced by a different ranking algorithm', () => {
+    const scope = 'movies:for-you:de-local'
+    const yesterday = makeDailySnapshotKey('2026-08-28', scope)
+    const today = makeDailySnapshotKey('2026-08-29', scope)
+    const snapshots = { [yesterday]: entry('old-yesterday'), [today]: entry('old-today') }
+    const metadata = {
+      [yesterday]: { dateKey: '2026-08-28', generatedAt: 1, profileFingerprint: 'a', algorithmVersion: 12 },
+      [today]: { dateKey: '2026-08-29', generatedAt: 2, profileFingerprint: 'a', algorithmVersion: 11 },
+    }
+
+    expect(latestSnapshotForScope(snapshots, metadata, scope, 12)?.[0].item.id).toBe('old-yesterday')
+    expect(latestSnapshotForScope(snapshots, metadata, scope, 13)).toBeUndefined()
   })
 
   it('does not freeze a partial ranking while an active catalogue or taste source is pending', () => {

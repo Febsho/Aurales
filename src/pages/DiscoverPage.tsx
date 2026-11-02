@@ -898,8 +898,8 @@ export default function DiscoverPage() {
   // replaces it only when the material catalog content actually changed.
   const setRankedSnapshot = useDiscoverStore((s) => s.setRankedSnapshot)
   const fallbackRankedSnapshot = useMemo(
-    () => latestSnapshotForScope(persistedRankings, dailySnapshotScope),
-    [persistedRankings, dailySnapshotScope],
+    () => latestSnapshotForScope(persistedRankings, dailySnapshotMeta, dailySnapshotScope, DISCOVERY_ALGORITHM_VERSION),
+    [persistedRankings, dailySnapshotMeta, dailySnapshotScope],
   )
   const validRankedSnapshot = useMemo(
     () => dailySnapshot?.filter((entry) => matchesDiscoverTab(entry.item, tab)),

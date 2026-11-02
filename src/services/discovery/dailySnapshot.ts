@@ -26,9 +26,11 @@ export function discoverySourcesSettled(
 /** Keep yesterday visible while today's snapshot is assembled in the background. */
 export function latestSnapshotForScope(
   snapshots: Record<string, RankedRecommendation[]>,
+  metadata: Record<string, DailySnapshotMeta>,
   scope: string,
+  algorithmVersion: number,
 ): RankedRecommendation[] | undefined {
   return Object.entries(snapshots)
-    .filter(([key, value]) => key.endsWith(`|${scope}`) && value.length > 0)
+    .filter(([key, value]) => key.endsWith(`|${scope}`) && value.length > 0 && metadata[key]?.algorithmVersion === algorithmVersion)
     .sort(([a], [b]) => b.localeCompare(a))[0]?.[1]
 }
