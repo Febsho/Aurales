@@ -104,6 +104,19 @@ describe('discovery recommendation engine', () => {
 
     expect(trendWins).toBeGreaterThan(750)
   })
+  it('prefers a verified weekly trend over a stale title whose score only looks trendy because of popularity', () => {
+    const oldPopular = candidate(127, { year: new Date().getFullYear() - 10 })
+    oldPopular.popularity = 250
+    const weeklyTrend = candidate(128, { year: new Date().getFullYear() - 10 })
+    weeklyTrend.popularity = 0
+    weeklyTrend.source = 'tmdb-trending'
+    const ranked = rankCandidates([oldPopular, weeklyTrend], buildTasteProfile(activity()), activity(), [], 'for-you')
+      .sort((left, right) => Number(left.item.tmdbId) - Number(right.item.tmdbId))
+    const draws = Array.from({ length: 1000 }, (_, index) => (index + 0.5) / 1000)
+    const trendWins = draws.filter((draw) => chooseSurpriseRecommendation(ranked, undefined, () => draw)?.item.tmdbId === 128).length
+
+    expect(trendWins).toBeGreaterThan(600)
+  })
   it('ranks weekly-trending titles ahead of equally rated non-trending titles in the normal feed', () => {
     const currentYear = new Date().getFullYear()
     const ordinary = candidate(113, { year: currentYear - 5, rating: 8 })

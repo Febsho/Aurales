@@ -465,19 +465,24 @@ export function chooseSurpriseRecommendation(pool: RankedRecommendation[], curre
   if (!pool.length) return undefined
   const alternatives = pool.filter((entry) => String(entry.item.id) !== String(currentId))
   const choices = alternatives.length ? alternatives : pool
-  const maxPopularityLog = choices.reduce((max, entry) => Math.max(max, Math.log1p(Math.max(0, entry.popularity || 0))), 0)
-  const maxTrend = choices.reduce((max, entry) => Math.max(max, entry.score.trend), 0)
   const year = new Date().getFullYear()
   const weights = choices.map((entry, index) => {
-    const popularity = maxPopularityLog > 0 ? Math.log1p(Math.max(0, entry.popularity || 0)) / maxPopularityLog : 0
-    const trend = maxTrend > 0 ? Math.max(0, entry.score.trend) / maxTrend : 0
+    // Keep popularity on an absolute scale. Normalizing to the current pool's
+    // maximum made a stale title look like a blockbuster whenever every item
+    // in the pool was stale. 250 is a conservative high-popularity reference
+    // for TMDB's field; values above it remain top-tier without dominating.
+    const popularity = Math.min(1, Math.log1p(Math.max(0, entry.popularity || 0)) / Math.log1p(250))
+    // score.trend also contains a popularity-derived component. Use source
+    // provenance here so popularity is counted once and live weekly trends
+    // receive their own clear preference.
+    const isWeeklyTrend = entry.trendSignal || entry.source === 'tmdb-trending'
     const age = entry.item.year ? Math.max(0, year - entry.item.year) : 8
     const freshness = Math.max(0, 1 - age / 6)
     const rankPreference = choices.length > 1 ? 1 - index / (choices.length - 1) : 1
-    // Popularity and a live weekly trend should outweigh recency alone. Fresh
-    // releases still beat equally popular catalogue staples, but obscure new
-    // titles should not crowd out known hits in the surprise picker.
-    return 1 + popularity * 6.5 + trend * 6.5 + freshness * 8 + rankPreference * .4
+    // Live trends and established hits lead the draw, while fresh releases
+    // still beat equally popular catalogue staples. A fresh obscure title
+    // does not crowd out a known hit, and old low-momentum titles stay rare.
+    return 1 + popularity * 14 + (isWeeklyTrend ? 24 : 0) + freshness * 9 + rankPreference * .25
   })
   const total = weights.reduce((sum, weight) => sum + weight, 0)
   let target = Math.min(.999999999, Math.max(0, random())) * total

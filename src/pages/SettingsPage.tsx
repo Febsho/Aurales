@@ -1966,6 +1966,7 @@ export default function SettingsPage() {
                     <button
                       key={item.id}
                       type="button"
+                      aria-label={`${item.label} ${item.description}`}
                       onClick={() => setActiveTab(item.id as SettingsTab)}
                       className={`settings-hub-card settings-hub-card--tone-${index % 6}`}
                     >
