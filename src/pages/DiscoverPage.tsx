@@ -482,6 +482,8 @@ export default function DiscoverPage() {
   const [starterGenres]=useState<number[]>(()=>{try{const saved=JSON.parse(localStorage.getItem('aurales_discovery_starter_genres')||'[]');return Array.isArray(saved)?saved.filter((value):value is number=>Number.isFinite(value)):[]}catch{return[]}})
   const [pickerSelectionKey, setPickerSelectionKey] = useState<string | null>(null)
   const [spotlightSelectionKey, setSpotlightSelectionKey] = useState<string | null>(null)
+  const spotlightTransitionRef = useRef<HTMLElement | null>(null)
+  const previousSpotlightKeyRef = useRef<string | null>(null)
   const [pickerLogoError,setPickerLogoError]=useState(false)
   const [heroLogoError,setHeroLogoError]=useState(false)
   const preferencesWereOpenRef = useRef(false)
@@ -926,6 +928,18 @@ export default function DiscoverPage() {
   const heroRecommendation = spotlightCandidates.find((entry) => mediaIdentity(entry.item) === spotlightSelectionKey) ?? spotlightCandidates[0] ?? ranked[0]
   const heroItem = heroRecommendation?.item
   const heroMediaKey = heroItem ? mediaIdentity(heroItem) : null
+  useEffect(() => {
+    const previousKey = previousSpotlightKeyRef.current
+    previousSpotlightKeyRef.current = heroMediaKey
+    if (!previousKey || !heroMediaKey || previousKey === heroMediaKey || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const surfaces = spotlightTransitionRef.current?.querySelectorAll<HTMLElement>('.discover-spotlight__copy, .discover-spotlight__poster')
+    if (!surfaces?.length) return
+    const animations = Array.from(surfaces, (surface, index) => surface.animate([
+      { opacity: .58, transform: 'translateY(6px) scale(.99)' },
+      { opacity: 1, transform: 'translateY(0) scale(1)' },
+    ], { duration: 300, delay: index * 35, easing: 'cubic-bezier(.2,.75,.25,1)' }))
+    return () => animations.forEach((animation) => animation.cancel())
+  }, [heroMediaKey])
   const shelfRanked = useMemo(() => heroMediaKey ? ranked.filter((entry) => mediaIdentity(entry.item) !== heroMediaKey) : ranked, [heroMediaKey, ranked])
   const viewState = discoveryViewState(ranked.length, initialWaitComplete)
   const loadMoreDiscovery = useCallback(async () => {
@@ -1445,7 +1459,7 @@ export default function DiscoverPage() {
           {viewState === 'content' && heroRecommendation && <DiscoveryReveal>
             <>
               <header className="discover-spotlight-heading row-contain"><p>{tab === 'movies' ? 'A movie for tonight' : tab === 'series' ? 'A series for tonight' : 'An anime for tonight'}</p><h2 id="discover-next-title">Your Next Obsession</h2><span className="discover-spotlight-heading__accent" aria-hidden="true" /></header>
-              <section key={mediaIdentity(heroRecommendation.item)} className="discover-spotlight discover-next-hero" aria-labelledby="discover-next-title" data-title={heroRecommendation.item.title}>
+              <section ref={spotlightTransitionRef} className="discover-spotlight discover-next-hero" aria-labelledby="discover-next-title" data-title={heroRecommendation.item.title}>
                 {heroBackdrop && <div key={heroBackdrop} className="discover-spotlight__ambient" aria-hidden="true"><img className={loadedHeroBackdrop === heroBackdrop ? 'is-loaded' : undefined} src={heroBackdrop} alt="" draggable={false} decoding="async" fetchPriority="high" onLoad={() => setLoadedHeroBackdrop(heroBackdrop)} /></div>}
                 <div className="discover-spotlight__copy" data-title={heroRecommendation.item.title}>
                   <div className="discover-spotlight__top"><p className="discover-spotlight__eyebrow">Tonight</p><p className="discover-spotlight__duration">Usually {formatWatchDuration(tasteProfile.preferredRuntimeMinutes || heroRecommendation.runtimeMinutes || (tab === 'movies' ? 105 : 45))}</p></div>

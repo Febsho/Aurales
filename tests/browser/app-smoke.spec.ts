@@ -940,8 +940,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   }))
   expect(parseFloat(desktopCardMotion.transitionDuration)).toBeGreaterThan(0)
   expect(desktopCardMotion.transitionProperty).toContain('transform')
-  await expect(page.locator('.discover-spotlight__ambient img')).toHaveClass(/is-loaded/)
-  await expect.poll(() => page.locator('.discover-spotlight__ambient img').evaluate((image) => getComputedStyle(image).animationName)).toBe('discover-art-enter')
+  await expect(page.locator('.discover-spotlight__ambient img')).toHaveAttribute('src', /discovery-fixture-backdrop/)
   const desktopControlWidths = await page.evaluate(() => ({
     tabs: document.querySelector<HTMLElement>('.discover-page__tabs')?.getBoundingClientRect().width ?? 0,
   }))
@@ -1017,8 +1016,11 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.evaluate(() => { document.documentElement.dataset.runtimePlatform = 'web' })
   await page.setViewportSize({ width: 1440, height: 900 })
   const spotlightBeforeAlternate = await page.locator('.discover-next-hero').getAttribute('data-title')
+  const spotlightNode = await page.locator('.discover-next-hero').elementHandle()
   await page.locator('.discover-next-hero').getByRole('button', { name: 'Another option' }).click()
   await expect.poll(() => page.locator('.discover-next-hero').getAttribute('data-title')).not.toBe(spotlightBeforeAlternate)
+  expect(await spotlightNode?.evaluate((element) => element.isConnected), 'changing the editorial pick should animate inside one stable spotlight instead of replacing the whole card').toBe(true)
+  await spotlightNode?.dispose()
   const spotlightAfterAlternate = await page.locator('.discover-next-hero').getAttribute('data-title')
   await surpriseButton.click()
   await expect(pickerDialog).toBeVisible()
