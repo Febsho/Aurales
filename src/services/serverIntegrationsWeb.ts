@@ -68,7 +68,7 @@ function absolute(base: string, path: string): string {
   return new URL(path.replace(/^\/+/, ''), `${cleanBase(base)}/`).toString()
 }
 function authHeaders(token?: string): HeadersInit {
-  const identity = 'Client="Aurales", Device="Web Browser", DeviceId="aurales-web", Version="0.5.2"'
+  const identity = 'Client="Aurales", Device="Web Browser", DeviceId="aurales-web", Version="0.5.3"'
   return {
     Accept: 'application/json',
     ...(token ? { Authorization: `MediaBrowser Token="${token}", ${identity}` } : {}),
@@ -120,7 +120,7 @@ async function authenticate(input: ServerConnectionInput, savedToken?: string): 
     const password = input.secret || savedToken
     if (!username || !password) throw new Error('Enter your Jellyfin username and password.')
     const body = await requestJson<Record<string, unknown>>(base, '/Users/AuthenticateByName', undefined, {
-      method: 'POST', headers: { Authorization: 'MediaBrowser Client="Aurales", Device="Web Browser", DeviceId="aurales-web", Version="0.5.2"', 'Content-Type': 'application/json' },
+      method: 'POST', headers: { Authorization: 'MediaBrowser Client="Aurales", Device="Web Browser", DeviceId="aurales-web", Version="0.5.3"', 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: username, Pw: password }),
     })
     const user = body.User && typeof body.User === 'object' ? body.User as Record<string, unknown> : {}

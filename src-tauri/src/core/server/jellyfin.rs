@@ -6,7 +6,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
 use std::io::Read;
 
-const CLIENT_HEADER: &str = "MediaBrowser Client=\"Aurales\", Device=\"Desktop\", DeviceId=\"aurales-desktop\", Version=\"0.5.2\"";
+const CLIENT_HEADER: &str = "MediaBrowser Client=\"Aurales\", Device=\"Desktop\", DeviceId=\"aurales-desktop\", Version=\"0.5.3\"";
 const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const MAX_JSON_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 
