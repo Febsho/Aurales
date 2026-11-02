@@ -6181,7 +6181,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     --discover-gutter: clamp(2rem, 3vw, 3.5rem);
     width: min(100%, 1840px);
   }
-  html[data-runtime-platform="web"] .discover-time,
   html[data-runtime-platform="web"] .discover-refine,
   html[data-runtime-platform="web"] .discover-calendar,
   html[data-runtime-platform="web"] .discover-color,
@@ -6199,7 +6198,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     --discover-gutter: clamp(2rem, 3vw, 3.5rem);
     width: min(100%, 1840px);
   }
-  html[data-runtime-platform="tauri"] .discover-time,
   html[data-runtime-platform="tauri"] .discover-refine,
   html[data-runtime-platform="tauri"] .discover-calendar,
   html[data-runtime-platform="tauri"] .discover-color {
@@ -6384,15 +6382,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-page * { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 .discover-section-eyebrow { margin: 0 0 .25rem !important; color: rgba(255,255,255,.5); font-size: .72rem; font-weight: 550; }
-.discover-time { width: min(calc(100% - 2 * var(--discover-gutter, 1.5rem)), 74rem); margin: 1rem auto 1.35rem; }
-.discover-time__heading h2 { margin: 0; color: #fff; font-size: clamp(1.1rem, 2vw, 1.45rem); font-weight: 700; letter-spacing: -.025em; }
-.discover-time__options { display: flex; width: fit-content; max-width: 100%; gap: .25rem; margin: .7rem 0 .3rem; padding: .25rem; overflow-x: auto; border: 1px solid rgba(255,255,255,.1); border-radius: 999px; background: rgba(255,255,255,.055); scrollbar-width: none; }
-.discover-time__options::-webkit-scrollbar { display: none; }
-.discover-time__options button { display: inline-flex; min-height: 2.65rem; flex: 0 0 auto; align-items: center; justify-content: center; padding: .55rem .9rem; border: 0; border-radius: 999px; background: transparent; color: rgba(255,255,255,.68); font-size: .8rem; font-weight: 600; white-space: nowrap; cursor: pointer; transition: background .18s ease, color .18s ease, transform .18s ease; }
-.discover-time__options button:hover { color: #fff; }
-.discover-time__options button:active { transform: scale(.98); }
-.discover-time__options button[aria-pressed="true"] { background: #fff; color: #111; }
-.discover-time__status { min-height: 2.5rem; margin: .6rem 0 .9rem; color: rgba(255,255,255,.58); font-size: .8rem; }
 .discover-refine { width: min(calc(100% - 2 * var(--discover-gutter, 1.5rem)), 74rem); margin: 1.5rem auto 1.7rem; }
 .discover-refine__heading, .discover-genres__heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 .discover-refine__heading h2, .discover-genres__heading h2 { margin: 0; color: #fff; font-size: clamp(1.1rem, 2vw, 1.45rem); font-weight: 700; letter-spacing: -.025em; }
@@ -6540,11 +6529,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-binge__main-poster { height: 100%; }
 }
 @media (max-width: 640px) {
-  .discover-time { width: calc(100% - 2 * var(--discover-gutter)); margin-block: .8rem 1.1rem; }
-  .discover-time__heading h2 { font-size: 1.08rem; }
-  .discover-time__options { width: 100%; gap: .15rem; margin-block: .55rem .2rem; }
-  .discover-time__options button { min-height: 44px; flex: 1 0 auto; padding-inline: .7rem; font-size: .72rem; }
-  .discover-time .media-row { margin-bottom: .45rem !important; }
   .discover-page__heading .discover-spotlight-heading { margin-block: .9rem .45rem; }
   .discover-spotlight-heading { margin-block: .7rem .75rem; }
   .discover-spotlight-heading > p { font-size: .72rem; }

@@ -116,20 +116,6 @@ const DISCOVERY_MOODS: Record<DiscoverTab, readonly { id: DiscoveryMoodId; label
   ],
 }
 
-type DiscoveryTimeChoice = 'short' | 'standard' | 'long'
-const DISCOVERY_TIME_CHOICES: Record<'movie' | 'series', readonly { id: DiscoveryTimeChoice; label: string; runtimeMin?: number; runtimeMax?: number }[]> = {
-  movie: [
-    { id: 'short', label: 'Under 90 Minutes', runtimeMax: 90 },
-    { id: 'standard', label: 'About 2 Hours', runtimeMin: 91, runtimeMax: 150 },
-    { id: 'long', label: 'Long Night', runtimeMin: 151 },
-  ],
-  series: [
-    { id: 'short', label: 'Short Episode', runtimeMax: 30 },
-    { id: 'standard', label: 'About 45 Minutes', runtimeMin: 31, runtimeMax: 55 },
-    { id: 'long', label: 'Long Episode', runtimeMin: 56 },
-  ],
-}
-
 function readDiscoveryPicks(key: string): string[] {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(key) || '[]')
@@ -439,7 +425,6 @@ export default function DiscoverPage() {
   const [selectedMoodId, setSelectedMoodId] = useState<DiscoveryMoodId>('feel-good')
   const [selectedPosterColor, setSelectedPosterColor] = useState<PosterColorGroup | 'all'>('all')
   const [posterColorSamples, setPosterColorSamples] = useState<Array<{ item: SearchResult; color: PosterColorGroup }>>([])
-  const [timeChoice, setTimeChoice] = useState<DiscoveryTimeChoice>('short')
   const [tasteQuery, setTasteQuery] = useState('')
   const [bingeIndex, setBingeIndex] = useState(0)
   const [moreToDiscover, setMoreToDiscover] = useState<SearchResult[]>([])
@@ -655,28 +640,6 @@ export default function DiscoverPage() {
     refreshNonce,
     reportDiscoveryRowLoading,
   )
-  const timeChoices = DISCOVERY_TIME_CHOICES[contentType]
-  const selectedTimeChoice = timeChoices.find((choice) => choice.id === timeChoice) ?? timeChoices[0]!
-  const timeConfig = makeConfig(contentType, 'popularity.desc', preferences, {
-    voteCountMin: tab === 'anime' ? 50 : 150,
-    ...animeOverrides,
-    runtimeMin: selectedTimeChoice.runtimeMin,
-    runtimeMax: selectedTimeChoice.runtimeMax,
-  })
-  const timeRuntimeMin = Math.max(timeConfig.runtimeMin ?? 0, selectedTimeChoice.runtimeMin ?? 0)
-  const timeRuntimeMax = Math.min(timeConfig.runtimeMax ?? Number.POSITIVE_INFINITY, selectedTimeChoice.runtimeMax ?? Number.POSITIVE_INFINITY)
-  const timeRangeAvailable = timeRuntimeMin <= timeRuntimeMax
-  if (timeRuntimeMin > 0) timeConfig.runtimeMin = timeRuntimeMin
-  else delete timeConfig.runtimeMin
-  if (Number.isFinite(timeRuntimeMax)) timeConfig.runtimeMax = timeRuntimeMax
-  else delete timeConfig.runtimeMax
-  const timeRowId = `discover-time-${tab}-${timeChoice}-${discoveryQueryKey}`
-  const timeRow = useDiscoverRow(timeConfig, timeRowId, timeRangeAvailable, refreshNonce, reportDiscoveryRowLoading)
-  const timeRecommendations = useMemo(() => timeRangeAvailable
-    ? [...timeRow]
-      .filter((item) => matchesDiscoverTab(item, tab) && candidatePassesPrefs(item, prefs))
-      .sort((left, right) => (right.popularity || 0) - (left.popularity || 0) || (right.rating || 0) - (left.rating || 0))
-    : [], [timeRangeAvailable, timeRow, tab, prefs])
   const moodOptions = DISCOVERY_MOODS[tab]
   const selectedMood = moodOptions.find((mood) => mood.id === selectedMoodId) ?? moodOptions[0]!
   const moodRowId = `discover-mood-${tab}-${selectedMood.id}-${discoveryQueryKey}`
@@ -1124,7 +1087,20 @@ export default function DiscoverPage() {
   const personalizedSections = useMemo(() => generateDiscoverySections(shelfRanked, tasteProfile, mode, 5, rankingNow), [shelfRanked, tasteProfile, mode, rankingNow])
   // The public weekly trend feed powers the reference's OR TRY shelf. It is
   // independent of the user's library and follows the Tonight spotlight.
-  const trendingSection = personalizedSections.find((section) => section.id === 'trending-this-week')
+  const trendingSection = useMemo(() => {
+    const weekly = personalizedSections.find((section) => section.id === 'trending-this-week')
+    if (weekly) return weekly
+
+    // Keep the reference's "OR TRY" rail useful when the optional public
+    // weekly-trending endpoint is unavailable. The TMDB discovery pool still
+    // carries its current popularity signal, so use its strongest unseen picks.
+    const alreadyFeatured = new Set(personalizedSections.flatMap((section) => section.items.map((entry) => mediaIdentity(entry.item))))
+    const popular = ranked
+      .filter((entry) => entry.item.poster && !alreadyFeatured.has(mediaIdentity(entry.item)))
+      .sort((left, right) => (right.popularity || 0) - (left.popularity || 0) || right.score.total - left.score.total)
+    if (popular.length < 5) return undefined
+    return { id: 'trending-this-week', title: 'OR TRY', items: popular.slice(0, 10), catalogItems: popular }
+  }, [personalizedSections, ranked])
   const hiddenGemsSection = personalizedSections.find((section) => section.id === 'hidden-gems')
   const recentlyReleasedSection = personalizedSections.find((section) => section.id === 'new')
   const topRatedSection = personalizedSections.find((section) => section.id === 'top-rated')
@@ -1246,8 +1222,9 @@ export default function DiscoverPage() {
     })
   }, [personalizedSections, tab, catalogSetCache])
   useEffect(() => {
-    catalogSetCache(timeRowId, { items: timeRecommendations, page: 0, hasMore: false, scrollTop: 0 })
-  }, [timeRowId, timeRecommendations, catalogSetCache])
+    if (!trendingSection || personalizedSections.some((section) => section.id === 'trending-this-week')) return
+    catalogSetCache(`discover-section-${tab}-trending-this-week`, { items: trendingSection.catalogItems?.map((entry) => entry.item) ?? trendingSection.items.map((entry) => entry.item), page: 0, hasMore: false, scrollTop: 0 })
+  }, [catalogSetCache, personalizedSections, tab, trendingSection])
   useEffect(() => {
     catalogSetCache(bigScreenRowId, { items: bigScreenItems, page: 0, hasMore: false, scrollTop: 0 })
   }, [bigScreenItems, bigScreenRowId, catalogSetCache])
@@ -1456,6 +1433,7 @@ export default function DiscoverPage() {
             <button ref={surpriseButtonRef} className="discover-surprise-trigger" type="button" onClick={triggerSurprise} disabled={pickerPool.length < 2 || surpriseSpinning} aria-busy={surpriseSpinning}><Shuffle size={16} aria-hidden="true" /> <span>{surpriseSpinning ? 'Choosing…' : 'Surprise Me'}</span></button>
             <button ref={preferencesButtonRef} className="discover-preferences-trigger" type="button" onClick={() => setPreferencesOpen(true)} aria-label="Discovery settings"><Settings size={18} aria-hidden="true" /></button>
           </div>
+          {viewState === 'content' && <DiscoveryReveal><DiscoveryCalendarRow watchProgress={watchProgress} traktConnected={traktConnected} simklConnected={simklConnected} anilistConnected={anilistConnected} mdblistApiKey={mdblistApiKey} /></DiscoveryReveal>}
           {viewState === 'content' && heroRecommendation && <DiscoveryReveal>
             <>
               <header className="discover-spotlight-heading row-contain"><p>{tab === 'movies' ? 'A movie for tonight' : tab === 'series' ? 'A series for tonight' : 'An anime for tonight'}</p><h2 id="discover-next-title">Your Next Obsession</h2><span className="discover-spotlight-heading__accent" aria-hidden="true" /></header>
@@ -1496,7 +1474,6 @@ export default function DiscoverPage() {
             const catalogItems = (section.catalogItems ?? section.items).map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
             return <DiscoveryReveal key={section.id}><div className="row-contain discover-shelf"><MediaRow title={title} items={items} showAllItems={catalogItems} layout={isTopTen ? 'ranked' : 'poster'} disableCinematic forceShowAll showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div></DiscoveryReveal>
           })}
-          {viewState === 'content' && <DiscoveryReveal><DiscoveryCalendarRow watchProgress={watchProgress} traktConnected={traktConnected} simklConnected={simklConnected} anilistConnected={anilistConnected} mdblistApiKey={mdblistApiKey} /></DiscoveryReveal>}
           {ranked.length > 0 && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
             <p className="discover-section-eyebrow">Refine your taste</p>
             <div className="discover-refine__heading">
@@ -1534,15 +1511,6 @@ export default function DiscoverPage() {
               {selectedGenreId != null && genreSelectionItems.length === 0 && !genreLoading && <p className="discover-genre-picks__empty">No titles found for {genreMap[selectedGenreId] || 'this genre'} yet. Try another genre.</p>}
             </div>
           </section></DiscoveryReveal>
-          {viewState === 'content' && heroRecommendation && <DiscoveryReveal><section className="discover-time row-contain" aria-labelledby="discover-time-title">
-            <div className="discover-time__heading"><div><p className="discover-section-eyebrow">Picked to fit</p><h2 id="discover-time-title">How Much Time Tonight?</h2></div></div>
-            <div className="discover-time__options" role="group" aria-label="Choose a runtime">
-              {timeChoices.map((choice) => <button key={choice.id} type="button" aria-pressed={timeChoice === choice.id} onClick={() => setTimeChoice(choice.id)}>{choice.label}</button>)}
-            </div>
-            {timeRecommendations.length > 0
-              ? <MediaRow title="Picked to fit" items={timeRecommendations} showAllItems={timeRecommendations} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${timeRowId}?title=${encodeURIComponent('Picked to fit')}`} />
-              : <p className="discover-time__status" role={timeRangeAvailable ? 'status' : undefined}>{!timeRangeAvailable ? 'This option does not overlap with your runtime settings.' : discoveryRowLoads[timeRowId] ? 'Finding popular titles for this runtime…' : 'No popular titles found for this runtime. Try another option.'}</p>}
-          </section></DiscoveryReveal>}
           {viewState === 'content' && tab === 'movies' && bigScreenItems.length >= 3 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--big-screen"><MediaRow title="Made for the Big Screen" items={bigScreenItems.slice(0, 8)} showAllItems={bigScreenItems} forceShowAll layout="landscape" disableCinematic showAllPath={`/catalog/${bigScreenRowId}?title=${encodeURIComponent('Made for the Big Screen')}`} /></div></DiscoveryReveal>}
           {hiddenGemsSection && hiddenGemsSection.items.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--gems"><MediaRow title="Hidden Gems" items={hiddenGemsSection.items.map((entry) => entry.item)} showAllItems={hiddenGemsSection.catalogItems?.map((entry) => entry.item)} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-hidden-gems?title=${encodeURIComponent('Hidden Gems')}`} /></div></DiscoveryReveal>}
           {recentlyReleasedSection && recentlyReleasedSection.items.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--recent"><MediaRow title="Recently Released" items={recentlyReleasedSection.items.map((entry) => entry.item)} showAllItems={recentlyReleasedSection.catalogItems?.map((entry) => entry.item)} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-new?title=${encodeURIComponent('Recently Released')}`} /></div></DiscoveryReveal>}

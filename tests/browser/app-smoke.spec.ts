@@ -345,7 +345,6 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     }
   })
   const tmdbRequestPaths = new Set<string>()
-  const discoveryRuntimeQueries = new Set<string>()
   const continuationPages = new Set<number>()
   const animeContinuationResponses: string[] = []
   let animeMovieContinuationFailuresRemaining = 0
@@ -353,9 +352,6 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.route('https://api.themoviedb.org/**', async (route) => {
     const requestUrl = new URL(route.request().url())
     tmdbRequestPaths.add(requestUrl.pathname)
-    if (requestUrl.searchParams.has('with_runtime.gte') || requestUrl.searchParams.has('with_runtime.lte')) {
-      discoveryRuntimeQueries.add(`${requestUrl.searchParams.get('with_runtime.gte') || ''}:${requestUrl.searchParams.get('with_runtime.lte') || ''}`)
-    }
     if (requestUrl.searchParams.get('with_genres') === '28') {
       await new Promise((resolve) => setTimeout(resolve, 500))
       await route.fulfill({ json: { page: 1, total_pages: 1, total_results: 0, results: [] } })
@@ -536,15 +532,16 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(editorialPoster).toHaveAttribute('data-artwork-loaded', 'true')
   await expect(editorialPoster).toHaveCSS('opacity', '1')
   const obsessionTop = (await page.getByRole('heading', { name: 'Your Next Obsession' }).boundingBox())!.y
+  const calendarTop = (await calendar.boundingBox())!.y
   const trendingTop = (await page.getByRole('heading', { name: 'OR TRY', exact: true }).boundingBox())!.y
   const topTenTop = (await page.getByRole('heading', { name: 'Top 10 For You', exact: true }).boundingBox())!.y
   const profileWelcomeHeading = await page.getByRole('heading', { name: /Settle in,/ }).boundingBox()
   const obsessionHeading = await page.getByRole('heading', { name: 'Your Next Obsession' }).boundingBox()
   const weekendCard = await heroSpotlight.boundingBox()
   const browseControls = await page.locator('.discover-page__tabs').boundingBox()
+  expect(calendarTop).toBeLessThan(obsessionTop)
   expect(obsessionTop).toBeLessThan(trendingTop)
   expect(trendingTop).toBeLessThan(topTenTop)
-  expect(topTenTop).toBeLessThan((await calendar.boundingBox())!.y)
   await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toHaveCount(0)
   await expect(heroSpotlight.getByRole('button', { name: 'Details' })).toBeVisible()
   const firstSpotlightTitle = await obsessionCard.getAttribute('data-title')
@@ -621,26 +618,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   }))
   expect(mobileCardMotion.transform).toBe('none')
   expect(parseFloat(mobileCardMotion.transitionDuration)).toBeGreaterThan(0)
-  await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toBeVisible()
-  const twoHourChoice = page.getByRole('button', { name: 'About 2 Hours', exact: true })
-  await twoHourChoice.click()
-  await expect(twoHourChoice).toHaveAttribute('aria-pressed', 'true')
-  await expect.poll(() => discoveryRuntimeQueries.has('91:150')).toBe(true)
-  await expect(page.locator('.discover-time .media-row-card-slot').first()).toBeVisible()
-  const timeChoicesLayout = await page.locator('.discover-time__options button').evaluateAll((buttons) => {
-    const parent = buttons[0]?.parentElement?.getBoundingClientRect()
-    return buttons.map((button) => {
-      const rect = button.getBoundingClientRect()
-      return { left: rect.left, right: rect.right, height: rect.height, parentLeft: parent?.left, parentRight: parent?.right }
-    })
-  })
-  expect(timeChoicesLayout).toHaveLength(3)
-  for (const [index, choice] of timeChoicesLayout.entries()) {
-    expect(choice.height).toBeGreaterThanOrEqual(43.5)
-    expect(choice.left).toBeGreaterThanOrEqual(choice.parentLeft! - 1)
-    expect(choice.right).toBeLessThanOrEqual(choice.parentRight! + 1)
-    if (index > 0) expect(choice.left).toBeGreaterThanOrEqual(timeChoicesLayout[index - 1]!.right - 1)
-  }
+  await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toHaveCount(0)
   const recommendedShelf = page.locator('.discover-shelf').filter({ has: page.getByRole('heading', { name: 'Top 10 For You', exact: true }) })
   await recommendedShelf.getByRole('button', { name: 'Open Top 10 For You catalog' }).click()
   const recommendedCatalog = page.locator('.catalog-page')
@@ -678,10 +656,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(monoPosters).toBeVisible()
   await monoPosters.click()
   await expect(monoPosters).toHaveAttribute('aria-pressed', 'true')
-  await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toBeVisible()
   const discoveryFlow = await page.locator('.discover-page').evaluate((root) => {
     const headings = Array.from(root.querySelectorAll<HTMLElement>('h2, h3')).map((heading) => heading.textContent?.trim() || '')
-    const referenceOrder = ['Your Genres', 'How Much Time Tonight?', 'Made for the Big Screen', 'Hidden Gems', 'Recently Released', 'Your Next Binge', 'Sunday Night Moods', 'Pick by Colour']
+    const referenceOrder = ['Your Genres', 'Made for the Big Screen', 'Hidden Gems', 'Recently Released', 'Your Next Binge', 'Sunday Night Moods', 'Pick by Colour']
     return referenceOrder.filter((title) => headings.includes(title)).map((title) => headings.indexOf(title))
   })
   expect(discoveryFlow.every((position, index) => index === 0 || position > discoveryFlow[index - 1]!), 'Discovery sections should follow the reference flow from genres through mood and colour picks').toBe(true)
