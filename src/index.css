@@ -5049,6 +5049,129 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .inapp-player-options select { max-width: 23vw; }
 }
 
+/* Desktop browser playback follows the native cinema player: restrained edge
+   spacing, a centred seek rail, and compact grouped controls over a deep fade. */
+@media (min-width: 961px) and (pointer: fine) {
+  html[data-runtime-platform="web"] .inapp-player-header {
+    padding: clamp(1.5rem, 3.2vh, 3rem) clamp(1.75rem, 4.5vw, 5.75rem) 2rem !important;
+    background: linear-gradient(to bottom, rgba(0, 0, 0, .78), rgba(0, 0, 0, .18) 72%, transparent);
+  }
+
+  html[data-runtime-platform="web"] .inapp-player-header > button {
+    width: 2.75rem;
+    height: 2.75rem;
+    background: rgba(255, 255, 255, .1);
+    border: 1px solid rgba(255, 255, 255, .12);
+    backdrop-filter: blur(14px);
+    transition: background-color .18s ease, transform .18s ease;
+  }
+  html[data-runtime-platform="web"] .inapp-player-header > button:hover { transform: scale(1.04); }
+
+  html[data-runtime-platform="web"] .inapp-player-header > div:last-child {
+    max-width: min(44vw, 42rem);
+    padding: .35rem 0;
+    text-shadow: 0 2px 18px rgba(0, 0, 0, .8);
+  }
+  html[data-runtime-platform="web"] .inapp-player-header h2 { font-size: clamp(1.05rem, 1.5vw, 1.4rem); }
+  html[data-runtime-platform="web"] .inapp-player-header p { margin-top: .2rem; }
+
+  html[data-runtime-platform="web"] .inapp-player-controls {
+    padding: 0 clamp(1.75rem, 4.5vw, 5.75rem) clamp(1.75rem, 4vh, 3.25rem) !important;
+    background: linear-gradient(to top, rgba(0, 0, 0, .94), rgba(0, 0, 0, .66) 24%, rgba(0, 0, 0, .12) 72%, transparent);
+  }
+  html[data-runtime-platform="web"] .inapp-player-controls > div:first-child,
+  html[data-runtime-platform="web"] .inapp-player-control-row {
+    width: min(100%, 96rem);
+    margin-inline: auto;
+  }
+  html[data-runtime-platform="web"] .inapp-player-controls > div:first-child {
+    gap: 1rem;
+    margin-bottom: 1.1rem;
+    color: rgba(255, 255, 255, .76);
+  }
+  html[data-runtime-platform="web"] .inapp-player-control-row {
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: .8rem 2rem;
+  }
+  html[data-runtime-platform="web"] .inapp-player-transport,
+  html[data-runtime-platform="web"] .inapp-player-options { gap: .55rem; }
+  html[data-runtime-platform="web"] .inapp-player-transport { flex: 0 1 auto; }
+  html[data-runtime-platform="web"] .inapp-player-options { flex: 0 1 auto; }
+
+  html[data-runtime-platform="web"] .inapp-player-transport > button,
+  html[data-runtime-platform="web"] .inapp-player-options > button,
+  html[data-runtime-platform="web"] .inapp-player-options > div > button {
+    transition: background-color .18s ease, color .18s ease, transform .18s ease;
+  }
+  html[data-runtime-platform="web"] .inapp-player-transport > button:nth-child(2) {
+    width: 3.25rem;
+    height: 3.25rem;
+    background: rgba(255, 255, 255, .94);
+    color: #101010;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, .34);
+  }
+  html[data-runtime-platform="web"] .inapp-player-transport > button:nth-child(2):hover {
+    background: white;
+    transform: scale(1.06);
+  }
+  html[data-runtime-platform="web"] .inapp-player-transport > button:not(:nth-child(2)),
+  html[data-runtime-platform="web"] .inapp-player-options > button,
+  html[data-runtime-platform="web"] .inapp-player-options > div > button {
+    background: rgba(255, 255, 255, .09);
+    border: 1px solid rgba(255, 255, 255, .08);
+  }
+  html[data-runtime-platform="web"] .inapp-player-transport > button:not(:nth-child(2)):hover,
+  html[data-runtime-platform="web"] .inapp-player-options > button:hover,
+  html[data-runtime-platform="web"] .inapp-player-options > div > button:hover { background: rgba(255, 255, 255, .17); }
+
+  html[data-runtime-platform="web"] .inapp-player-options .inapp-player-track-picker {
+    display: flex;
+    flex-direction: column;
+    gap: .2rem;
+    color: rgba(255, 255, 255, .48);
+    font-size: .58rem;
+    font-weight: 700;
+    letter-spacing: .09em;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+  html[data-runtime-platform="web"] .inapp-player-options .inapp-player-track-picker select {
+    width: clamp(8rem, 11vw, 12rem);
+    min-height: 2.7rem;
+    border-radius: .8rem;
+    background: rgba(18, 18, 18, .78);
+    padding: .55rem .8rem;
+    color: rgba(255, 255, 255, .92);
+    font-size: .76rem;
+    letter-spacing: normal;
+    text-transform: none;
+    backdrop-filter: blur(16px);
+  }
+  html[data-runtime-platform="web"] .inapp-player-options > div:first-child > button { min-height: 2.7rem; }
+  html[data-runtime-platform="web"] .inapp-player-options > input[type="range"] { width: clamp(5rem, 7vw, 7rem); accent-color: white; }
+  html[data-runtime-platform="web"] .inapp-player-controls button:focus-visible,
+  html[data-runtime-platform="web"] .inapp-player-controls select:focus-visible,
+  html[data-runtime-platform="web"] .inapp-player-header button:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, .9);
+    outline-offset: 3px;
+  }
+  html[data-runtime-platform="web"] .inapp-player-notice {
+    top: max(1.5rem, env(safe-area-inset-top)) !important;
+    left: 50% !important;
+    width: max-content;
+    max-width: min(34rem, calc(100vw - 2rem));
+    padding: .55rem .85rem;
+    border: 1px solid rgba(255, 255, 255, .1);
+    border-radius: 999px;
+    background: rgba(12, 12, 12, .66);
+    color: rgba(255, 255, 255, .66);
+    text-align: center;
+    transform: translateX(-50%);
+    backdrop-filter: blur(16px);
+  }
+}
+
 /* Landscape phones and compact touch tablets get a cinema-player control
    deck: transport controls stay centred above the seek rail, while audio and
    subtitle selectors occupy their own readable row. */

@@ -1644,7 +1644,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           />
         ))}
       </video>
-      {playerNotice && <div className="inapp-player-notice absolute left-4 top-4 z-10 max-w-xl rounded-lg bg-black/70 px-3 py-2 text-xs text-white/70" style={{ top: 'max(1rem, env(safe-area-inset-top))', left: 'max(1rem, env(safe-area-inset-left))' }}>{playerNotice}</div>}
+      {playerNotice && <div className={`inapp-player-notice absolute left-4 top-4 z-10 max-w-xl rounded-lg bg-black/70 px-3 py-2 text-xs text-white/70 transition-opacity duration-300 ${controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} style={{ top: 'max(1rem, env(safe-area-inset-top))', left: 'max(1rem, env(safe-area-inset-left))' }}>{playerNotice}</div>}
 
       {/* Watch Together overlays */}
       {isInWatchTogether && (
