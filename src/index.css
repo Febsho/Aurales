@@ -635,6 +635,46 @@ select option {
 /* The desktop app has a persistent top navigation. Keep the Settings hub in
    normal grid flow so its identity, docs card, and categories cannot overlap. */
 @media (min-width: 781px) {
+  html[data-runtime-platform="web"] .settings-hub {
+    grid-template-areas: "identity search" "identity docs" "identity categories";
+    grid-template-columns: minmax(17rem, .72fr) minmax(0, 1.7fr);
+    align-content: start;
+    align-items: start;
+    column-gap: clamp(2.5rem, 6vw, 8rem);
+    row-gap: 0;
+  }
+  html[data-runtime-platform="web"] .settings-hub__identity {
+    grid-area: identity;
+    position: sticky;
+    top: clamp(7rem, 12vh, 10rem);
+    align-self: start;
+    transform: none;
+  }
+  html[data-runtime-platform="web"] .settings-hub__search {
+    display: flex;
+    grid-area: search;
+    align-items: center;
+    gap: .6rem;
+    min-height: 3.25rem;
+    margin-bottom: 1rem;
+    padding: 0 1rem;
+    border: 1px solid rgba(255,255,255,.1);
+    border-radius: 1rem;
+    background: rgba(255,255,255,.055);
+    color: rgba(255,255,255,.5);
+  }
+  html[data-runtime-platform="web"] .settings-hub__search svg { width: 1.1rem; height: 1.1rem; flex: 0 0 auto; }
+  html[data-runtime-platform="web"] .settings-hub__search input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: #fff; font: inherit; font-size: .9rem; }
+  html[data-runtime-platform="web"] .settings-hub__search input::placeholder { color: rgba(255,255,255,.42); }
+  html[data-runtime-platform="web"] .settings-hub__docs {
+    grid-area: docs;
+    min-height: 4.75rem;
+    align-self: start;
+    margin: 0 0 1.25rem;
+  }
+  html[data-runtime-platform="web"] .settings-hub__categories { grid-area: categories; }
+  html[data-runtime-platform="web"] .settings-page__content-inner { width: min(100%, 72rem); }
+
   html[data-runtime-platform="tauri"] .settings-hub {
     grid-template-areas: "identity docs" "identity categories";
     grid-template-columns: minmax(17rem, .72fr) minmax(0, 1.7fr);
@@ -5797,6 +5837,27 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 /* Give the desktop app's editorial sections a shared, generous measure.
    Several sections otherwise cap at 74rem and look detached on wide windows. */
 @media (min-width: 781px) {
+  html[data-runtime-platform="web"] .discover-page {
+    --discover-gutter: clamp(2rem, 3vw, 3.5rem);
+    width: min(100%, 1840px);
+  }
+  html[data-runtime-platform="web"] .discover-time,
+  html[data-runtime-platform="web"] .discover-refine,
+  html[data-runtime-platform="web"] .discover-calendar,
+  html[data-runtime-platform="web"] .discover-libraries,
+  html[data-runtime-platform="web"] .discover-color,
+  html[data-runtime-platform="web"] .discover-more {
+    width: calc(100% - 2 * var(--discover-gutter));
+    max-width: 112rem;
+  }
+  html[data-runtime-platform="web"] .discover-next,
+  html[data-runtime-platform="web"] .discover-binge,
+  html[data-runtime-platform="web"] .discover-weekend-plan,
+  html[data-runtime-platform="web"] .discover-spotlight,
+  html[data-runtime-platform="web"] .discover-spotlight-heading {
+    margin-inline: var(--discover-gutter);
+  }
+
   html[data-runtime-platform="tauri"] .discover-page {
     --discover-gutter: clamp(2rem, 3vw, 3.5rem);
     width: min(100%, 1840px);

@@ -220,7 +220,7 @@ export default function DiscoverPrefsPanel({
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-end -mb-3">
+      <div className="flex justify-end">
         <button
           type="button"
           onClick={onReset}
