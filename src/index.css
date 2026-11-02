@@ -5320,6 +5320,130 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   }
 }
 
+/* Mobile web playback keeps the same quiet, touch friendly controls as the
+   native player while letting the controls wrap before they cover the video. */
+@media (max-width: 700px) {
+  html[data-runtime-platform="web"] .inapp-player-header {
+    align-items: flex-start;
+    gap: .65rem;
+    padding: max(.7rem, env(safe-area-inset-top)) max(.7rem, env(safe-area-inset-right)) .65rem max(.7rem, env(safe-area-inset-left)) !important;
+    background: linear-gradient(to bottom, rgba(0, 0, 0, .7), rgba(0, 0, 0, .15) 78%, transparent);
+  }
+  html[data-runtime-platform="web"] .inapp-player-header > button {
+    flex: 0 0 2.6rem;
+    width: 2.6rem;
+    height: 2.6rem;
+    background: rgba(255,255,255,.1);
+    border: 1px solid rgba(255,255,255,.12);
+    backdrop-filter: blur(12px);
+  }
+  html[data-runtime-platform="web"] .inapp-player-header > div:last-child {
+    min-width: 0;
+    max-width: min(72vw, 32rem);
+    margin: .12rem auto 0 0;
+    text-align: left;
+    text-shadow: 0 2px 14px rgba(0,0,0,.85);
+  }
+  html[data-runtime-platform="web"] .inapp-player-header h2 { font-size: .95rem; line-height: 1.2; }
+  html[data-runtime-platform="web"] .inapp-player-header p { margin-top: .2rem; font-size: .58rem; }
+
+  html[data-runtime-platform="web"] .inapp-player-controls {
+    z-index: 20;
+    padding: .65rem max(.7rem, env(safe-area-inset-right)) max(.75rem, env(safe-area-inset-bottom)) max(.7rem, env(safe-area-inset-left)) !important;
+    background: linear-gradient(to top, rgba(0,0,0,.94), rgba(0,0,0,.7) 48%, rgba(0,0,0,.08) 100%);
+  }
+  html[data-runtime-platform="web"] .inapp-player-controls > div:first-child {
+    gap: .55rem;
+    margin-bottom: .65rem;
+    font-size: .7rem;
+  }
+  html[data-runtime-platform="web"] .inapp-player-control-row {
+    align-items: center;
+    gap: .45rem;
+  }
+  html[data-runtime-platform="web"] .inapp-player-transport,
+  html[data-runtime-platform="web"] .inapp-player-options {
+    justify-content: center;
+    gap: .3rem;
+    min-width: 0;
+    max-width: 100%;
+  }
+  html[data-runtime-platform="web"] .inapp-player-transport { flex-wrap: wrap; }
+  html[data-runtime-platform="web"] .inapp-player-transport > button,
+  html[data-runtime-platform="web"] .inapp-player-options > button,
+  html[data-runtime-platform="web"] .inapp-player-options > div > button {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+  html[data-runtime-platform="web"] .inapp-player-transport > button:nth-child(2) {
+    width: 3.35rem;
+    height: 3.35rem;
+  }
+  html[data-runtime-platform="web"] .inapp-player-transport > button:last-child {
+    padding-inline: .75rem;
+    white-space: nowrap;
+  }
+  html[data-runtime-platform="web"] .inapp-player-options {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    grid-template-columns: none;
+  }
+  html[data-runtime-platform="web"] .inapp-player-options > div {
+    flex: 0 0 auto;
+    width: auto;
+    max-width: none;
+  }
+  html[data-runtime-platform="web"] .inapp-player-options > div:first-child > button {
+    width: auto;
+    min-width: 2.75rem;
+    padding-inline: .7rem;
+  }
+  html[data-runtime-platform="web"] .inapp-player-options > input[type="range"] {
+    width: clamp(4.25rem, 18vw, 6rem);
+    min-height: 2.75rem;
+  }
+  html[data-runtime-platform="web"] .inapp-player-options > div:last-child {
+    display: flex;
+    flex: 0 0 auto;
+    grid-column: auto;
+    gap: .15rem;
+  }
+  html[data-runtime-platform="web"] .inapp-player-options > div:last-child button {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+  html[data-runtime-platform="web"] .inapp-player-track-menu {
+    min-width: min(17rem, calc(100vw - 1.5rem));
+    max-width: calc(100vw - 1.5rem);
+    max-height: min(42vh, 20rem);
+  }
+  html[data-runtime-platform="web"] .inapp-player-notice {
+    top: max(3.7rem, calc(env(safe-area-inset-top) + 3rem)) !important;
+    width: auto;
+    max-width: calc(100vw - 1.5rem);
+    font-size: .7rem;
+    line-height: 1rem;
+  }
+}
+
+@media (max-width: 960px) and (max-height: 600px) and (pointer: coarse) {
+  html[data-runtime-platform="web"] .inapp-player-header { padding-top: max(.5rem, env(safe-area-inset-top)) !important; }
+  html[data-runtime-platform="web"] .inapp-player-header > div:last-child { max-width: min(58vw, 30rem); }
+  html[data-runtime-platform="web"] .inapp-player-controls {
+    padding-top: .4rem !important;
+    padding-bottom: max(.4rem, env(safe-area-inset-bottom)) !important;
+  }
+  html[data-runtime-platform="web"] .inapp-player-controls > div:first-child { margin-bottom: .35rem; }
+  html[data-runtime-platform="web"] .inapp-player-control-row { gap: .25rem; }
+  html[data-runtime-platform="web"] .inapp-player-transport,
+  html[data-runtime-platform="web"] .inapp-player-options { gap: .2rem; }
+  html[data-runtime-platform="web"] .inapp-player-transport > button,
+  html[data-runtime-platform="web"] .inapp-player-options > button,
+  html[data-runtime-platform="web"] .inapp-player-options > div > button { min-height: 2.5rem; }
+  html[data-runtime-platform="web"] .inapp-player-transport > button:nth-child(2) { width: 3rem; height: 3rem; }
+}
+
 /* Shared touch layout: keep the desktop art direction, but remove its fixed
    card and hero dimensions where a narrow viewport cannot display them well. */
 @media (max-width: 700px) {
