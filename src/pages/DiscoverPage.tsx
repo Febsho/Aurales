@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Info, RefreshCw, RotateCcw, Search, Settings, Shuffle, ThumbsDown, X } from 'lucide-react'
 import type { DiscoverConfig, SearchResult, WatchProgress } from '../types'
@@ -480,6 +480,7 @@ export default function DiscoverPage() {
   const [pickerSelectionKey, setPickerSelectionKey] = useState<string | null>(null)
   const [pickerLogoError,setPickerLogoError]=useState(false)
   const [heroLogoError,setHeroLogoError]=useState(false)
+  const preferencesWereOpenRef = useRef(false)
   const [heroArt,setHeroArt]=useState<Record<string,{poster?:string;backdrop?:string;logo?:string}>>({})
   const [loadedHeroBackdrop,setLoadedHeroBackdrop]=useState<string | null>(null)
   const [surpriseSpinning, setSurpriseSpinning] = useState(false)
@@ -1300,11 +1301,14 @@ export default function DiscoverPage() {
   }, [])
   const closePreferences = useCallback(() => {
     setPreferencesOpen(false)
-    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+  }, [])
+  useLayoutEffect(() => {
+    if (preferencesWereOpenRef.current && !preferencesOpen) {
       const trigger = preferencesButtonRef.current
       if (trigger?.isConnected) trigger.focus({ preventScroll: true })
-    }))
-  }, [])
+    }
+    preferencesWereOpenRef.current = preferencesOpen
+  }, [preferencesOpen])
   useEffect(() => {
     if (!pickerOpen) return
     const previousOverflow = document.body.style.overflow
@@ -1553,18 +1557,18 @@ export default function DiscoverPage() {
           if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
           else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
         }}>
-          <div className="discover-picker__ambient" aria-hidden="true">{pickerBackdrop && <img key={pickerBackdrop} src={pickerBackdrop} alt="" draggable={false} />}</div>
+          <div className="discover-picker__ambient" aria-hidden="true">{pickerBackdrop && <img src={pickerBackdrop} alt="" draggable={false} />}</div>
           <button type="button" autoFocus className="discover-picker__close" onClick={closePicker} aria-label="Close picker"><X size={19} aria-hidden="true" /></button>
           <div className="discover-picker__body">
             <div className="discover-picker__poster">
-              {pickerPoster && <img key={pickerRecommendation.item.id} className={surpriseSpinning ? 'is-spinning' : ''} src={pickerPoster} alt={`${pickerRecommendation.item.title} poster`} draggable={false} />}
+              {pickerPoster && <img src={pickerPoster} alt={`${pickerRecommendation.item.title} poster`} draggable={false} />}
               {pickerRecommendation.item.rating != null && <span className="discover-picker__rating">★ {Number(pickerRecommendation.item.rating).toFixed(1)}</span>}
             </div>
             <div className="discover-picker__copy" data-title={pickerRecommendation.item.title}>
               <p className="discover-section-eyebrow">Tonight, try</p>
               {pickerLogo && !pickerLogoError
-                ? <img key={pickerRecommendation.item.id} className={`discover-picker__logo${surpriseSpinning ? ' is-spinning' : ''}`} src={pickerLogo} alt={pickerRecommendation.item.title} onError={() => setPickerLogoError(true)} />
-                : <h2 id="discover-picker-title" className={surpriseSpinning ? 'is-spinning' : ''}>{pickerRecommendation.item.title}</h2>}
+                ? <img className="discover-picker__logo" src={pickerLogo} alt={pickerRecommendation.item.title} onError={() => setPickerLogoError(true)} />
+                : <h2 id="discover-picker-title">{pickerRecommendation.item.title}</h2>}
               {pickerLogo && !pickerLogoError && <h2 id="discover-picker-title" className="sr-only">{pickerRecommendation.item.title}</h2>}
               <p className="discover-picker__meta">{[pickerRecommendation.item.genres?.[0], pickerRecommendation.item.year, pickerRecommendation.item.type === 'movie' ? 'Movie' : 'Series', pickerRecommendation.item.rating != null ? `★ ${Number(pickerRecommendation.item.rating).toFixed(1)}` : undefined].filter(Boolean).join(' · ')}</p>
               {pickerRecommendation.reasons[0] && <p className="discover-picker__reason">{pickerRecommendation.reasons[0].label}</p>}
