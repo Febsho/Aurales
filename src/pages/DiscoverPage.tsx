@@ -31,7 +31,7 @@ import { getActiveProfile, getActiveProfileId } from '../services/profiles'
 import { mediaIdentity } from '../services/mediaPresentation'
 import { getLocalWatchlist, subscribeLocalWatchlist, type LocalWatchlistItem } from '../services/localWatchlist'
 import { loadAmbientColor } from '../services/ambientColor'
-import { classifyPosterColor, POSTER_COLOR_GROUPS, type PosterColorGroup } from '../services/discovery/posterColor'
+import { classifyPosterColor, POSTER_COLOR_GROUPS, selectPosterColorItems, type PosterColorGroup } from '../services/discovery/posterColor'
 import { parseLibraryAddedAt, type DatedLibraryItem } from '../services/discovery/libraryItems'
 import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
 
@@ -1052,10 +1052,10 @@ export default function DiscoverPage() {
       .then(() => { if (!controller.signal.aborted && samples.length) setPosterColorSamples(samples.sort((left, right) => (candidateOrder.get(mediaIdentity(left.item)) ?? 0) - (candidateOrder.get(mediaIdentity(right.item)) ?? 0))) })
     return () => controller.abort()
   }, [posterColorCandidatesKey])
-  const posterColorItems = useMemo(() => posterColorSamples
-    .filter(({ color }) => selectedPosterColor === 'all' || color === selectedPosterColor)
-    .sort((left, right) => POSTER_COLOR_GROUPS.findIndex((group) => group.id === left.color) - POSTER_COLOR_GROUPS.findIndex((group) => group.id === right.color))
-    .map(({ item }) => item), [posterColorSamples, selectedPosterColor])
+  const posterColorItems = useMemo(
+    () => selectPosterColorItems(posterColorSamples, selectedPosterColor),
+    [posterColorSamples, selectedPosterColor],
+  )
   const availablePosterColors = useMemo(() => new Set(posterColorSamples.map(({ color }) => color)), [posterColorSamples])
   const moodItems = useMemo(() => {
     const moodGenreIds = new Set(selectedMood.genres)
@@ -1155,13 +1155,14 @@ export default function DiscoverPage() {
     const seen = new Set<string>()
     return ranked.filter((entry) => {
       const key = mediaIdentity(entry.item)
-      // Keep the fixed editorial pick out of the randomizer and its initial
-      // suggestion. It is an extra recommendation, not a roulette result.
-      if (!entry.item.poster || key === heroMediaKey || seen.has(key)) return false
+      // The editorial spotlight and randomizer are separate features. Keeping
+      // the spotlight item eligible here prevents the hero from biasing the
+      // randomizer's pool or its available choices.
+      if (!entry.item.poster || seen.has(key)) return false
       seen.add(key)
       return true
     })
-  }, [heroMediaKey, ranked])
+  }, [ranked])
   const pickerRecommendation = (pickerSelectionKey ? pickerPool.find((entry) => mediaIdentity(entry.item) === pickerSelectionKey) : undefined) || pickerPool[0]
   const pickerItem = pickerRecommendation?.item
   const pickerFrameId = pickerItem ? mediaIdentity(pickerItem) : null

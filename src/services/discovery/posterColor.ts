@@ -12,6 +12,21 @@ export const POSTER_COLOR_GROUPS = [
 
 export type PosterColorGroup = typeof POSTER_COLOR_GROUPS[number]['id']
 
+export interface PosterColorSample<T> {
+  item: T
+  color: PosterColorGroup
+}
+
+/** Filter artwork without disturbing the popularity order of its source list. */
+export function selectPosterColorItems<T>(
+  samples: readonly PosterColorSample<T>[],
+  selected: PosterColorGroup | 'all',
+): T[] {
+  return samples
+    .filter(({ color }) => selected === 'all' || color === selected)
+    .map(({ item }) => item)
+}
+
 export function classifyPosterColor({ r, g, b }: AmbientColor): PosterColorGroup {
   const red = r / 255
   const green = g / 255

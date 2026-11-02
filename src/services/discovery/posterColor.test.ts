@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { classifyPosterColor } from './posterColor'
+import { classifyPosterColor, selectPosterColorItems } from './posterColor'
 
 describe('classifyPosterColor', () => {
   it.each([
@@ -12,5 +12,25 @@ describe('classifyPosterColor', () => {
     [{ r: 120, g: 124, b: 127 }, 'monochrome'],
   ] as const)('groups sampled poster color %o', (color, expected) => {
     expect(classifyPosterColor(color)).toBe(expected)
+  })
+})
+
+describe('selectPosterColorItems', () => {
+  const samples = [
+    { item: 'most popular', color: 'blue' },
+    { item: 'next popular', color: 'red' },
+    { item: 'least popular', color: 'blue' },
+  ] as const
+
+  it('preserves popularity order when showing all colors', () => {
+    expect(selectPosterColorItems([...samples], 'all')).toEqual([
+      'most popular', 'next popular', 'least popular',
+    ])
+  })
+
+  it('filters by color without reordering the matching titles', () => {
+    expect(selectPosterColorItems([...samples], 'blue')).toEqual([
+      'most popular', 'least popular',
+    ])
   })
 })
