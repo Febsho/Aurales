@@ -6227,8 +6227,8 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-page .media-row { margin-bottom: .65rem !important; }
   .discover-page .media-row > div:first-child h2 { font-size: .92rem !important; line-height: 1.2rem; }
   .discover-page .media-row .cinematic-row-track { gap: .55rem !important; }
-  .discover-page .media-row--poster .cinematic-row-track > .media-row-card-slot { width: clamp(6.3rem, 28vw, 7.4rem); }
-  .discover-page .media-row--poster:not(.cinematic-media-row) .media-row-card-slot { width: clamp(6.3rem, 28vw, 7.4rem); }
+  .discover-page .media-row--poster .cinematic-row-track > .media-row-card-slot { width: clamp(5.25rem, 22vw, 6rem); }
+  .discover-page .media-row--poster:not(.cinematic-media-row) .media-row-card-slot { width: clamp(5.25rem, 22vw, 6rem); }
   .discover-next { margin-block: .55rem .85rem; }
   .discover-next__heading { margin-bottom: .5rem; }
   .discover-next__heading .discover-section-eyebrow { font-size: .68rem; }

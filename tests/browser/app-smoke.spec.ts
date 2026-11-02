@@ -631,10 +631,12 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     if (cards.length < 2) return null
     const first = cards[0]!.getBoundingClientRect()
     const second = cards[1]!.getBoundingClientRect()
-    return { firstRight: first.right, secondLeft: second.left }
+    return { firstRight: first.right, secondLeft: second.left, firstWidth: first.width }
   })
   expect(mobilePosterSpacing).not.toBeNull()
   expect(mobilePosterSpacing!.secondLeft).toBeGreaterThanOrEqual(mobilePosterSpacing!.firstRight)
+  expect(mobilePosterSpacing!.firstWidth).toBeGreaterThanOrEqual(80)
+  expect(mobilePosterSpacing!.firstWidth).toBeLessThanOrEqual(100)
   const mobileTasteGrid = await page.locator('.discover-taste-picks').evaluate((grid) => {
     const cards = Array.from(grid.querySelectorAll<HTMLElement>('.discover-taste-pick'))
     const first = cards[0]!.getBoundingClientRect()
