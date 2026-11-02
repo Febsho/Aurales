@@ -80,6 +80,7 @@ describe('discovery recommendation engine', () => {
     const archiveRanked = ranked.find((entry) => entry.item.tmdbId === 135)!
 
     expect(recentRanked.score.recency).toBeGreaterThan(archiveRanked.score.recency)
+    expect(recentRanked.score.preference).toBeGreaterThan(archiveRanked.score.preference)
     expect(recentRanked.score.total).toBeGreaterThan(archiveRanked.score.total)
     const draws = Array.from({ length: 1000 }, (_, index) => (index + 0.5) / 1000)
     const recentWins = draws.filter((draw) => chooseSurpriseRecommendation(ranked, undefined, () => draw)?.item.tmdbId === 134).length

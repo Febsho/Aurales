@@ -281,7 +281,7 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
     const popularityMomentum = popularitySignal(candidate.popularity) * 24 * wPopularity
     const trendSourceBoost = candidate.trendSignal || candidate.source === 'tmdb-trending' ? 34 * wPopularity : 0
     const trend = Math.max(popularityMomentum, trendSourceBoost)
-    const releaseFreshness = item.year ? Math.max(0, 1 - yearAge / 6) * 6 * wRecency : 0
+    const releaseFreshness = releaseYear != null ? Math.max(0, 1 - yearAge / 6) * 6 * wRecency : 0
     const hiddenGem = candidate.popularity != null && candidate.popularity < 35 && (item.rating || 0) >= 7
     const quick = (candidate.runtimeMinutes || 999) <= (item.type === 'movie' ? 105 : 40)
     const runtimeScore = profile.preferredRuntimeMinutes && candidate.runtimeMinutes

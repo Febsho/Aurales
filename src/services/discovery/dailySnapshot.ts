@@ -1,7 +1,7 @@
 import type { RankedRecommendation } from './types'
 
-// Version 14 raises public popularity and weekly-trend influence in ranking.
-export const DISCOVERY_ALGORITHM_VERSION = 14
+// Version 15 raises public momentum and applies precise release-date freshness.
+export const DISCOVERY_ALGORITHM_VERSION = 15
 
 export interface DailySnapshotMeta {
   dateKey: string
