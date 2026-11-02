@@ -913,7 +913,17 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(continuationPages).toContain(4)
 
   await page.setViewportSize({ width: 390, height: 844 })
+  await page.mouse.move(0, 0)
   const topTenShelf = page.locator('.discover-shelf').filter({ has: page.getByRole('heading', { name: 'Top 10 For You', exact: true }) })
+  const topTenCard = topTenShelf.locator('.media-row--ranked .media-row-card-slot').first()
+  await expect.poll(() => topTenCard.locator('[data-hero-viewport]').evaluate((poster) => poster.getBoundingClientRect().width)).toBeLessThan(100)
+  const topTenCardMeasure = await topTenCard.evaluate((card) => {
+    const button = card.querySelector<HTMLElement>('button')!
+    const poster = button.querySelector<HTMLElement>('[data-hero-viewport]')!
+    return { posterWidth: poster.getBoundingClientRect().width, rankedHeight: getComputedStyle(button).getPropertyValue('--ranked-card-height').trim() }
+  })
+  expect(topTenCardMeasure.posterWidth, JSON.stringify(topTenCardMeasure)).toBeGreaterThanOrEqual(80)
+  expect(topTenCardMeasure.posterWidth, JSON.stringify(topTenCardMeasure)).toBeLessThanOrEqual(100)
   await topTenShelf.getByRole('button', { name: 'Open Top 10 For You catalog' }).click()
   await expect(page.locator('.catalog-page h1')).toHaveText('Top 10 For You')
   await expect(page.locator('.catalog-page').getByText('10 titles loaded', { exact: true })).toBeVisible()
