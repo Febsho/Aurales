@@ -15,6 +15,14 @@ export const RECOMMENDATION_WEIGHTS = {
   explicitPositive: 18,
 } as const
 
+const POPULARITY_REFERENCE = 250
+
+function popularitySignal(value: number | undefined): number {
+  return Math.max(0, Math.min(1,
+    Math.log1p(Math.max(0, value || 0)) / Math.log1p(POPULARITY_REFERENCE),
+  ))
+}
+
 const GENRES: Record<number, string> = { 28:'Action',12:'Adventure',16:'Animation',35:'Comedy',80:'Crime',99:'Documentary',18:'Drama',10751:'Family',14:'Fantasy',36:'History',27:'Horror',10402:'Music',9648:'Mystery',10749:'Romance',878:'Sci-Fi',10770:'TV Movie',53:'Thriller',10752:'War',37:'Western',10759:'Action & Adventure',10762:'Kids',10763:'News',10764:'Reality',10765:'Sci-Fi & Fantasy',10766:'Soap',10767:'Talk',10768:'War & Politics' }
 
 const KEYWORD_STOPWORDS = new Set((
@@ -262,9 +270,7 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
     // Use a stable popularity scale across candidate pools. Relative
     // normalization made a low-momentum title look like a blockbuster when
     // the current pool happened to contain only older or niche titles.
-    const popularityMomentum = Math.max(0, Math.min(20,
-      Math.log1p(Math.max(0, candidate.popularity || 0)) / Math.log1p(250) * 20,
-    )) * wPopularity
+    const popularityMomentum = popularitySignal(candidate.popularity) * 20 * wPopularity
     const trendSourceBoost = candidate.trendSignal || candidate.source === 'tmdb-trending' ? 28 * wPopularity : 0
     const trend = Math.max(popularityMomentum, trendSourceBoost)
     const releaseFreshness = item.year ? Math.max(0, 1 - yearAge / 6) * 5 * wRecency : 0
@@ -470,7 +476,7 @@ export function chooseSurpriseRecommendation(pool: RankedRecommendation[], curre
     // maximum made a stale title look like a blockbuster whenever every item
     // in the pool was stale. 250 is a conservative high-popularity reference
     // for TMDB's field; values above it remain top-tier without dominating.
-    const popularity = Math.min(1, Math.log1p(Math.max(0, entry.popularity || 0)) / Math.log1p(250))
+    const popularity = popularitySignal(entry.popularity)
     // score.trend also contains a popularity-derived component. Use source
     // provenance here so popularity is counted once and live weekly trends
     // receive their own clear preference.
