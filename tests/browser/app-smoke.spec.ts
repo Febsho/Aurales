@@ -479,12 +479,26 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.getByRole('heading', { name: 'Continue Watching', exact: true })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Your Weekend Plan', exact: true })).toBeVisible()
+  const obsessionLayout = await obsessionCard.evaluate((card) => {
+    const poster = card.querySelector<HTMLElement>('.discover-next__poster')!.getBoundingClientRect()
+    const copy = card.querySelector<HTMLElement>('.discover-next__copy')!.getBoundingClientRect()
+    return { viewport: document.documentElement.clientWidth, card: card.getBoundingClientRect().toJSON(), poster: poster.toJSON(), copy: copy.toJSON() }
+  })
+  expect(obsessionLayout.card.left, 'the editorial pick should align with the mobile page gutter').toBeGreaterThanOrEqual(12)
+  expect(obsessionLayout.poster.width, 'the editorial poster should be large enough to match the video reference').toBeGreaterThanOrEqual(100)
+  expect(obsessionLayout.poster.width).toBeLessThanOrEqual(124)
+  expect(obsessionLayout.poster.right).toBeLessThanOrEqual(obsessionLayout.copy.left)
+  expect(obsessionLayout.copy.right).toBeLessThanOrEqual(obsessionLayout.viewport - 10)
   await expect(heroSpotlight.getByRole('button', { name: 'Another option' })).toBeVisible()
   const librariesTop = (await librariesShelf.boundingBox())!.y
   const calendarTop = (await calendar.boundingBox())!.y
   const obsessionTop = (await page.getByRole('heading', { name: 'Your Next Obsession' }).boundingBox())!.y
   const trendingTop = (await page.getByRole('heading', { name: 'OR TRY', exact: true }).boundingBox())!.y
   const topTenTop = (await page.getByRole('heading', { name: 'Top 10 For You', exact: true }).boundingBox())!.y
+  const profileWelcomeHeading = await page.getByRole('heading', { name: /Settle in,/ }).boundingBox()
+  const obsessionHeading = await page.getByRole('heading', { name: 'Your Next Obsession' }).boundingBox()
+  const weekendCard = await heroSpotlight.boundingBox()
+  const browseControls = await page.locator('.discover-page__tabs').boundingBox()
   expect(librariesTop).toBeLessThan(calendarTop)
   expect(calendarTop).toBeLessThan(obsessionTop)
   expect(obsessionTop).toBeLessThan(trendingTop)
@@ -505,10 +519,6 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.getByRole('dialog', { name: 'Discovery settings' })).toHaveCount(0)
   await expect(discoverySettings).toBeFocused()
   await expect(page.locator('.discover-weekend-plan__heading').getByText('A movie for tonight').first()).toBeVisible()
-  const profileWelcomeHeading = await page.getByRole('heading', { name: /Settle in,/ }).boundingBox()
-  const obsessionHeading = await page.getByRole('heading', { name: 'Your Next Obsession' }).boundingBox()
-  const weekendCard = await heroSpotlight.boundingBox()
-  const browseControls = await page.locator('.discover-page__tabs').boundingBox()
   expect(profileWelcomeHeading).not.toBeNull()
   expect(obsessionHeading).not.toBeNull()
   expect(weekendCard).not.toBeNull()
@@ -930,6 +940,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.setViewportSize({ width: 1440, height: 900 })
   await surpriseButton.click()
   await expect(pickerDialog).toBeVisible()
+  const pickerTitle = await pickerDialog.locator('#discover-picker-title').innerText()
+  expect(pickerTitle, 'Your Next Obsession is a separate editorial pick, never the randomizer result').not.toBe(firstSpotlightTitle)
   const desktopPickerLayout = await pickerDialog.evaluate((dialog) => {
     const bounds = dialog.getBoundingClientRect()
     const poster = dialog.querySelector<HTMLElement>('.discover-picker__poster')!.getBoundingClientRect()

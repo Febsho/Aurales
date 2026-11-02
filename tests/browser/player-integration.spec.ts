@@ -61,7 +61,7 @@ test('touch player controls fit a phone viewport and meet the minimum hit area',
     }),
   }))
   expect(metrics.scrollWidth, 'playback controls must not extend beyond the phone viewport').toBeLessThanOrEqual(metrics.width + 1)
-  expect(metrics.optionsDisplay, 'portrait player options should use the compact settings grid').toBe('grid')
+  expect(metrics.optionsDisplay, 'the active mobile player should keep its compact control row').toBe('flex')
   expect(metrics.buttons.length).toBeGreaterThan(0)
   expect(metrics.buttons.every((button) => button.width >= 44 && button.height >= 44), JSON.stringify(metrics.buttons)).toBe(true)
   expect(metrics.buttons.every((button) => button.left >= 0 && button.right <= metrics.viewportWidth + 1), JSON.stringify(metrics.buttons)).toBe(true)
@@ -78,7 +78,11 @@ test('touch player controls fit a phone viewport and meet the minimum hit area',
     ])
     expect(noticeBox).not.toBeNull()
     expect(headerBox).not.toBeNull()
-    expect(noticeBox!.y).toBeGreaterThanOrEqual(headerBox!.y + headerBox!.height)
+    const separated = noticeBox!.x + noticeBox!.width <= headerBox!.x
+      || headerBox!.x + headerBox!.width <= noticeBox!.x
+      || noticeBox!.y + noticeBox!.height <= headerBox!.y
+      || headerBox!.y + headerBox!.height <= noticeBox!.y
+    expect(separated, `playback notice and rotated mobile title must not overlap: ${JSON.stringify({ noticeBox, headerBox })}`).toBe(true)
   }
 })
 
@@ -246,7 +250,9 @@ test('Aurales InAppPlayer converts external ASS subtitles for browser text track
     const cues = video.textTracks[0]?.cues
     return cues?.length ? cues[0].text : ''
   })).toBe('Browser subtitle cue')
-  await expect(page.getByLabel('Subtitle track')).toContainText('External subtitle')
+  const selector = page.getByRole('button', { name: 'Subtitle tracks' })
+  await selector.click()
+  await expect(page.getByRole('menuitemradio', { name: 'External subtitle' })).toBeVisible()
 })
 
 test('Aurales InAppPlayer exposes browser-native subtitle tracks in its selector', async ({ page }) => {
@@ -255,9 +261,11 @@ test('Aurales InAppPlayer exposes browser-native subtitle tracks in its selector
     video.addTextTrack('subtitles', 'Native English', 'en')
     video.dispatchEvent(new Event('loadedmetadata'))
   })
-  const selector = page.getByLabel('Subtitle track')
-  await expect(selector).toContainText('Native English')
-  await selector.selectOption({ label: 'Native English' })
+  const selector = page.getByRole('button', { name: 'Subtitle tracks' })
+  await selector.click()
+  const nativeTrack = page.getByRole('menuitemradio', { name: 'Native English' })
+  await expect(nativeTrack).toBeVisible()
+  await nativeTrack.click()
   const mode = await page.locator('video').evaluate((video) => Array.from(video.textTracks).find((track) => track.label === 'Native English')?.mode)
   expect(mode).toBe('showing')
 })
