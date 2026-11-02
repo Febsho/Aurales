@@ -81,7 +81,7 @@ describe('cinematic detail responsive and scroll contracts', () => {
     expect(discoverSource).toContain("...currentTrending.map((item) => recommendationCandidate(item,'tmdb-trending'))")
     expect(discoverSource).not.toContain('discover-shelf--new-library')
     expect(discoverSource).not.toContain('From Your Servers')
-    expect(css).toContain('.discover-libraries')
+    expect(discoverSource).not.toContain('discover-libraries')
     expect(mobileNavigationSource).toContain('aria-label="Mobile navigation"')
   })
 

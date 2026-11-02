@@ -34,7 +34,6 @@ import { loadAmbientColor } from '../services/ambientColor'
 import { classifyPosterColor, POSTER_COLOR_GROUPS, type PosterColorGroup } from '../services/discovery/posterColor'
 import { parseLibraryAddedAt, type DatedLibraryItem } from '../services/discovery/libraryItems'
 import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
-import DiscoveryLibrariesRow from '../components/discovery/DiscoveryLibrariesRow'
 
 
 const GENRE_MAP_MOVIE: Record<number, string> = {
@@ -402,7 +401,6 @@ export default function DiscoverPage() {
   const simklConnected = useAppStore((s) => s.simklConnected)
   const anilistConnected = useAppStore((s) => s.anilistConnected)
   const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
-  const homeRows = useAppStore((s) => s.homeRows)
   const stremioAuthKey = useMemo(() => getStremioAuth()?.authKey ?? null, [])
   const accountScope = useMemo(() => [
     traktConnected ? `trakt:${providerCacheScope('trakt')}` : '',
@@ -1440,7 +1438,6 @@ export default function DiscoverPage() {
             const catalogItems = (section.catalogItems ?? section.items).map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
             return <DiscoveryReveal key={section.id}><div className="row-contain discover-shelf"><MediaRow title={title} items={items} showAllItems={catalogItems} layout={isTopTen ? 'ranked' : 'poster'} disableCinematic forceShowAll showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div></DiscoveryReveal>
           })}
-          {viewState === 'content' && <DiscoveryReveal><DiscoveryLibrariesRow rows={homeRows} /></DiscoveryReveal>}
           {viewState === 'content' && <DiscoveryReveal><DiscoveryCalendarRow watchProgress={watchProgress} traktConnected={traktConnected} simklConnected={simklConnected} anilistConnected={anilistConnected} mdblistApiKey={mdblistApiKey} /></DiscoveryReveal>}
           {ranked.length > 0 && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
             <p className="discover-section-eyebrow">Refine your taste</p>
