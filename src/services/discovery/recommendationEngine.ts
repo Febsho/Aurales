@@ -440,6 +440,8 @@ export function generateDiscoverySections(ranked: RankedRecommendation[], profil
   const genreDefinition: [string, string, (item: RankedRecommendation) => boolean] | undefined = favoriteGenreId != null
     ? [`because-genre-${favoriteGenreId}`, `Because You Love ${GENRES[favoriteGenreId] || `Genre ${favoriteGenreId}`}`, (item) => item.source !== 'tmdb-similar' && Boolean(item.item.genreIds?.includes(favoriteGenreId))]
     : undefined
+  const topRatedCatalog = selectTopRatedRecommendations(ranked, ranked.length)
+  const topRatedKeys = new Set(topRatedCatalog.map((item) => mediaKey(item.item)))
   // Weekly TMDB trending is a general catalog source, independent from user
   // history. Give it a visible shelf while reserving those titles from the
   // broad recommendation shelf so the same cards do not appear twice.
@@ -466,13 +468,18 @@ export function generateDiscoverySections(ranked: RankedRecommendation[], profil
     ['hidden-gems','Hidden Gems',(item) => item.popularity != null && item.popularity < 35 && (item.item.rating || 0) >= 7],
     ['new','Recently Released',(item) => isRecentlyReleased(item.item, now)],
     ...(genreDefinition ? [genreDefinition] : []),
+    ['top-rated','Top Rated',(item) => topRatedKeys.has(mediaKey(item.item))],
   ]
   const filteredDefinitions = definitions.filter(([id]) => !(mode === 'hidden-gems' && id === 'hidden-gems') && ((mode !== 'new' && mode !== 'recently-released') || id !== 'new'))
   return filteredDefinitions.map(([id,title,predicate]) => {
     const catalogItems = id === 'made-for-you' ? broadCatalog
       : id === 'trending-this-week' ? trendingCatalog
+        : id === 'top-rated' ? topRatedCatalog.filter((item) => !used.has(mediaKey(item.item)))
         : ranked.filter((item) => predicate(item) && !used.has(mediaKey(item.item)))
-    const items = id === 'made-for-you' ? broad : id === 'trending-this-week' ? trending : take(predicate)
+    const items = id === 'made-for-you' ? broad
+      : id === 'trending-this-week' ? trending
+        : id === 'top-rated' ? topRatedCatalog.filter((item) => !used.has(mediaKey(item.item))).slice(0, 10)
+          : take(predicate)
     items.forEach((item) => used.add(mediaKey(item.item)))
     return { id, title, items, catalogItems }
   }).filter((section) => section.items.length >= minSize)

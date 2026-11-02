@@ -1109,6 +1109,7 @@ export default function DiscoverPage() {
   const trendingSection = personalizedSections.find((section) => section.id === 'trending-this-week')
   const hiddenGemsSection = personalizedSections.find((section) => section.id === 'hidden-gems')
   const recentlyReleasedSection = personalizedSections.find((section) => section.id === 'new')
+  const topRatedSection = personalizedSections.find((section) => section.id === 'top-rated')
   const bigScreenItems = useMemo(() => tab === 'movies'
     ? ranked
       .filter((entry) => entry.item.type === 'movie' && Boolean(entry.item.backdrop))
@@ -1461,7 +1462,7 @@ export default function DiscoverPage() {
           </DiscoveryReveal>}
           {viewState === 'error' && <div className="mx-6 mb-8 grid min-h-72 place-items-center rounded-3xl border border-white/10 bg-white/[.03] p-8 text-center"><div><h2 className="text-xl font-black">Recommendations are unavailable</h2><p className="mt-2 max-w-md text-sm text-white/60">Cached discovery data was not available and recommendation sources could not be loaded. Check your network or TMDB settings.</p><button onClick={() => window.location.reload()} className="mt-5 rounded-full bg-white px-5 py-2 font-bold text-black">Retry</button></div></div>}
           {viewState === 'content' && trendingSection && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--trending"><MediaRow title="OR TRY" items={trendingSection.items.map((entry) => entry.item)} showAllItems={trendingSection.catalogItems?.map((entry) => entry.item)} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-trending-this-week?title=${encodeURIComponent('OR TRY')}`} /></div></DiscoveryReveal>}
-          {personalizedSections.filter((section) => section.id !== 'trending-this-week' && section.id !== 'hidden-gems' && section.id !== 'new').map((section) => {
+          {personalizedSections.filter((section) => section.id !== 'trending-this-week' && section.id !== 'hidden-gems' && section.id !== 'new' && section.id !== 'top-rated').map((section) => {
             const title = section.id === 'made-for-you' ? (mode === 'for-you' ? 'Top 10 For You' : section.title) : (DISCOVERY_SECTION_TITLES[section.id] ?? section.title.replace(/\s+for you$/i, ''))
             const isTopTen = section.id === 'made-for-you'
             const items = section.items.map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
@@ -1563,6 +1564,7 @@ export default function DiscoverPage() {
               ? <MediaRow title={selectedPosterColor === 'all' ? 'Popular Posters' : `${POSTER_COLOR_GROUPS.find((group) => group.id === selectedPosterColor)?.label} Posters`} items={posterColorItems} showAllItems={posterColorItems} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${posterColorRowId}?title=${encodeURIComponent(selectedPosterColor === 'all' ? 'Popular Posters' : `${POSTER_COLOR_GROUPS.find((group) => group.id === selectedPosterColor)?.label} Posters`)}`} />
               : <p className="discover-color__status" role="status">{ranked.some((entry) => entry.item.poster) ? 'Sampling artwork colours…' : 'Popular artwork will appear here when discovery results load.'}</p>}
           </section></DiscoveryReveal>}
+          {topRatedSection && topRatedSection.items.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--top-rated"><MediaRow title="Top Rated" items={topRatedSection.items.map((entry) => entry.item).slice(0, 10)} showAllItems={topRatedSection.catalogItems?.map((entry) => entry.item).slice(0, 10)} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-top-rated?title=${encodeURIComponent('Top Rated')}`} /></div></DiscoveryReveal>}
           {viewState === 'content' && <DiscoveryReveal><section className="discover-more row-contain" aria-labelledby="discover-more-title">
             <div className="discover-more__heading"><div><p className="discover-section-eyebrow">More popular picks</p><h2 id="discover-more-title">Keep Exploring</h2></div><span>{moreToDiscover.length ? `${moreToDiscover.length} titles loaded` : 'Fresh titles load as you scroll'}</span></div>
             {moreToDiscover.length > 0 && <div className="media-grid discover-more__grid">

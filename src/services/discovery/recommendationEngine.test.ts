@@ -402,6 +402,25 @@ describe('discovery recommendation engine', () => {
 
     expect(selectTopRatedRecommendations(ranked).map((entry) => entry.item.tmdbId)).toEqual([690, 692])
   })
+  it('adds a distinct, popularity-aware Top Rated shelf from credible votes', () => {
+    const profile = buildTasteProfile(activity([], []))
+    const pool = Array.from({ length: 22 }, (_, index) => {
+      const entry = candidate(900 + index, { rating: 7.5 + (index % 5) * 0.1, year: 2020 })
+      entry.voteCount = 300 + index * 25
+      entry.popularity = 220 - index * 3
+      return entry
+    })
+    const sections = generateDiscoverySections(rankCandidates(pool, profile, activity([], []), [], 'for-you'), profile, 'for-you')
+    const topTen = sections.find((section) => section.id === 'made-for-you')
+    const topRated = sections.find((section) => section.id === 'top-rated')
+
+    expect(topRated?.title).toBe('Top Rated')
+    expect(topRated?.items).toHaveLength(10)
+    expect(topRated?.catalogItems).toHaveLength(12)
+    expect(topRated?.items.map((entry) => entry.item.rating)).toEqual([...topRated!.items.map((entry) => entry.item.rating)].sort((left, right) => (right || 0) - (left || 0)))
+    const topTenIds = new Set(topTen?.items.map((entry) => mediaKey(entry.item)))
+    expect(topRated?.items.every((entry) => !topTenIds.has(mediaKey(entry.item)))).toBe(true)
+  })
   it('keeps a small weekly trend response in Recommended instead of dropping its cards',()=>{
     const profile=buildTasteProfile(activity())
     const general=Array.from({length:2},(_,index)=>candidate(600+index))
