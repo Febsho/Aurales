@@ -906,7 +906,15 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const moreToDiscover = page.getByRole('heading', { name: 'Keep Exploring', exact: true })
   await moreToDiscover.scrollIntoViewIfNeeded()
   await expect(moreToDiscover).toBeVisible()
-  await page.locator('.discover-more__sentinel').scrollIntoViewIfNeeded()
+  const moreSentinel = page.locator('.discover-more__sentinel')
+  await moreSentinel.scrollIntoViewIfNeeded()
+  const appScrollRoot = page.locator('.app-scroll-root')
+  for (let attempt = 0; attempt < 5 && !continuationPages.has(4); attempt += 1) {
+    await appScrollRoot.evaluate((root) => root.scrollTo({ top: root.scrollHeight, behavior: 'instant' }))
+    await page.mouse.wheel(0, 700)
+    await page.waitForTimeout(120)
+  }
+  await expect.poll(() => continuationPages.has(4), { timeout: 10_000 }).toBe(true)
   const continuedGrid = page.locator('.discover-more__grid')
   await expect(continuedGrid.getByRole('button', { name: 'More discovery fixture 1 More discovery fixture 1 2026', exact: true })).toBeVisible()
   await expect(continuedGrid.getByRole('button').first()).toHaveAccessibleName('More discovery fixture 1 More discovery fixture 1 2026')
