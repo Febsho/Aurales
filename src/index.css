@@ -6041,8 +6041,11 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-binge__feature { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: .7rem; overflow: hidden; padding: 1rem; border: 1px solid rgba(255,255,255,.1); border-radius: 1.2rem; background: linear-gradient(110deg, rgba(28,28,33,.98), rgba(28,28,33,.72)); }
 .discover-binge__art { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
 .discover-binge__art::after { position: absolute; inset: 0; content: ''; background: linear-gradient(180deg, rgba(17,17,20,.76), rgba(17,17,20,.88)); }
-.discover-binge__art > img { width: 100%; height: 100%; object-fit: cover; opacity: .28; filter: blur(12px); transform: scale(1.06); }
+.discover-binge__art > img { width: 100%; height: 100%; object-fit: cover; opacity: .28; filter: blur(12px); transform: scale(1.06); animation: discover-binge-art-enter .46s cubic-bezier(.2,.75,.25,1) both; }
+.discover-binge__copy, .discover-binge__gallery { animation: discover-binge-content-enter .34s cubic-bezier(.2,.75,.25,1) both; }
 .discover-binge__copy { position: relative; z-index: 1; display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 1rem; }
+@keyframes discover-binge-art-enter { from { opacity: 0; transform: scale(1.085); } to { opacity: .28; transform: scale(1.06); } }
+@keyframes discover-binge-content-enter { from { opacity: .35; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 .discover-binge__copy h3 { margin: .15rem 0 .2rem; color: #fff; font-size: clamp(1.15rem, 2.4vw, 1.6rem); line-height: 1.12; overflow-wrap: anywhere; }
 .discover-binge__copy > div:first-child > p:not(.discover-section-eyebrow) { margin: 0; color: rgba(255,255,255,.65); font-size: .8rem; }
 .discover-binge__actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: .45rem; }
