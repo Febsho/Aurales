@@ -880,6 +880,54 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopDiscovery.height).toBeLessThanOrEqual(500)
     expect(desktopDiscovery.poster).toBe(true)
   }
+  for (const width of [768, 1024, 1280, 1440, 1920]) {
+    await page.setViewportSize({ width, height: 900 })
+    const desktopBounds = await page.evaluate(() => {
+      const viewport = document.documentElement.clientWidth
+      const page = document.querySelector<HTMLElement>('.discover-page')!
+      const hero = document.querySelector<HTMLElement>('.discover-weekend-plan')!
+      const copy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
+      const poster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
+      const contentSections = Array.from(page.querySelectorAll<HTMLElement>(
+        '.discover-next, .discover-weekend-plan, .discover-shelf, .discover-refine, .discover-genres, .discover-binge, .discover-more',
+      )).map((section) => section.getBoundingClientRect())
+      return {
+        viewport,
+        documentWidth: document.documentElement.scrollWidth,
+        page: page.getBoundingClientRect().toJSON(),
+        sectionsInside: contentSections.every((bounds) => bounds.left >= -1 && bounds.right <= viewport + 1),
+        heroColumnsSeparated: copy.right <= poster.left + 1,
+      }
+    })
+    expect(desktopBounds.documentWidth, `document overflow at ${width}px`).toBeLessThanOrEqual(width + 1)
+    expect(desktopBounds.page.left, `Discovery shifted offscreen at ${width}px`).toBeGreaterThanOrEqual(-1)
+    expect(desktopBounds.page.right, `Discovery exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
+    expect(desktopBounds.sectionsInside, `a Discovery section exceeds the viewport at ${width}px`).toBe(true)
+    expect(desktopBounds.heroColumnsSeparated, `hero copy overlaps its poster at ${width}px`).toBe(true)
+  }
+  await page.evaluate(() => { document.documentElement.dataset.runtimePlatform = 'tauri' })
+  for (const width of [1024, 1440, 1920]) {
+    await page.setViewportSize({ width, height: 900 })
+    const desktopBounds = await page.evaluate(() => {
+      const viewport = document.documentElement.clientWidth
+      const page = document.querySelector<HTMLElement>('.discover-page')!
+      const hero = document.querySelector<HTMLElement>('.discover-weekend-plan')!
+      const copy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
+      const poster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
+      return {
+        viewport,
+        documentWidth: document.documentElement.scrollWidth,
+        page: page.getBoundingClientRect().toJSON(),
+        heroColumnsSeparated: copy.right <= poster.left + 1,
+      }
+    })
+    expect(desktopBounds.documentWidth, `Tauri document overflow at ${width}px`).toBeLessThanOrEqual(width + 1)
+    expect(desktopBounds.page.left, `Tauri Discovery shifted offscreen at ${width}px`).toBeGreaterThanOrEqual(-1)
+    expect(desktopBounds.page.right, `Tauri Discovery exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
+    expect(desktopBounds.heroColumnsSeparated, `Tauri hero copy overlaps its poster at ${width}px`).toBe(true)
+  }
+  await page.evaluate(() => { document.documentElement.dataset.runtimePlatform = 'web' })
+  await page.setViewportSize({ width: 1440, height: 900 })
   await surpriseButton.click()
   await expect(pickerDialog).toBeVisible()
   const desktopPickerLayout = await pickerDialog.evaluate((dialog) => {
