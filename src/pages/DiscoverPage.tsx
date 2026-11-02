@@ -1584,12 +1584,15 @@ export default function DiscoverPage() {
           <div className="discover-picker__ambient" aria-hidden="true">{pickerBackdrop && <img src={pickerBackdrop} alt="" draggable={false} />}</div>
           <button type="button" autoFocus className="discover-picker__close" onClick={closePicker} aria-label="Close picker"><X size={19} aria-hidden="true" /></button>
           <div className="discover-picker__body">
-            <div className="discover-picker__poster">
-              {pickerPoster && <img src={pickerPoster} alt={`${pickerRecommendation.item.title} poster`} draggable={false} />}
-              {pickerRecommendation.item.rating != null && <span className="discover-picker__rating">★ {Number(pickerRecommendation.item.rating).toFixed(1)}</span>}
+            <div className="discover-picker__visual">
+              <div className="discover-picker__poster">
+                {pickerPoster && <img src={pickerPoster} alt={`${pickerRecommendation.item.title} poster`} draggable={false} />}
+                {pickerRecommendation.item.rating != null && <span className="discover-picker__rating">★ {Number(pickerRecommendation.item.rating).toFixed(1)}</span>}
+              </div>
+              {surpriseSpinning && <p className="discover-picker__status" role="status" aria-live="polite"><Shuffle size={15} aria-hidden="true" />Finding something for you</p>}
             </div>
             <div className="discover-picker__copy" data-title={pickerRecommendation.item.title}>
-              <p className="discover-section-eyebrow">Tonight, try</p>
+              {!surpriseSpinning && <p className="discover-section-eyebrow">Tonight, try</p>}
               {pickerLogo && !pickerLogoError
                 ? <img className="discover-picker__logo" src={pickerLogo} alt={pickerRecommendation.item.title} onError={() => setPickerLogoError(true)} />
                 : <h2 id="discover-picker-title">{pickerRecommendation.item.title}</h2>}
