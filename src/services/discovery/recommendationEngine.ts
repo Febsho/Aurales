@@ -203,6 +203,11 @@ function compareReleaseRecency(left: SearchResult, right: SearchResult): number 
   return 0
 }
 
+function recommendationReleaseYear(item: SearchResult, now: number): number | undefined {
+  const timestamp = releaseDateTimestamp(item)
+  return timestamp == null ? item.year : new Date(timestamp).getUTCFullYear()
+}
+
 export function rankCandidates(candidates: RecommendationCandidate[], profile: TasteProfile, activity: DiscoveryActivity, feedback: RecommendationFeedback[], mode: DiscoveryMode, now = Date.now(), impressions: Record<string,number> = {}, weights: RankingWeightOverrides = {}): RankedRecommendation[] {
   const uniqueCandidates = dedupeCandidates(candidates)
   const completed = watchedKeys(activity)
@@ -265,7 +270,8 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
 
     // Quality
     const quality = Math.max(0, ((item.rating || 5) - 5) * RECOMMENDATION_WEIGHTS.quality) * wQuality
-    const yearAge = item.year ? Math.max(0, new Date(now).getFullYear() - item.year) : 8
+    const releaseYear = recommendationReleaseYear(item, now)
+    const yearAge = releaseYear ? Math.max(0, new Date(now).getFullYear() - releaseYear) : 8
     const novelty = (Math.max(0, 8 - Math.min(8, yearAge)) / 2) * wNovelty
     // Use a stable popularity scale across candidate pools. Relative
     // normalization made a low-momentum title look like a blockbuster when
@@ -481,7 +487,8 @@ export function chooseSurpriseRecommendation(pool: RankedRecommendation[], curre
     // provenance here so popularity is counted once and live weekly trends
     // receive their own clear preference.
     const isWeeklyTrend = entry.trendSignal || entry.source === 'tmdb-trending'
-    const age = entry.item.year ? Math.max(0, year - entry.item.year) : 8
+    const releaseYear = recommendationReleaseYear(entry.item, Date.now())
+    const age = releaseYear ? Math.max(0, year - releaseYear) : 8
     const freshness = Math.max(0, 1 - age / 6)
     const rankPreference = choices.length > 1 ? 1 - index / (choices.length - 1) : 1
     // Live trends and established hits lead the draw, while fresh releases

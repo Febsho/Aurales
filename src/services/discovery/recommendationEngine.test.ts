@@ -69,6 +69,22 @@ describe('discovery recommendation engine', () => {
     const recentWins = draws.filter((draw) => chooseSurpriseRecommendation(ranked, undefined, () => draw)?.item.tmdbId === 104).length
     expect(recentWins).toBeGreaterThan(600)
   })
+  it('uses exact release dates when recommendation entries have no year field', () => {
+    const currentYear = new Date().getUTCFullYear()
+    const today = new Date().toISOString().slice(0, 10)
+    const recent = candidate(134, { year: undefined, releaseDate: today, rating: 8 })
+    const archive = candidate(135, { year: undefined, releaseDate: `${currentYear - 10}-01-01`, rating: 8 })
+    recent.popularity = archive.popularity = 80
+    const ranked = rankCandidates([archive, recent], buildTasteProfile(activity()), activity(), [], 'for-you')
+    const recentRanked = ranked.find((entry) => entry.item.tmdbId === 134)!
+    const archiveRanked = ranked.find((entry) => entry.item.tmdbId === 135)!
+
+    expect(recentRanked.score.recency).toBeGreaterThan(archiveRanked.score.recency)
+    expect(recentRanked.score.total).toBeGreaterThan(archiveRanked.score.total)
+    const draws = Array.from({ length: 1000 }, (_, index) => (index + 0.5) / 1000)
+    const recentWins = draws.filter((draw) => chooseSurpriseRecommendation(ranked, undefined, () => draw)?.item.tmdbId === 134).length
+    expect(recentWins).toBeGreaterThan(500)
+  })
   it('lets an established popular title beat an obscure new release in Surprise Me', () => {
     const oldHit = candidate(107, { year: new Date().getFullYear() - 10, rating: 8 })
     oldHit.popularity = 250
