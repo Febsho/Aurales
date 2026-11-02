@@ -5068,8 +5068,11 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .inapp-player-header > button:hover { transform: scale(1.04); }
 
   html[data-runtime-platform="web"] .inapp-player-header > div:last-child {
+    margin-right: auto;
+    margin-left: 1rem;
     max-width: min(44vw, 42rem);
     padding: .35rem 0;
+    text-align: left;
     text-shadow: 0 2px 18px rgba(0, 0, 0, .8);
   }
   html[data-runtime-platform="web"] .inapp-player-header h2 { font-size: clamp(1.05rem, 1.5vw, 1.4rem); }
@@ -5103,6 +5106,17 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .inapp-player-options > button,
   html[data-runtime-platform="web"] .inapp-player-options > div > button {
     transition: background-color .18s ease, color .18s ease, transform .18s ease;
+  }
+  html[data-runtime-platform="web"] .inapp-player-options [data-player-popover] { position: relative; }
+  html[data-runtime-platform="web"] .inapp-player-track-menu {
+    min-width: 17rem;
+    max-height: min(60vh, 26rem);
+    overflow-y: auto;
+    border-color: rgba(255, 255, 255, .13);
+    background: rgba(16, 18, 22, .94);
+    box-shadow: 0 18px 56px rgba(0, 0, 0, .55);
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, .2) transparent;
   }
   html[data-runtime-platform="web"] .inapp-player-transport > button:nth-child(2) {
     width: 3.25rem;

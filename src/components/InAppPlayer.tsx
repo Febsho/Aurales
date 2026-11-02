@@ -48,6 +48,12 @@ interface InAppPlayerProps {
   title: string
   subtitle?: string
   subtitles?: SubtitleResult[]
+  serverTrackInfo?: {
+    provider?: string
+    sourceItemId?: string
+    mediaSourceId?: string
+    audioTracks?: Record<string, unknown>[]
+  }
   playbackItem?: PlaybackItem
   startTime?: number
   poster?: string
@@ -66,6 +72,7 @@ interface AudioTrackInfo {
   label: string
   language?: string
   index: number
+  sourceIndex?: number
   enabled: boolean
 }
 
@@ -108,12 +115,23 @@ async function resolvePmdbPlaybackEpisode(item: PlaybackItem): Promise<{ tmdbId?
   }
 }
 
-async function fetchSubtitleText(url: string, signal?: AbortSignal): Promise<string> {
+async function fetchSubtitleText(url: string, signal?: AbortSignal, headers?: PlaybackRequestHeaders): Promise<string> {
   return getHttpText(url, {
     timeoutMs: 15_000,
     signal,
+    headers,
     maxBytes: MAX_SUBTITLE_BYTES,
   })
+}
+
+async function loadSubtitleText(url: string, signal?: AbortSignal, headers?: PlaybackRequestHeaders): Promise<string> {
+  try {
+    return await fetchSubtitleText(url, signal, headers)
+  } catch (directError) {
+    if (!getMediaWorkerConfig()) throw directError
+    const session = await createMediaSession(url, signal, headers)
+    return fetchSubtitleText(session.url, signal)
+  }
 }
 
 async function requestSubtitleTranslation(apiKey: string, model: string, content: string, language: string): Promise<string> {
@@ -181,7 +199,7 @@ async function requestSubtitleTranslation(apiKey: string, model: string, content
   return blocks.join('\n\n')
 }
 
-export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_REQUEST_HEADERS, title, subtitle, subtitles = NO_SUBTITLES, playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError, onPlaybackStarted, onNextEpisode, nextEpisodeHint }: InAppPlayerProps) {
+export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_REQUEST_HEADERS, title, subtitle, subtitles = NO_SUBTITLES, serverTrackInfo, playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError, onPlaybackStarted, onNextEpisode, nextEpisodeHint }: InAppPlayerProps) {
   useEffect(() => {
     setRequestPlaybackActive(true)
     return () => setRequestPlaybackActive(false)
@@ -204,6 +222,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   const translatedSubtitleUrlsRef = useRef<Set<string>>(new Set())
   const mediaProxyAttemptedRef = useRef(false)
   const mediaProxyResumeRef = useRef<number | null>(null)
+  const trackSwitchResumeRef = useRef<{ time: number; shouldResume: boolean } | null>(null)
   const mediaProxySessionRef = useRef<{ url: string; expiresAt: number } | null>(null)
   const renewedMediaProxyUrlRef = useRef<string | null>(null)
   const conversionModesTriedRef = useRef<MediaConversionMode[]>([])
@@ -226,6 +245,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   const [selectedSubtitle, setSelectedSubtitle] = useState('off')
   const [audioTracks, setAudioTracks] = useState<AudioTrackInfo[]>([])
   const [selectedAudio, setSelectedAudio] = useState('0')
+  const [audioMenuOpen, setAudioMenuOpen] = useState(false)
+  const [subtitleMenuOpen, setSubtitleMenuOpen] = useState(false)
   const [preparedSubtitles, setPreparedSubtitles] = useState<PreparedSubtitle[]>([])
   const [conversionModes, setConversionModes] = useState<MediaConversionMode[]>([])
   const conversionModesRef = useRef<MediaConversionMode[]>([])
@@ -672,7 +693,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     const playbackRun = playbackRunRef.current
     const isCurrentRun = () => playbackRun === playbackRunRef.current
     if (selectedSubtitle === 'off') return
-    const trackIdx = Number(selectedSubtitle)
+    const trackIdx = Number(selectedSubtitle.startsWith('external:') ? selectedSubtitle.slice('external:'.length) : selectedSubtitle)
     const track = preparedSubtitles[trackIdx]
     if (!track) return
 
@@ -686,7 +707,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     conversionControllerRef.current?.abort()
     conversionControllerRef.current = null
     try {
-      const text = await fetchSubtitleText(track.url)
+      const text = await loadSubtitleText(track.url, undefined, playbackRequestHeaders)
       if (!isCurrentRun()) return
 
       const translatedText = await requestSubtitleTranslation(
@@ -711,7 +732,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
 
       const newIndex = preparedSubtitles.length
       setPreparedSubtitles((prev) => [...prev, newTrack])
-      setSelectedSubtitle(String(newIndex))
+      setSelectedSubtitle(`external:${newIndex}`)
 
       if (videoRef.current) {
         const video = videoRef.current
@@ -922,7 +943,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       }
 
       try {
-        const text = await fetchSubtitleText(track.url, controller.signal)
+        const text = await loadSubtitleText(track.url, controller.signal, playbackRequestHeaders)
         if (cancelled) {
           prepared[index] = fallback
           continue
@@ -946,7 +967,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       controller.abort()
       objectUrls.forEach((objectUrl) => URL.revokeObjectURL(objectUrl))
     }
-  }, [subtitles])
+  }, [playbackRequestHeaders, subtitles])
 
   // ── Auto-select subtitle track by language priority ──
   useEffect(() => {
@@ -970,12 +991,16 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     }
     if (selection.kind === 'track') {
       const bestIdx = selection.track.index
-      setSelectedSubtitle(String(bestIdx))
+      setSelectedSubtitle(`external:${bestIdx}`)
       if (videoRef.current) {
         selectionTimer = setTimeout(() => {
           if (cancelled || !videoRef.current) return
-          Array.from(videoRef.current.textTracks).forEach((t, idx) => {
-            t.mode = idx === bestIdx ? 'showing' : 'disabled'
+          const selectedExternalId = `external:${bestIdx}`
+          Array.from(videoRef.current.querySelectorAll<HTMLTrackElement>('track[data-player-subtitle-id]')).forEach((element) => {
+            element.track.mode = element.dataset.playerSubtitleId === selectedExternalId ? 'showing' : 'disabled'
+          })
+          Array.from(videoRef.current.textTracks).forEach((track) => {
+            if (!Array.from(videoRef.current!.querySelectorAll<HTMLTrackElement>('track')).some((element) => element.track === track)) track.mode = 'disabled'
           })
         }, 100)
       }
@@ -1089,7 +1114,20 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     const video = videoRef.current as (HTMLVideoElement & { audioTracks?: Array<{ enabled: boolean; id?: string; label?: string; language?: string }> }) | null
     const tracks = video?.audioTracks
     if (!tracks?.length) {
-      setAudioTracks([])
+      const serverTracks = serverTrackInfo?.provider === 'jellyfin' ? serverTrackInfo.audioTracks || [] : []
+      const serverOptions = serverTracks.flatMap((raw, index) => {
+        const sourceIndex = typeof raw.Index === 'number' ? raw.Index : typeof raw.index === 'number' ? raw.index : undefined
+        if (sourceIndex === undefined) return []
+        const language = typeof raw.Language === 'string' ? raw.Language : typeof raw.language === 'string' ? raw.language : undefined
+        const label = typeof raw.DisplayTitle === 'string' ? raw.DisplayTitle
+          : typeof raw.Title === 'string' ? raw.Title
+            : typeof raw.title === 'string' ? raw.title
+              : getLanguageNameFromTrack(language) || `Audio ${index + 1}`
+        return [{ id: String(index), label, language, index, sourceIndex, enabled: Boolean(raw.IsDefault ?? raw.isDefault) }]
+      })
+      setAudioTracks(serverOptions)
+      const selected = serverOptions.find((track) => track.enabled) || serverOptions[0]
+      if (selected) setSelectedAudio(String(selected.index))
       return
     }
 
@@ -1327,9 +1365,13 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       hlsTracks.subtitleTrack = id.startsWith('hls:') ? Number(id.slice(4)) : -1
     }
     if (!video) return
+    const externalElements = Array.from(video.querySelectorAll<HTMLTrackElement>('track[data-player-subtitle-id]'))
+    externalElements.forEach((element) => {
+      element.track.mode = element.dataset.playerSubtitleId === id ? 'showing' : 'disabled'
+    })
     Array.from(video.textTracks).forEach((track, index) => {
-      const selectedTextTrack = id.startsWith('native:') ? Number(id.slice(7)) : id === String(index) ? index : -1
-      track.mode = !id.startsWith('hls:') && selectedTextTrack === index ? 'showing' : 'disabled'
+      if (externalElements.some((element) => element.track === track)) return
+      track.mode = id.startsWith('native:') && Number(id.slice(7)) === index ? 'showing' : 'disabled'
     })
     showControlsTemporarily()
   }
@@ -1344,7 +1386,36 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     }
     const video = videoRef.current as (HTMLVideoElement & { audioTracks?: Array<{ enabled: boolean }> }) | null
     const tracks = video?.audioTracks
-    if (!tracks?.length) return
+    if (!tracks?.length) {
+      const selectedTrack = audioTracks.find((track) => String(track.index) === index)
+      if (serverTrackInfo?.provider === 'jellyfin' && selectedTrack?.sourceIndex !== undefined && video) {
+        try {
+          const source = new URL(url)
+          source.searchParams.set('AudioStreamIndex', String(selectedTrack.sourceIndex))
+          trackSwitchResumeRef.current = { time: video.currentTime || 0, shouldResume: !video.paused }
+          setSelectedAudio(index)
+          setLoading(true)
+          setPlayerNotice(`Switching to ${selectedTrack.label}…`)
+          if (needsHeaderProxy) {
+            void createMediaSession(source.toString(), undefined, playbackRequestHeaders).then((session) => {
+              mediaProxySessionRef.current = session
+              setHeaderSessionUrl(session.url)
+            }).catch(() => {
+              trackSwitchResumeRef.current = null
+              setLoading(false)
+              setPlayerNotice('Could not reopen the Jellyfin stream with the selected audio track.')
+            })
+          } else {
+            video.src = source.toString()
+            video.load()
+          }
+        } catch {
+          setPlayerNotice('This Jellyfin stream cannot switch audio tracks in the browser.')
+        }
+      }
+      showControlsTemporarily()
+      return
+    }
     Array.from(tracks).forEach((track, trackIndex) => {
       track.enabled = String(trackIndex) === index
     })
@@ -1461,6 +1532,12 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     }
   }
 
+  const subtitleOptions = [
+    ...hlsSubtitleTracks.map((track) => ({ id: `hls:${track.index}`, label: track.label })),
+    ...nativeSubtitleTracks.map((track) => ({ id: `native:${track.index}`, label: track.label })),
+    ...preparedSubtitles.map((track, index) => ({ id: `external:${index}`, label: track.label || track.lang || `Subtitle ${index + 1}` })),
+  ]
+
   return createPortal((
     <div
       ref={playerShellRef}
@@ -1508,7 +1585,12 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           refreshNativeSubtitleTracks()
           const proxyResume = mediaProxyResumeRef.current
           mediaProxyResumeRef.current = null
-          if (proxyResume !== null && proxyResume > 0) {
+          const trackSwitchResume = trackSwitchResumeRef.current
+          trackSwitchResumeRef.current = null
+          if (trackSwitchResume) {
+            event.currentTarget.currentTime = trackSwitchResume.time
+            if (trackSwitchResume.shouldResume) void event.currentTarget.play().catch(() => {})
+          } else if (proxyResume !== null && proxyResume > 0) {
             event.currentTarget.currentTime = proxyResume
           } else if (startTime && startTime > 0) {
             event.currentTarget.currentTime = startTime
@@ -1641,6 +1723,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
             srcLang={track.lang || 'und'}
             label={track.label || track.lang || `Subtitle ${index + 1}`}
             kind="subtitles"
+            data-player-subtitle-id={`external:${index}`}
           />
         ))}
       </video>
@@ -1845,25 +1928,39 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
                 {playbackSpeed === 1 ? '1x' : `${playbackSpeed}x`}
               </button>
             </div>
-            <label className="inapp-player-track-picker"><span>Audio</span><select aria-label="Audio track" value={selectedAudio} onChange={(event) => changeAudio(event.target.value)} className="bg-black/80 text-white border border-white/15 rounded-xl px-3 py-2 text-sm outline-none">
-              {audioTracks.length > 0 ? audioTracks.map((track) => (
-                <option key={track.id} value={track.index}>{track.label}</option>
-              )) : (
-                <option value="0">Default audio</option>
+            <div className="relative" data-player-popover>
+              {audioMenuOpen && (
+                <div role="menu" aria-label="Audio tracks" className="inapp-player-track-menu absolute bottom-full right-0 z-50 mb-3 min-w-60 max-w-[min(24rem,80vw)] overflow-hidden rounded-2xl border border-white/10 bg-[#111318]/95 p-1.5 shadow-2xl backdrop-blur-2xl">
+                  <p className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[.18em] text-white/40">Audio</p>
+                  {audioTracks.length ? audioTracks.map((track) => (
+                    <button key={track.id} type="button" role="menuitemradio" aria-checked={selectedAudio === String(track.index)} onClick={() => { changeAudio(String(track.index)); setAudioMenuOpen(false) }} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-white/80 transition hover:bg-white/10 hover:text-white">
+                      <span className="grid h-4 w-4 shrink-0 place-items-center">{selectedAudio === String(track.index) ? <span className="h-1.5 w-1.5 rounded-full bg-white" /> : null}</span>
+                      <span className="truncate">{track.label}</span>
+                    </button>
+                  )) : <p className="px-3 py-2.5 text-sm text-white/45">No audio tracks detected in this browser for this source.</p>}
+                </div>
               )}
-            </select></label>
-            <label className="inapp-player-track-picker"><span>Subtitles</span><select aria-label="Subtitle track" value={selectedSubtitle} onChange={(event) => changeSubtitle(event.target.value)} className="bg-black/80 text-white border border-white/15 rounded-xl px-3 py-2 text-sm outline-none">
-              <option value="off">Subtitles off</option>
-              {hlsSubtitleTracks.map((track) => (
-                <option key={`hls:${track.index}`} value={`hls:${track.index}`}>{track.label}</option>
-              ))}
-              {nativeSubtitleTracks.map((track) => (
-                <option key={`native:${track.index}`} value={`native:${track.index}`}>{track.label}</option>
-              ))}
-              {preparedSubtitles.map((track, index) => (
-                <option key={`${track.id}-${track.url}`} value={index}>{track.label || track.lang || `Subtitle ${index + 1}`}</option>
-              ))}
-            </select></label>
+              <button type="button" onClick={() => { setAudioMenuOpen((open) => !open); setSubtitleMenuOpen(false); setShowSpeedMenu(false) }} aria-label="Audio tracks" aria-haspopup="menu" aria-expanded={audioMenuOpen} title={`Audio · ${audioTracks.find((track) => String(track.index) === selectedAudio)?.label || 'Default audio'}`} className={`grid h-10 w-10 place-items-center rounded-full text-white/75 transition hover:bg-white/10 hover:text-white ${audioMenuOpen ? 'bg-white/15 text-white' : ''}`}>
+                <svg className="h-[19px] w-[19px]" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h4l5 4V6l-5 4H4Z" strokeLinejoin="round"/><path d="M16 9a5 5 0 0 1 0 6M18.5 6.5a8.5 8.5 0 0 1 0 11" strokeLinecap="round"/></svg>
+              </button>
+            </div>
+            <div className="relative" data-player-popover>
+              {subtitleMenuOpen && (
+                <div role="menu" aria-label="Subtitle tracks" className="inapp-player-track-menu absolute bottom-full right-0 z-50 mb-3 min-w-64 max-w-[min(26rem,80vw)] overflow-hidden rounded-2xl border border-white/10 bg-[#111318]/95 p-1.5 shadow-2xl backdrop-blur-2xl">
+                  <p className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[.18em] text-white/40">Subtitles</p>
+                  {[{ id: 'off', label: 'Subtitles off' }, ...subtitleOptions].map((track) => (
+                    <button key={track.id} type="button" role="menuitemradio" aria-checked={selectedSubtitle === track.id} onClick={() => { changeSubtitle(track.id); setSubtitleMenuOpen(false) }} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-white/80 transition hover:bg-white/10 hover:text-white">
+                      <span className="grid h-4 w-4 shrink-0 place-items-center">{selectedSubtitle === track.id ? <span className="h-1.5 w-1.5 rounded-full bg-white" /> : null}</span>
+                      <span className="truncate">{track.label}</span>
+                    </button>
+                  ))}
+                  {subtitleOptions.length === 0 && <p className="px-3 pb-2 text-xs text-white/40">No subtitle tracks received from this source yet.</p>}
+                </div>
+              )}
+              <button type="button" onClick={() => { setSubtitleMenuOpen((open) => !open); setAudioMenuOpen(false); setShowSpeedMenu(false) }} aria-label="Subtitle tracks" aria-haspopup="menu" aria-expanded={subtitleMenuOpen} title={`Subtitles · ${selectedSubtitle === 'off' ? 'Off' : subtitleOptions.find((track) => track.id === selectedSubtitle)?.label || 'On'}`} className={`grid h-10 w-10 place-items-center rounded-full text-white/75 transition hover:bg-white/10 hover:text-white ${subtitleMenuOpen ? 'bg-white/15 text-white' : ''}`}>
+                <svg className="h-[19px] w-[19px]" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2.5"/><path d="M6 10h5M13 10h5M6 14h3M11 14h7" strokeLinecap="round"/></svg>
+              </button>
+            </div>
             {selectedSubtitle !== 'off' && (
               <button
                 onClick={() => {

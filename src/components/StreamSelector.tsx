@@ -1070,9 +1070,16 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
         <InAppPlayer
           key={playback.url}
           url={playback.url}
+          playbackRequestHeaders={playback.stream.behaviorHints?.proxyHeaders?.request}
           title={title}
           subtitle={seasonEpisode ? `From S${seasonEpisode.season} E${seasonEpisode.episode}` : undefined}
           subtitles={mergedSubtitles}
+          serverTrackInfo={playback.stream.provider === 'jellyfin' ? {
+            provider: playback.stream.provider,
+            sourceItemId: playback.stream.sourceItemId,
+            mediaSourceId: playback.stream.mediaSourceId,
+            audioTracks: playback.stream.audioTracks,
+          } : undefined}
           playbackItem={playbackItem}
         startTime={playback.startTime}
           poster={artwork?.poster}
