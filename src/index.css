@@ -6370,6 +6370,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-page .media-row--poster .cinematic-row-track > .media-row-card-slot { width: clamp(7rem, 11vw, 10rem); }
 .discover-page .media-row--poster:not(.cinematic-media-row) .media-row-card-slot { width: clamp(7.5rem, 9vw, 9rem); }
 .discover-page .media-row--poster:not(.cinematic-media-row) .media-row-card-slot > button { width: 100% !important; }
+.discover-page__tabs button:focus-visible { position: relative; z-index: 1; outline: 2px solid rgba(255,255,255,.92); outline-offset: 2px; }
 
 @media (prefers-reduced-motion: reduce) {
   .discover-spotlight, .discover-spotlight__copy, .discover-spotlight__poster, .discover-spotlight__ambient img, .discover-picker-backdrop, .discover-picker { animation: none !important; }

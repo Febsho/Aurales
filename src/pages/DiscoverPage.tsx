@@ -1386,10 +1386,12 @@ export default function DiscoverPage() {
         </div>
 
         <div className="discover-page__controls">
-          <div className="discover-page__tabs mt-8 inline-flex max-w-full gap-1 overflow-x-auto rounded-2xl border border-white/[.08] bg-white/[.035] p-1.5">
+          <div className="discover-page__tabs mt-8 inline-flex max-w-full gap-1 overflow-x-auto rounded-2xl border border-white/[.08] bg-white/[.035] p-1.5" role="group" aria-label="Content type">
             {(['movies', 'series', 'anime'] as DiscoverTab[]).map((item) => (
               <button
                 key={item}
+                type="button"
+                aria-pressed={tab === item}
                 onClick={() => handleTabChange(item)}
                 className={`whitespace-nowrap rounded-xl px-5 py-2.5 text-sm font-semibold transition-all cursor-pointer ${
                   tab === item

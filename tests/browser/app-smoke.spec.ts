@@ -458,6 +458,10 @@ test('mobile Discover and movie details keep text, hero and controls within the 
 
   await page.getByRole('link', { name: 'Discover' }).click()
   await expect(page.locator('.discover-page')).toBeVisible()
+  const contentTypeControls = page.getByRole('group', { name: 'Content type' })
+  await expect(contentTypeControls.getByRole('button', { name: 'Movies' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(contentTypeControls.getByRole('button', { name: 'Series' })).toHaveAttribute('aria-pressed', 'false')
+  await expect(contentTypeControls.getByRole('button', { name: 'Anime' })).toHaveAttribute('aria-pressed', 'false')
   await expect.poll(() => tmdbRequestPaths.has('/3/trending/movie/week')).toBe(true)
   await expect(page.getByRole('heading', { name: /Settle in,/ })).toBeVisible()
   const heroSpotlight = page.locator('.discover-weekend-plan')
