@@ -3723,7 +3723,7 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focu
    scrolling in Discovery, catalogs and library grids on both web and desktop. */
 .media-card-artwork {
   opacity: 0;
-  transition: opacity 240ms ease-out;
+  transition: opacity 240ms ease-out, transform 500ms ease-out;
 }
 .media-card-artwork[data-artwork-loaded="true"] { opacity: 1; }
 @media (prefers-reduced-motion: reduce) {

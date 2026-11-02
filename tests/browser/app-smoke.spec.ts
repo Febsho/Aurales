@@ -599,6 +599,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   }))
   expect(loadedPosterMotion.opacity).toBe('1')
   expect(loadedPosterMotion.transitionProperty).toContain('opacity')
+  expect(loadedPosterMotion.transitionProperty).toContain('transform')
   expect(parseFloat(loadedPosterMotion.transitionDuration)).toBeGreaterThan(0)
   const trendingRail = trendingShelf.locator('.media-row > div.overflow-x-auto')
   const rightArrow = trendingShelf.getByRole('button', { name: 'Scroll right' })
