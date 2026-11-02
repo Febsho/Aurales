@@ -810,7 +810,7 @@ export interface TmdbDiscoverPage {
   totalPages: number
 }
 
-async function fetchDiscoverTmdbPage(config: DiscoverConfig, page: number): Promise<TmdbDiscoverPage> {
+async function fetchDiscoverTmdbPage(config: DiscoverConfig, page: number, priority: RequestPriority = 'visible'): Promise<TmdbDiscoverPage> {
   const params: Record<string, string> = {
     page: String(page),
   }
@@ -924,7 +924,7 @@ async function fetchDiscoverTmdbPage(config: DiscoverConfig, page: number): Prom
 
   const endpoint = config.contentType === 'movie' ? '/discover/movie' : '/discover/tv'
 
-  const data = await tmdbFetch(endpoint, { ...params, page: String(page) }) as { results?: Record<string, unknown>[]; page?: number; total_pages?: number }
+  const data = await tmdbFetch(endpoint, { ...params, page: String(page) }, { priority }) as { results?: Record<string, unknown>[]; page?: number; total_pages?: number }
   const items = (data.results || []).map((item) => mapSearchResult(item, config.contentType === 'movie' ? 'movie' : 'series'))
   return {
     items: config.source === 'TMDB' ? items : items.map((item) => ({ ...item, provider: config.source.toLowerCase() })),
@@ -934,8 +934,8 @@ async function fetchDiscoverTmdbPage(config: DiscoverConfig, page: number): Prom
 }
 
 /** Fetch one public TMDB discovery page, including pagination metadata. */
-export async function discoverTmdbPage(config: DiscoverConfig, page = 1): Promise<TmdbDiscoverPage> {
-  return fetchDiscoverTmdbPage(config, Math.max(1, Math.min(500, Math.floor(page))))
+export async function discoverTmdbPage(config: DiscoverConfig, page = 1, priority: RequestPriority = 'visible'): Promise<TmdbDiscoverPage> {
+  return fetchDiscoverTmdbPage(config, Math.max(1, Math.min(500, Math.floor(page))), priority)
 }
 
 export async function discoverTmdb(config: DiscoverConfig, page = 1, pages = 1): Promise<SearchResult[]> {
@@ -970,7 +970,10 @@ export function discoverTmdbPageWithCache(config: DiscoverConfig, rowId: string,
     provider: config.source,
     filters: config,
   })
-  return cachedFetch<TmdbDiscoverPage>(cacheKey, () => discoverTmdbPage(config, boundedPage), {
+  // Infinite-scroll pages are explicitly requested by the user. Let them run
+  // ahead of speculative visible metadata work so Firefox/Safari do not leave
+  // the feed stuck behind initial page fan-out.
+  return cachedFetch<TmdbDiscoverPage>(cacheKey, () => discoverTmdbPage(config, boundedPage, 'interactive'), {
     category: CACHE_CATEGORIES.DISCOVER,
     ttlSeconds: null,
     revalidate: 'once-per-session',
