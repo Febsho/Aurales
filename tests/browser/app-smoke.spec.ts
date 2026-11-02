@@ -1036,7 +1036,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   }
   await expect.poll(() => continuationPages.has(4), { timeout: 10_000 }).toBe(true)
   const continuedGrid = page.locator('.discover-more__grid')
-  await expect(continuedGrid.getByRole('button', { name: 'More discovery fixture 1 More discovery fixture 1 2026', exact: true })).toBeVisible()
+  const firstContinuedCard = continuedGrid.getByRole('button', { name: 'More discovery fixture 1 More discovery fixture 1 2026', exact: true })
+  await expect(firstContinuedCard).toBeVisible()
+  await expect.poll(() => firstContinuedCard.evaluate((card) => getComputedStyle(card).animationName)).toBe('discover-more-card-arrive')
   await expect(continuedGrid.getByRole('button').first()).toHaveAccessibleName('More discovery fixture 1 More discovery fixture 1 2026')
   expect(continuationPages).toContain(4)
 
