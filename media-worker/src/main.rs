@@ -60,6 +60,7 @@ struct AppState {
     conversion_dir: Arc<PathBuf>,
     conversion_slots: Arc<Semaphore>,
     conversion_jobs: Arc<Mutex<HashMap<String, ConversionJob>>>,
+    conversion_tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     access_code: Option<Arc<Vec<u8>>>,
     access_attempts: Arc<Mutex<HashMap<String, (usize, Instant)>>>,
     allowed_origins: Arc<HashSet<String>>,
@@ -74,18 +75,22 @@ struct ConversionJob {
 #[derive(Clone)]
 enum ConversionStatus {
     Processing,
+    Cancelled,
     Ready {
         path: PathBuf,
         bytes: u64,
         mode: ConversionMode,
         url: String,
+        source_info: Value,
     },
     Failed,
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum ConversionMode {
+    /// Server-owned fallback ladder: stream copy, AAC-only, then H.264/AAC.
+    Auto,
     Remux,
     AudioAac,
     H264Aac,
@@ -95,11 +100,15 @@ enum ConversionMode {
 struct FfmpegCapabilities {
     audio_aac: bool,
     video_h264: bool,
+    video_hardware_encoder: Option<&'static str>,
+    hls_output: bool,
 }
 
 #[derive(Clone)]
 struct MediaSession {
     url: url::Url,
+    request_headers: HashMap<String, String>,
+    request_header_origin: String,
     local_file: Option<PathBuf>,
     expires_at: Instant,
     children: HashMap<String, String>,
@@ -205,6 +214,8 @@ struct CapabilitiesResponse {
 #[serde(rename_all = "camelCase")]
 struct CreateMediaSessionRequest {
     url: String,
+    #[serde(default)]
+    headers: HashMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -212,6 +223,18 @@ struct CreateMediaSessionRequest {
 struct CreateMediaConversionRequest {
     url: String,
     mode: ConversionMode,
+    #[serde(default)]
+    output_format: ConversionOutputFormat,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum ConversionOutputFormat {
+    #[default]
+    Mp4,
+    Hls,
 }
 
 #[derive(Serialize)]
@@ -229,6 +252,7 @@ struct MediaConversionStatusResponse {
     mode: Option<ConversionMode>,
     bytes: Option<u64>,
     url: Option<String>,
+    source_info: Option<Value>,
     error: Option<&'static str>,
 }
 
@@ -357,6 +381,7 @@ async fn run() -> Result<(), String> {
         conversion_dir,
         conversion_slots: Arc::new(Semaphore::new(2)),
         conversion_jobs: Arc::new(Mutex::new(HashMap::new())),
+        conversion_tasks: Arc::new(Mutex::new(HashMap::new())),
         access_code: access_code.map(|value| Arc::new(value.into_bytes())),
         access_attempts: Arc::new(Mutex::new(HashMap::new())),
         allowed_origins: Arc::new(allowed_origins),
@@ -393,6 +418,20 @@ async fn validate_ffmpeg(path: &PathBuf) -> Result<FfmpegCapabilities, String> {
     if !version.status.success() {
         return Err("The configured FFmpeg executable failed its version check".into());
     }
+    let ffprobe = ffprobe_path_for(path);
+    let probe_version = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new(&ffprobe)
+            .arg("-version")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| "FFprobe did not respond within 10 seconds".to_string())?
+    .map_err(|_| "Could not start FFprobe; install it alongside FFmpeg or on PATH".to_string())?;
+    if !probe_version.status.success() {
+        return Err("The FFprobe executable failed its version check".into());
+    }
     let encoders = tokio::time::timeout(
         Duration::from_secs(10),
         tokio::process::Command::new(path)
@@ -408,6 +447,27 @@ async fn validate_ffmpeg(path: &PathBuf) -> Result<FfmpegCapabilities, String> {
         String::from_utf8_lossy(&encoders.stdout),
         String::from_utf8_lossy(&encoders.stderr)
     );
+    let muxers = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new(path)
+            .args(["-hide_banner", "-muxers"])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| "FFmpeg muxer discovery timed out".to_string())?
+    .map_err(|error| format!("Could not query FFmpeg muxers: {error}"))?;
+    let muxer_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&muxers.stdout),
+        String::from_utf8_lossy(&muxers.stderr)
+    );
+    let has_muxer = |target: &str| {
+        muxer_output.lines().any(|line| {
+            line.split_whitespace()
+                .any(|entry| entry.trim_matches(',') == target)
+        })
+    };
     Ok(FfmpegCapabilities {
         audio_aac: output
             .lines()
@@ -415,13 +475,27 @@ async fn validate_ffmpeg(path: &PathBuf) -> Result<FfmpegCapabilities, String> {
         video_h264: output
             .lines()
             .any(|line| line.split_whitespace().any(|name| name == "libx264")),
+        video_hardware_encoder: ["h264_videotoolbox", "h264_nvenc", "h264_qsv", "h264_amf"]
+            .into_iter()
+            .find(|encoder| {
+                output
+                    .lines()
+                    .any(|line| line.split_whitespace().any(|name| name == *encoder))
+            }),
+        hls_output: has_muxer("hls") && has_muxer("mpegts"),
     })
 }
 
 fn router(state: AppState, origins: Vec<HeaderValue>) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
-        .allow_methods([Method::GET, Method::HEAD, Method::POST, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::HEAD,
+            Method::POST,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers([AUTHORIZATION, CONTENT_TYPE, RANGE, IF_RANGE])
         .expose_headers([
             ACCEPT_RANGES,
@@ -452,7 +526,14 @@ fn router(state: AppState, origins: Vec<HeaderValue>) -> Router {
         )
         .route("/v1/media/sessions", post(create_media_session))
         .route("/v1/media/conversions", post(create_media_conversion))
-        .route("/v1/media/conversions/{id}", get(media_conversion_status))
+        .route(
+            "/v1/media/conversions/{id}",
+            get(media_conversion_status).delete(cancel_media_conversion),
+        )
+        .route(
+            "/v1/media/{id}/{*asset}",
+            get(proxy_local_media_asset).head(proxy_local_media_asset),
+        )
         .route("/v1/media/{id}", get(proxy_media).head(proxy_media))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .layer(cors)
@@ -492,10 +573,10 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
         stream_ranking: true,
-        media_remux: state.ffmpeg_path.is_some(),
+        media_remux: state.ffmpeg_caps.is_some_and(|caps| caps.hls_output),
         media_transcode: state
             .ffmpeg_caps
-            .is_some_and(|caps| caps.audio_aac || caps.video_h264),
+            .is_some_and(|caps| caps.hls_output && (caps.audio_aac || caps.video_h264)),
     })
 }
 
@@ -683,9 +764,11 @@ async fn capabilities(State(state): State<AppState>, headers: HeaderMap) -> Resp
         trakt_proxy: true,
         torbox_proxy: true,
         aurales_sync_proxy: true,
-        media_remux: state.ffmpeg_path.is_some(),
-        audio_transcode: ffmpeg.is_some_and(|caps| caps.audio_aac),
-        video_transcode: ffmpeg.is_some_and(|caps| caps.video_h264),
+        media_remux: ffmpeg.is_some_and(|caps| caps.hls_output),
+        audio_transcode: ffmpeg.is_some_and(|caps| caps.hls_output && caps.audio_aac),
+        video_transcode: ffmpeg.is_some_and(|caps| {
+            caps.hls_output && (caps.video_h264 || caps.video_hardware_encoder.is_some())
+        }),
     })
     .into_response()
 }
@@ -736,6 +819,15 @@ async fn create_media_session(
         )
             .into_response();
     }
+    let Ok(request_headers) = validate_playback_headers(&request.headers) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_playback_headers",
+            }),
+        )
+            .into_response();
+    };
     let id = uuid::Uuid::new_v4().simple().to_string();
     let expires = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -746,6 +838,7 @@ async fn create_media_session(
         Some(value) => value,
         None => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+    let is_hls = is_hls_playlist(&url, None);
     let mut sessions = state.media_sessions.lock().await;
     sessions.retain(|_, session| session.expires_at > Instant::now());
     if sessions.len() >= MAX_MEDIA_RESOURCES
@@ -762,7 +855,9 @@ async fn create_media_session(
     sessions.insert(
         id.clone(),
         MediaSession {
+            request_header_origin: url.origin().ascii_serialization(),
             url,
+            request_headers,
             local_file: None,
             expires_at: Instant::now() + MEDIA_SESSION_TTL,
             children: HashMap::new(),
@@ -771,7 +866,10 @@ async fn create_media_session(
             nesting_depth: 0,
         },
     );
-    let stream_url = format!("/v1/media/{id}?expires={expires}&signature={signature}");
+    let stream_url = format!(
+        "/v1/media/{id}?expires={expires}&signature={signature}{}",
+        if is_hls { "&format=hls" } else { "" }
+    );
     Json(CreateMediaSessionResponse {
         url: stream_url,
         expires_at: expires,
@@ -796,12 +894,24 @@ async fn create_media_conversion(
         )
             .into_response();
     };
+    if request.output_format == ConversionOutputFormat::Hls
+        && !state.ffmpeg_caps.is_some_and(|caps| caps.hls_output)
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "hls_output_unavailable",
+            }),
+        )
+            .into_response();
+    }
     let supported = match request.mode {
+        ConversionMode::Auto => true,
         ConversionMode::Remux => true,
         ConversionMode::AudioAac => state.ffmpeg_caps.is_some_and(|caps| caps.audio_aac),
-        ConversionMode::H264Aac => state
-            .ffmpeg_caps
-            .is_some_and(|caps| caps.audio_aac && caps.video_h264),
+        ConversionMode::H264Aac => state.ffmpeg_caps.is_some_and(|caps| {
+            caps.audio_aac && (caps.video_h264 || caps.video_hardware_encoder.is_some())
+        }),
     };
     if !supported {
         return (
@@ -842,6 +952,15 @@ async fn create_media_conversion(
         )
             .into_response();
     }
+    let Ok(request_headers) = validate_playback_headers(&request.headers) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_playback_headers",
+            }),
+        )
+            .into_response();
+    };
     let Ok(permit) = state.conversion_slots.clone().try_acquire_owned() else {
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -872,14 +991,20 @@ async fn create_media_conversion(
             },
         );
     }
-    tokio::spawn(run_media_conversion(
+    let tasks = state.conversion_tasks.clone();
+    let task = tokio::spawn(run_media_conversion(
         state,
         id.clone(),
         url,
         request.mode,
+        request.output_format,
+        request_headers,
         ffmpeg,
         permit,
     ));
+    // Retain the task handle so a client AbortSignal can stop FFmpeg and its
+    // active upstream download. Child processes use kill_on_drop(true).
+    tasks.lock().await.insert(id.clone(), task);
     (
         StatusCode::ACCEPTED,
         Json(CreateMediaConversionResponse {
@@ -912,16 +1037,31 @@ async fn media_conversion_status(
             mode: None,
             bytes: None,
             url: None,
+            source_info: None,
+            error: None,
+        },
+        ConversionStatus::Cancelled => MediaConversionStatusResponse {
+            job_id: id,
+            status: "cancelled",
+            mode: None,
+            bytes: None,
+            url: None,
+            source_info: None,
             error: None,
         },
         ConversionStatus::Ready {
-            bytes, mode, url, ..
+            bytes,
+            mode,
+            url,
+            source_info,
+            ..
         } => MediaConversionStatusResponse {
             job_id: id,
             status: "ready",
             mode: Some(*mode),
             bytes: Some(*bytes),
             url: Some(url.clone()),
+            source_info: Some(source_info.clone()),
             error: None,
         },
         ConversionStatus::Failed => MediaConversionStatusResponse {
@@ -930,10 +1070,71 @@ async fn media_conversion_status(
             mode: None,
             bytes: None,
             url: None,
+            source_info: None,
             error: Some("conversion_failed"),
         },
     };
     Json(response).into_response()
+}
+
+async fn cancel_media_conversion(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !is_authorized(&headers, &state.api_key, &state.session_key) {
+        return unauthorized();
+    }
+    if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if let Some(task) = state.conversion_tasks.lock().await.remove(&id) {
+        task.abort();
+        let _ = task.await;
+    }
+    let mut removed_paths = Vec::new();
+    {
+        let mut jobs = state.conversion_jobs.lock().await;
+        if let Some(job) = jobs.get_mut(&id) {
+            if let ConversionStatus::Ready { path, .. } = &job.status {
+                removed_paths.push(path.clone());
+            }
+            job.status = ConversionStatus::Cancelled;
+            job.expires_at = Instant::now() + Duration::from_secs(60);
+        }
+    }
+    {
+        let mut sessions = state.media_sessions.lock().await;
+        sessions.retain(|_, session| {
+            let remove = session
+                .local_file
+                .as_ref()
+                .is_some_and(|path| removed_paths.contains(path));
+            !remove
+        });
+    }
+    for name in [
+        format!("{id}.input"),
+        format!("{id}.mp4"),
+        format!("{id}.m3u8"),
+        format!("{id}.ts"),
+        format!("{id}-remux.mp4"),
+        format!("{id}-audio-aac.mp4"),
+        format!("{id}-h264-aac.mp4"),
+        format!("{id}-remux.m3u8"),
+        format!("{id}-audio-aac.m3u8"),
+        format!("{id}-h264-aac.m3u8"),
+        format!("{id}-remux.ts"),
+        format!("{id}-audio-aac.ts"),
+        format!("{id}-h264-aac.ts"),
+    ] {
+        let path = state.conversion_dir.join(name);
+        let _ = tokio::fs::remove_file(path).await;
+    }
+    for path in removed_paths {
+        let _ = tokio::fs::remove_file(path).await;
+    }
+    StatusCode::NO_CONTENT.into_response()
 }
 
 async fn run_media_conversion(
@@ -941,44 +1142,176 @@ async fn run_media_conversion(
     id: String,
     url: url::Url,
     mode: ConversionMode,
+    output_format: ConversionOutputFormat,
+    request_headers: HashMap<String, String>,
     ffmpeg: Arc<PathBuf>,
     _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     let input_path = state.conversion_dir.join(format!("{id}.input"));
-    let output_path = state.conversion_dir.join(format!("{id}.mp4"));
+    let output_path = conversion_output_path(state.conversion_dir.as_ref(), &id, output_format);
     let result = async {
-        download_allowlisted_media(&state, &url, &input_path).await?;
-        let bytes = transcode_local_input(ffmpeg.as_ref(), &input_path, &output_path, mode).await?;
-        let session_url = create_local_media_session(&state, output_path.clone()).await?;
-        Ok::<_, ()>((bytes, session_url))
+        download_allowlisted_media(&state, &url, &request_headers, &input_path).await?;
+        let source_info = probe_local_media(ffmpeg.as_ref(), &input_path).await?;
+        // Let FFmpeg inspect the actual container and streams. Each attempt maps
+        // the real streams and validates the target container; the mode reported
+        // to the client is the first conversion that FFmpeg can produce.
+        let (bytes, actual_mode, ready_path) = if matches!(mode, ConversionMode::Auto) {
+            let mut result = None;
+            for candidate in conversion_candidates(state.ffmpeg_caps) {
+                let candidate_path = conversion_output_candidate_path(
+                    state.conversion_dir.as_ref(),
+                    &id,
+                    candidate,
+                    output_format,
+                );
+                let hardware_encoder = if candidate == ConversionMode::H264Aac {
+                    state
+                        .ffmpeg_caps
+                        .and_then(|caps| caps.video_hardware_encoder)
+                } else {
+                    None
+                };
+                let encoded = if let Some(encoder) = hardware_encoder {
+                    match transcode_local_output_using_encoder(
+                        ffmpeg.as_ref(),
+                        &input_path,
+                        &candidate_path,
+                        candidate,
+                        Some(encoder),
+                        output_format,
+                    )
+                    .await
+                    {
+                        Ok(bytes) => Ok(bytes),
+                        Err(()) => {
+                            remove_conversion_output(&candidate_path).await;
+                            transcode_local_output(
+                                ffmpeg.as_ref(),
+                                &input_path,
+                                &candidate_path,
+                                candidate,
+                                output_format,
+                            )
+                            .await
+                        }
+                    }
+                } else {
+                    transcode_local_output(
+                        ffmpeg.as_ref(),
+                        &input_path,
+                        &candidate_path,
+                        candidate,
+                        output_format,
+                    )
+                    .await
+                };
+                match encoded {
+                    Ok(bytes) => {
+                        result = Some((bytes, candidate, candidate_path));
+                        break;
+                    }
+                    Err(()) => {
+                        remove_conversion_output(&candidate_path).await;
+                    }
+                }
+            }
+            let Some((bytes, actual_mode, candidate_path)) = result else {
+                return Err(());
+            };
+            let ready_path = if output_format == ConversionOutputFormat::Mp4 {
+                tokio::fs::rename(&candidate_path, &output_path)
+                    .await
+                    .map_err(|_| ())?;
+                output_path.clone()
+            } else {
+                candidate_path
+            };
+            Ok::<_, ()>((bytes, actual_mode, ready_path))
+        } else {
+            let bytes = transcode_local_output(
+                ffmpeg.as_ref(),
+                &input_path,
+                &output_path,
+                mode,
+                output_format,
+            )
+            .await?;
+            Ok((bytes, mode, output_path.clone()))
+        }?;
+        let session_url = create_local_media_session(&state, ready_path.clone()).await?;
+        Ok::<_, ()>((bytes, actual_mode, ready_path, session_url, source_info))
     }
     .await;
     let _ = tokio::fs::remove_file(&input_path).await;
     let mut jobs = state.conversion_jobs.lock().await;
     if let Some(job) = jobs.get_mut(&id) {
         job.status = match result {
-            Ok((bytes, url)) => {
+            Ok((bytes, mode, ready_path, url, source_info)) => {
                 job.expires_at = Instant::now() + MEDIA_SESSION_TTL;
                 ConversionStatus::Ready {
-                    path: output_path,
+                    path: ready_path,
                     bytes,
                     mode,
                     url,
+                    source_info,
                 }
             }
             Err(()) => {
-                let _ = tokio::fs::remove_file(&output_path).await;
+                cleanup_conversion_files(state.conversion_dir.as_ref(), &id).await;
                 ConversionStatus::Failed
             }
         };
     }
 }
 
+fn conversion_candidates(caps: Option<FfmpegCapabilities>) -> Vec<ConversionMode> {
+    let mut modes = vec![ConversionMode::Remux];
+    if caps.is_some_and(|value| value.audio_aac) {
+        modes.push(ConversionMode::AudioAac);
+    }
+    if caps.is_some_and(|value| {
+        value.audio_aac && (value.video_h264 || value.video_hardware_encoder.is_some())
+    }) {
+        modes.push(ConversionMode::H264Aac);
+    }
+    modes
+}
+
+#[cfg(test)]
 async fn transcode_local_input(
     ffmpeg: &FsPath,
     input_path: &FsPath,
     output_path: &FsPath,
     mode: ConversionMode,
+) -> Result<u64, ()> {
+    transcode_local_output(
+        ffmpeg,
+        input_path,
+        output_path,
+        mode,
+        ConversionOutputFormat::Mp4,
+    )
+    .await
+}
+
+async fn transcode_local_output(
+    ffmpeg: &FsPath,
+    input_path: &FsPath,
+    output_path: &FsPath,
+    mode: ConversionMode,
+    output_format: ConversionOutputFormat,
+) -> Result<u64, ()> {
+    transcode_local_output_using_encoder(ffmpeg, input_path, output_path, mode, None, output_format)
+        .await
+}
+
+async fn transcode_local_output_using_encoder(
+    ffmpeg: &FsPath,
+    input_path: &FsPath,
+    output_path: &FsPath,
+    mode: ConversionMode,
+    hardware_encoder: Option<&str>,
+    output_format: ConversionOutputFormat,
 ) -> Result<u64, ()> {
     let mut command = tokio::process::Command::new(ffmpeg);
     command
@@ -1004,6 +1337,7 @@ async fn transcode_local_input(
             "0",
         ]);
     match mode {
+        ConversionMode::Auto => return Err(()),
         ConversionMode::Remux => {
             command.args(["-c", "copy"]);
         }
@@ -1011,28 +1345,200 @@ async fn transcode_local_input(
             command.args(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k"]);
         }
         ConversionMode::H264Aac => {
-            command.args([
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", "2", "-c:a",
-                "aac", "-b:a", "192k",
-            ]);
+            if let Some(encoder) = hardware_encoder {
+                command.args(["-c:v", encoder, "-b:v", "5M", "-c:a", "aac", "-b:a", "192k"]);
+            } else {
+                command.args([
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", "2",
+                    "-c:a", "aac", "-b:a", "192k",
+                ]);
+            }
         }
     }
+    if output_format == ConversionOutputFormat::Mp4 {
+        command.args(["-movflags", "+faststart", "-f", "mp4"]);
+    } else {
+        let segment_path = output_path.with_extension("ts");
+        command
+            .args([
+                "-hls_time",
+                "6",
+                "-hls_list_size",
+                "0",
+                "-hls_flags",
+                "single_file+independent_segments",
+                "-hls_segment_filename",
+            ])
+            .arg(&segment_path)
+            .args(["-f", "hls"]);
+    }
     command
-        .args(["-movflags", "+faststart", "-f", "mp4"])
         .arg(output_path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
     let mut child = command.spawn().map_err(|_| ())?;
-    wait_for_ffmpeg(&mut child, output_path).await?;
-    let bytes = tokio::fs::metadata(output_path)
+    let size_path = if output_format == ConversionOutputFormat::Hls {
+        output_path.with_extension("ts")
+    } else {
+        output_path.to_path_buf()
+    };
+    wait_for_ffmpeg(&mut child, &size_path).await?;
+    let playlist_bytes = tokio::fs::metadata(output_path)
         .await
         .map_err(|_| ())?
         .len();
+    let bytes = if output_format == ConversionOutputFormat::Hls {
+        playlist_bytes.saturating_add(tokio::fs::metadata(&size_path).await.map_err(|_| ())?.len())
+    } else {
+        playlist_bytes
+    };
     if bytes == 0 || bytes > MAX_CONVERSION_INPUT_BYTES {
         return Err(());
     }
     Ok(bytes)
+}
+
+/// Inspect downloaded bytes with ffprobe; URL suffixes and MIME hints are not
+/// treated as reliable container or codec evidence.
+async fn probe_local_media(ffmpeg: &FsPath, input_path: &FsPath) -> Result<Value, ()> {
+    let executable = ffprobe_path_for(ffmpeg);
+    let output = tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio::process::Command::new(executable)
+            .args([
+                "-v",
+                "error",
+                "-protocol_whitelist",
+                "file,pipe",
+                "-show_entries",
+                "format=format_name:stream=codec_type,codec_name,profile,width,height,sample_rate,channels",
+                "-of",
+                "json",
+            ])
+            .arg(input_path)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| ())?
+    .map_err(|_| ())?;
+    if !output.status.success() || output.stdout.len() > 256 * 1024 {
+        return Err(());
+    }
+    let raw: Value = serde_json::from_slice(&output.stdout).map_err(|_| ())?;
+    let format_name = raw
+        .get("format")
+        .and_then(|format| format.get("format_name"))
+        .and_then(Value::as_str)
+        .ok_or(())?;
+    let streams = raw.get("streams").and_then(Value::as_array).ok_or(())?;
+    if streams.len() > 32 {
+        return Err(());
+    }
+    let streams: Vec<Value> = streams
+        .iter()
+        .map(|stream| {
+            let mut info = serde_json::Map::new();
+            for key in [
+                "codec_type",
+                "codec_name",
+                "profile",
+                "width",
+                "height",
+                "sample_rate",
+                "channels",
+            ] {
+                if let Some(value) = stream.get(key).filter(|value| !value.is_null()) {
+                    info.insert(key.to_owned(), value.clone());
+                }
+            }
+            Value::Object(info)
+        })
+        .collect();
+    Ok(serde_json::json!({ "container": format_name, "streams": streams }))
+}
+
+fn ffprobe_path_for(ffmpeg: &FsPath) -> PathBuf {
+    ffmpeg
+        .parent()
+        .map(|parent| {
+            parent.join(if cfg!(windows) {
+                "ffprobe.exe"
+            } else {
+                "ffprobe"
+            })
+        })
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| {
+            PathBuf::from(if cfg!(windows) {
+                "ffprobe.exe"
+            } else {
+                "ffprobe"
+            })
+        })
+}
+
+fn conversion_mode_name(mode: ConversionMode) -> &'static str {
+    match mode {
+        ConversionMode::Auto => "auto",
+        ConversionMode::Remux => "remux",
+        ConversionMode::AudioAac => "audio-aac",
+        ConversionMode::H264Aac => "h264-aac",
+    }
+}
+
+fn conversion_output_path(directory: &FsPath, id: &str, format: ConversionOutputFormat) -> PathBuf {
+    directory.join(match format {
+        ConversionOutputFormat::Mp4 => format!("{id}.mp4"),
+        ConversionOutputFormat::Hls => format!("{id}.m3u8"),
+    })
+}
+
+fn conversion_output_candidate_path(
+    directory: &FsPath,
+    id: &str,
+    mode: ConversionMode,
+    format: ConversionOutputFormat,
+) -> PathBuf {
+    let extension = match format {
+        ConversionOutputFormat::Mp4 => "mp4",
+        ConversionOutputFormat::Hls => "m3u8",
+    };
+    directory.join(format!("{id}-{}.{extension}", conversion_mode_name(mode)))
+}
+
+async fn remove_conversion_output(path: &FsPath) {
+    let _ = tokio::fs::remove_file(path).await;
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "m3u8")
+    {
+        let _ = tokio::fs::remove_file(path.with_extension("ts")).await;
+    }
+}
+
+async fn cleanup_conversion_files(directory: &FsPath, id: &str) {
+    for name in [
+        format!("{id}.input"),
+        format!("{id}.mp4"),
+        format!("{id}.m3u8"),
+        format!("{id}.ts"),
+        format!("{id}-remux.mp4"),
+        format!("{id}-audio-aac.mp4"),
+        format!("{id}-h264-aac.mp4"),
+        format!("{id}-remux.m3u8"),
+        format!("{id}-audio-aac.m3u8"),
+        format!("{id}-h264-aac.m3u8"),
+        format!("{id}-remux.ts"),
+        format!("{id}-audio-aac.ts"),
+        format!("{id}-h264-aac.ts"),
+    ] {
+        let path = directory.join(name);
+        let _ = tokio::fs::remove_file(&path).await;
+    }
 }
 
 async fn run_conversion_cleanup(state: AppState) {
@@ -1066,8 +1572,13 @@ async fn run_conversion_cleanup(state: AppState) {
             });
         }
         for path in expired_files {
-            let _ = tokio::fs::remove_file(path).await;
+            remove_conversion_output(&path).await;
         }
+        state
+            .conversion_tasks
+            .lock()
+            .await
+            .retain(|_, task| !task.is_finished());
     }
 }
 
@@ -1077,15 +1588,31 @@ async fn clean_stale_conversion_files(directory: &PathBuf) {
     };
     while let Ok(Some(entry)) = entries.next_entry().await {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let is_worker_file = name.ends_with(".input") || name.ends_with(".mp4");
-        let id = name.rsplit_once('.').map(|(id, _)| id).unwrap_or_default();
-        if is_worker_file && id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        if is_worker_conversion_filename(&name) {
             let _ = tokio::fs::remove_file(entry.path()).await;
         }
     }
 }
 
+fn is_worker_conversion_filename(name: &str) -> bool {
+    let Some(stem) = name
+        .strip_suffix(".input")
+        .or_else(|| name.strip_suffix(".mp4"))
+        .or_else(|| name.strip_suffix(".m3u8"))
+        .or_else(|| name.strip_suffix(".ts"))
+    else {
+        return false;
+    };
+    let (id, variant) = stem.split_once('-').unwrap_or((stem, ""));
+    id.len() == 32
+        && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && matches!(variant, "" | "remux" | "audio-aac" | "h264-aac")
+}
+
 async fn create_local_media_session(state: &AppState, path: PathBuf) -> Result<String, ()> {
+    let is_hls = path
+        .extension()
+        .is_some_and(|extension| extension == "m3u8");
     let id = uuid::Uuid::new_v4().simple().to_string();
     let expires = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1104,6 +1631,8 @@ async fn create_local_media_session(state: &AppState, path: PathBuf) -> Result<S
         id.clone(),
         MediaSession {
             url: url::Url::parse("https://local-media.invalid/").map_err(|_| ())?,
+            request_headers: HashMap::new(),
+            request_header_origin: String::new(),
             local_file: Some(path),
             expires_at: Instant::now() + MEDIA_SESSION_TTL,
             children: HashMap::new(),
@@ -1113,16 +1642,19 @@ async fn create_local_media_session(state: &AppState, path: PathBuf) -> Result<S
         },
     );
     Ok(format!(
-        "/v1/media/{id}?expires={expires}&signature={signature}"
+        "/v1/media/{id}?expires={expires}&signature={signature}{}",
+        if is_hls { "&format=hls" } else { "" }
     ))
 }
 
 async fn download_allowlisted_media(
     state: &AppState,
     initial_url: &url::Url,
+    request_headers: &HashMap<String, String>,
     path: &PathBuf,
 ) -> Result<(), ()> {
     let mut url = initial_url.clone();
+    let initial_origin = initial_url.origin();
     for redirect in 0..=MAX_MEDIA_REDIRECTS {
         if validate_media_url(&url, &state.allowed_media_hosts).is_err() {
             return Err(());
@@ -1138,10 +1670,15 @@ async fn download_allowlisted_media(
             )
             .build()
             .map_err(|_| ())?;
+        let mut upstream_request = client.get(url.clone());
+        if url.origin() == initial_origin {
+            for (name, value) in request_headers {
+                upstream_request = upstream_request.header(name, value);
+            }
+        }
         let response = tokio::time::timeout(
             Duration::from_secs(30),
-            client
-                .get(url.clone())
+            upstream_request
                 .header(reqwest::header::ACCEPT_ENCODING, "identity")
                 .send(),
         )
@@ -1262,9 +1799,156 @@ async fn proxy_media(
             .into_response();
     };
     if let Some(path) = session.local_file.clone() {
-        return serve_local_media(path, headers, method, permit).await;
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "m3u8")
+        {
+            return serve_local_hls_manifest(
+                path,
+                id,
+                signed.expires,
+                signed.signature,
+                method,
+                permit,
+            )
+            .await;
+        }
+        return serve_local_media(path, headers, method, permit, "video/mp4").await;
     }
     proxy_upstream(&state, id, signed.expires, session, headers, method, permit).await
+}
+
+async fn proxy_local_media_asset(
+    State(state): State<AppState>,
+    Path((id, asset)): Path<(String, String)>,
+    Query(signed): Query<SignedSession>,
+    headers: HeaderMap,
+    method: Method,
+) -> Response {
+    if id.len() != 32
+        || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || signed.expires
+            < SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        || !verify_session(&state.session_key, &id, signed.expires, &signed.signature)
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if asset.is_empty() || asset.contains('/') || asset.contains('\\') || asset.contains("..") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let session = {
+        let mut sessions = state.media_sessions.lock().await;
+        sessions.retain(|_, session| session.expires_at > Instant::now());
+        match sessions.get(&id) {
+            Some(session) => session.clone(),
+            None => return StatusCode::NOT_FOUND.into_response(),
+        }
+    };
+    let Some(playlist_path) = session.local_file.filter(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "m3u8")
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let segment_path = playlist_path.with_extension("ts");
+    if segment_path.file_name().and_then(|name| name.to_str()) != Some(asset.as_str()) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Ok(permit) = state.media_slots.clone().try_acquire_owned() else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
+    serve_local_media(segment_path, headers, method, permit, "video/mp2t").await
+}
+
+async fn serve_local_hls_manifest(
+    path: PathBuf,
+    id: String,
+    expires: u64,
+    signature: String,
+    method: Method,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> Response {
+    if method == Method::HEAD {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/vnd.apple.mpegurl")
+            .header(CACHE_CONTROL, "private, no-store")
+            .header("referrer-policy", "no-referrer")
+            .body(Body::empty())
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    }
+    let Ok(metadata) = tokio::fs::metadata(&path).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !metadata.is_file() || metadata.len() > MAX_HLS_MANIFEST_BYTES as u64 {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Ok(bytes) = tokio::fs::read(&path).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(manifest) = String::from_utf8(bytes) else {
+        return StatusCode::BAD_GATEWAY.into_response();
+    };
+    if !manifest.trim_start().starts_with("#EXTM3U") {
+        return StatusCode::BAD_GATEWAY.into_response();
+    }
+    let Some(segment_name) = path
+        .with_extension("ts")
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned)
+    else {
+        return StatusCode::BAD_GATEWAY.into_response();
+    };
+    let Ok(manifest) =
+        rewrite_local_hls_manifest(&manifest, &id, expires, &signature, &segment_name)
+    else {
+        return StatusCode::BAD_GATEWAY.into_response();
+    };
+    drop(permit);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "application/vnd.apple.mpegurl")
+        .header(CONTENT_LENGTH, manifest.len().to_string())
+        .header(CACHE_CONTROL, "private, no-store")
+        .header("referrer-policy", "no-referrer")
+        .body(Body::from(manifest))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+fn rewrite_local_hls_manifest(
+    manifest: &str,
+    id: &str,
+    expires: u64,
+    signature: &str,
+    segment_name: &str,
+) -> Result<String, ()> {
+    if !manifest.trim_start().starts_with("#EXTM3U")
+        || segment_name.is_empty()
+        || segment_name.contains('/')
+        || segment_name.contains('\\')
+    {
+        return Err(());
+    }
+    let spans = playlist_uri_spans(manifest)?;
+    if spans.is_empty() {
+        return Err(());
+    }
+    if spans.iter().any(|(_, _, reference)| {
+        reference != segment_name && !reference.ends_with(&format!("/{segment_name}"))
+    }) {
+        return Err(());
+    }
+    let segment_url =
+        format!("/v1/media/{id}/{segment_name}?expires={expires}&signature={signature}");
+    let replacements = spans
+        .iter()
+        .map(|(_, _, reference)| (reference.clone(), segment_url.clone()))
+        .collect::<HashMap<_, _>>();
+    replace_playlist_uris(manifest, &spans, &replacements)
 }
 
 async fn serve_local_media(
@@ -1272,6 +1956,7 @@ async fn serve_local_media(
     headers: HeaderMap,
     method: Method,
     permit: tokio::sync::OwnedSemaphorePermit,
+    content_type: &'static str,
 ) -> Response {
     let Ok(metadata) = tokio::fs::metadata(&path).await else {
         return StatusCode::NOT_FOUND.into_response();
@@ -1325,7 +2010,7 @@ async fn serve_local_media(
     }
     let mut response = Response::builder()
         .status(status)
-        .header(CONTENT_TYPE, "video/mp4")
+        .header(CONTENT_TYPE, content_type)
         .header(CONTENT_LENGTH, length.to_string())
         .header(ACCEPT_RANGES, "bytes")
         .header(ETAG, etag)
@@ -1426,6 +2111,11 @@ async fn proxy_upstream(
         } else {
             client.get(url.clone())
         };
+        if url.origin().ascii_serialization() == session.request_header_origin {
+            for (name, value) in &session.request_headers {
+                request = request.header(name, value);
+            }
+        }
         for header in [RANGE, IF_RANGE] {
             if let Some(value) = headers.get(&header) {
                 request = request.header(header.as_str(), value);
@@ -1693,6 +2383,8 @@ async fn register_child_sessions(
             id,
             MediaSession {
                 url,
+                request_headers: parent.request_headers.clone(),
+                request_header_origin: parent.request_header_origin.clone(),
                 local_file: None,
                 expires_at: parent_expires_at,
                 children: HashMap::new(),
@@ -1845,6 +2537,38 @@ fn validate_media_url(url: &url::Url, allowed: &HashSet<String>) -> Result<(), (
         return Err(());
     }
     Ok(())
+}
+
+fn validate_playback_headers(
+    headers: &HashMap<String, String>,
+) -> Result<HashMap<String, String>, ()> {
+    if headers.len() > 20 {
+        return Err(());
+    }
+    let mut safe = HashMap::new();
+    for (name, value) in headers {
+        let normalized = name.to_ascii_lowercase();
+        let allowed = matches!(
+            normalized.as_str(),
+            "accept" | "authorization" | "cookie" | "origin" | "referer" | "user-agent"
+        ) || (normalized.starts_with("x-")
+            && normalized.len() <= 66
+            && !normalized.starts_with("x-forwarded-")
+            && normalized != "x-real-ip"
+            && !normalized.starts_with("x-original-")
+            && !normalized.starts_with("x-rewrite-")
+            && !normalized.starts_with("x-http-method"));
+        if !allowed
+            || value.len() > 4096
+            || value
+                .bytes()
+                .any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
+        {
+            return Err(());
+        }
+        safe.insert(normalized, value.clone());
+    }
+    Ok(safe)
 }
 
 async fn resolve_public_address(url: &url::Url) -> Result<IpAddr, ()> {
@@ -2825,6 +3549,37 @@ mod tests {
         assert!(parse_origins("http://localhost:5174").is_ok());
     }
 
+    #[test]
+    fn automatic_conversion_candidates_follow_copy_audio_video_order() {
+        assert_eq!(
+            conversion_candidates(Some(FfmpegCapabilities {
+                audio_aac: true,
+                video_h264: true,
+                video_hardware_encoder: None,
+                hls_output: true,
+            })),
+            vec![
+                ConversionMode::Remux,
+                ConversionMode::AudioAac,
+                ConversionMode::H264Aac
+            ]
+        );
+        assert_eq!(
+            conversion_candidates(Some(FfmpegCapabilities {
+                audio_aac: true,
+                video_h264: false,
+                video_hardware_encoder: Some("h264_videotoolbox"),
+                hls_output: true,
+            })),
+            vec![
+                ConversionMode::Remux,
+                ConversionMode::AudioAac,
+                ConversionMode::H264Aac
+            ]
+        );
+        assert_eq!(conversion_candidates(None), vec![ConversionMode::Remux]);
+    }
+
     #[tokio::test]
     async fn ffmpeg_remux_and_selective_transcodes_produce_browser_mp4() {
         let ffmpeg = PathBuf::from("ffmpeg");
@@ -2880,6 +3635,33 @@ mod tests {
         ];
         for (name, input, mode) in cases {
             let output = dir.join(format!("{name}.mp4"));
+            let source_info = probe_local_media(&ffmpeg, &input).await.unwrap();
+            assert!(source_info["container"].as_str().is_some());
+            assert!(source_info["streams"].as_array().is_some_and(|streams| {
+                streams.iter().any(|stream| stream["codec_type"] == "video")
+                    && streams.iter().any(|stream| stream["codec_type"] == "audio")
+            }));
+            let source_probe = tokio::process::Command::new(&ffprobe)
+                .args([
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "stream=codec_name",
+                    "-of",
+                    "csv=p=0",
+                ])
+                .arg(&input)
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                source_probe.status.success(),
+                "ffprobe rejected {name} input"
+            );
+            let source_codecs = String::from_utf8_lossy(&source_probe.stdout)
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
             let bytes = transcode_local_input(&ffmpeg, &input, &output, mode)
                 .await
                 .unwrap();
@@ -2899,6 +3681,30 @@ mod tests {
                 .unwrap();
             assert!(probe.status.success(), "ffprobe rejected {name} output");
             let codecs = String::from_utf8_lossy(&probe.stdout);
+            let output_codecs = codecs.lines().map(str::to_owned).collect::<Vec<_>>();
+            if mode == ConversionMode::Remux {
+                assert_eq!(
+                    output_codecs, source_codecs,
+                    "remux must preserve video and audio codecs"
+                );
+            } else if mode == ConversionMode::AudioAac {
+                assert_eq!(
+                    output_codecs.first(),
+                    source_codecs.first(),
+                    "audio-only conversion must copy video"
+                );
+                assert_eq!(
+                    source_codecs.last().map(String::as_str),
+                    Some("opus"),
+                    "audio-only fixture must start with incompatible Opus audio"
+                );
+            } else {
+                assert_ne!(
+                    output_codecs.first(),
+                    source_codecs.first(),
+                    "video encoding is expected only in the final fallback"
+                );
+            }
             assert!(
                 codecs.lines().any(|codec| codec == "h264"),
                 "{name} output is not H.264: {codecs}"
@@ -2908,6 +3714,53 @@ mod tests {
                 "{name} output is not AAC: {codecs}"
             );
         }
+        let hls_playlist = dir.join("0123456789abcdef0123456789abcdef-remux.m3u8");
+        let hls_bytes = transcode_local_output(
+            &ffmpeg,
+            &fixtures.join("h264-aac.mp4"),
+            &hls_playlist,
+            ConversionMode::Remux,
+            ConversionOutputFormat::Hls,
+        )
+        .await
+        .unwrap();
+        let hls_text = tokio::fs::read_to_string(&hls_playlist).await.unwrap();
+        assert!(hls_text.contains("#EXT-X-BYTERANGE:"));
+        assert!(hls_text.contains("0123456789abcdef0123456789abcdef-remux.ts"));
+        assert!(hls_bytes > hls_text.len() as u64);
+        let rewritten = rewrite_local_hls_manifest(
+            &hls_text,
+            "abcdef0123456789abcdef0123456789",
+            1_900_000_000,
+            "opaque-signature",
+            "0123456789abcdef0123456789abcdef-remux.ts",
+        )
+        .unwrap();
+        assert!(rewritten.contains("/v1/media/abcdef0123456789abcdef0123456789/0123456789abcdef0123456789abcdef-remux.ts?expires=1900000000&signature=opaque-signature"));
+        assert!(!rewritten.contains("0123456789abcdef0123456789abcdef-remux.ts\n"));
+        let segment_path = hls_playlist.with_extension("ts");
+        let mut range_headers = HeaderMap::new();
+        range_headers.insert(RANGE, HeaderValue::from_static("bytes=0-15"));
+        let segment = serve_local_media(
+            segment_path.clone(),
+            range_headers,
+            Method::GET,
+            Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+            "video/mp2t",
+        )
+        .await;
+        assert_eq!(segment.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(segment.headers().get(CONTENT_TYPE).unwrap(), "video/mp2t");
+        assert_eq!(
+            segment
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .len(),
+            16
+        );
         tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 
@@ -2957,6 +3810,58 @@ mod tests {
         assert!(parse_allowed_hosts("*.example").is_err());
         assert!(parse_allowed_hosts("127.0.0.1").is_err());
         assert!(parse_allowed_hosts("cdn.example:8443").is_err());
+    }
+
+    #[test]
+    fn provider_request_headers_are_bounded_and_reject_hop_routing_headers() {
+        let valid = HashMap::from([
+            ("Authorization".to_string(), "Bearer secret".to_string()),
+            ("Referer".to_string(), "https://addon.example/".to_string()),
+        ]);
+        assert_eq!(
+            validate_playback_headers(&valid)
+                .unwrap()
+                .get("authorization")
+                .unwrap(),
+            "Bearer secret"
+        );
+        assert!(validate_playback_headers(&HashMap::from([(
+            "x-forwarded-host".to_string(),
+            "127.0.0.1".to_string()
+        )]))
+        .is_err());
+        assert!(validate_playback_headers(&HashMap::from([(
+            "Cookie".to_string(),
+            "bad\r\nHost: localhost".to_string()
+        )]))
+        .is_err());
+        assert!(validate_playback_headers(&HashMap::from([(
+            "Host".to_string(),
+            "localhost".to_string()
+        )]))
+        .is_err());
+    }
+
+    #[test]
+    fn stale_conversion_file_names_allow_only_uuid_owned_variants() {
+        let valid = [
+            "0123456789abcdef0123456789abcdef.input",
+            "0123456789abcdef0123456789abcdef.mp4",
+            "0123456789abcdef0123456789abcdef-remux.mp4",
+            "0123456789abcdef0123456789abcdef-audio-aac.mp4",
+            "0123456789abcdef0123456789abcdef-h264-aac.mp4",
+            "0123456789abcdef0123456789abcdef-remux.m3u8",
+            "0123456789abcdef0123456789abcdef-remux.ts",
+        ];
+        for name in valid {
+            assert!(is_worker_conversion_filename(name));
+        }
+        assert!(!is_worker_conversion_filename(
+            "0123456789abcdef0123456789abcdef-untrusted.mp4"
+        ));
+        assert!(!is_worker_conversion_filename(
+            "../0123456789abcdef0123456789abcdef.mp4"
+        ));
     }
 
     #[test]
@@ -3031,6 +3936,8 @@ mod tests {
                 root_id.to_string(),
                 MediaSession {
                     url: root_url.clone(),
+                    request_headers: HashMap::new(),
+                    request_header_origin: "https://cdn.example".to_string(),
                     local_file: None,
                     expires_at: Instant::now() + MEDIA_SESSION_TTL,
                     children: HashMap::new(),
@@ -3047,6 +3954,7 @@ mod tests {
             conversion_dir: Arc::new(std::env::temp_dir().join("aurales-media-worker-test")),
             conversion_slots: Arc::new(Semaphore::new(2)),
             conversion_jobs: Arc::new(Mutex::new(HashMap::new())),
+            conversion_tasks: Arc::new(Mutex::new(HashMap::new())),
             access_code: None,
             access_attempts: Arc::new(Mutex::new(HashMap::new())),
             allowed_origins: Arc::new(HashSet::new()),
@@ -3102,6 +4010,7 @@ mod tests {
             headers,
             Method::GET,
             Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+            "video/mp4",
         )
         .await;
         assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
@@ -3115,6 +4024,124 @@ mod tests {
             "3456"
         );
         tokio::fs::remove_file(path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn signed_local_hls_manifest_and_segments_support_ranges_and_expiry() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let signing_key = Arc::new(b"hls-test-session-signing-key-at-least-32-bytes".to_vec());
+        let dir = std::env::temp_dir().join(format!(
+            "aurales-hls-session-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let playlist = dir.join("source.m3u8");
+        let segment_name = "source.ts";
+        tokio::fs::write(
+            &playlist,
+            format!("#EXTM3U\n#EXT-X-BYTERANGE:4@0\n{segment_name}\n#EXT-X-ENDLIST\n"),
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(dir.join(segment_name), b"abcdefgh")
+            .await
+            .unwrap();
+        let state = AppState {
+            api_key: Arc::new(vec![b'x'; 32]),
+            ranking_slots: Arc::new(Semaphore::new(1)),
+            session_key: signing_key.clone(),
+            allowed_media_hosts: Arc::new(HashSet::new()),
+            media_sessions: Arc::new(Mutex::new(HashMap::from([(
+                id.to_string(),
+                MediaSession {
+                    url: url::Url::parse("https://local-media.invalid/").unwrap(),
+                    request_headers: HashMap::new(),
+                    request_header_origin: String::new(),
+                    local_file: Some(playlist.clone()),
+                    expires_at: Instant::now() + MEDIA_SESSION_TTL,
+                    children: HashMap::new(),
+                    is_root: true,
+                    parent_id: None,
+                    nesting_depth: 0,
+                },
+            )]))),
+            media_slots: Arc::new(Semaphore::new(4)),
+            probe_slots: Arc::new(Semaphore::new(1)),
+            pmdb_slots: Arc::new(Semaphore::new(1)),
+            ffmpeg_path: None,
+            ffmpeg_caps: None,
+            conversion_dir: Arc::new(dir.clone()),
+            conversion_slots: Arc::new(Semaphore::new(1)),
+            conversion_jobs: Arc::new(Mutex::new(HashMap::new())),
+            conversion_tasks: Arc::new(Mutex::new(HashMap::new())),
+            access_code: None,
+            access_attempts: Arc::new(Mutex::new(HashMap::new())),
+            allowed_origins: Arc::new(HashSet::new()),
+        };
+        let expires = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+        let signature = sign_session(&signing_key, id, expires).unwrap();
+        let manifest = proxy_media(
+            State(state.clone()),
+            Path(id.to_string()),
+            Query(SignedSession {
+                expires,
+                signature: signature.clone(),
+            }),
+            HeaderMap::new(),
+            Method::GET,
+        )
+        .await;
+        assert_eq!(manifest.status(), StatusCode::OK);
+        assert_eq!(
+            manifest.headers().get(CONTENT_TYPE).unwrap(),
+            "application/vnd.apple.mpegurl"
+        );
+        let manifest_text = manifest.into_body().collect().await.unwrap().to_bytes();
+        let manifest_text = String::from_utf8(manifest_text.to_vec()).unwrap();
+        assert!(manifest_text.contains(&format!(
+            "/v1/media/{id}/{segment_name}?expires={expires}&signature={signature}"
+        )));
+
+        let mut range = HeaderMap::new();
+        range.insert(RANGE, HeaderValue::from_static("bytes=2-5"));
+        let segment = proxy_local_media_asset(
+            State(state.clone()),
+            Path((id.to_string(), segment_name.to_string())),
+            Query(SignedSession { expires, signature }),
+            range,
+            Method::GET,
+        )
+        .await;
+        assert_eq!(segment.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(segment.headers().get(CONTENT_TYPE).unwrap(), "video/mp2t");
+        assert_eq!(
+            segment.into_body().collect().await.unwrap().to_bytes(),
+            "cdef"
+        );
+
+        let expired = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 1;
+        let expired_signature = sign_session(&signing_key, id, expired).unwrap();
+        let expired_response = proxy_local_media_asset(
+            State(state),
+            Path((id.to_string(), segment_name.to_string())),
+            Query(SignedSession {
+                expires: expired,
+                signature: expired_signature,
+            }),
+            HeaderMap::new(),
+            Method::GET,
+        )
+        .await;
+        assert_eq!(expired_response.status(), StatusCode::NOT_FOUND);
+        tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 
     #[test]
@@ -3273,6 +4300,7 @@ mod tests {
             conversion_dir: Arc::new(std::env::temp_dir().join("aurales-media-worker-test")),
             conversion_slots: Arc::new(Semaphore::new(2)),
             conversion_jobs: Arc::new(Mutex::new(HashMap::new())),
+            conversion_tasks: Arc::new(Mutex::new(HashMap::new())),
             access_code: Some(Arc::new(b"test-access-code-long-enough".to_vec())),
             access_attempts: Arc::new(Mutex::new(HashMap::new())),
             allowed_origins: Arc::new(HashSet::from(["https://app.example".to_string()])),
@@ -3743,5 +4771,59 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["candidates"][0]["stream"]["addonId"], "addon");
         assert_eq!(json["candidates"][0]["score"].as_f64(), Some(72.0));
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_conversion_aborts_its_task_and_expires_the_job() {
+        let key = "a-private-worker-key-that-exceeds-32-bytes";
+        let id = "0123456789abcdef0123456789abcdef".to_string();
+        let origins = parse_origins("https://app.example").unwrap();
+        let jobs = Arc::new(Mutex::new(HashMap::from([(
+            id.clone(),
+            ConversionJob {
+                status: ConversionStatus::Processing,
+                expires_at: Instant::now() + MEDIA_SESSION_TTL,
+            },
+        )])));
+        let tasks = Arc::new(Mutex::new(HashMap::new()));
+        let task = tokio::spawn(std::future::pending::<()>());
+        let abort_handle = task.abort_handle();
+        tasks.lock().await.insert(id.clone(), task);
+        let state = AppState {
+            api_key: Arc::new(key.as_bytes().to_vec()),
+            ranking_slots: Arc::new(Semaphore::new(4)),
+            session_key: Arc::new(b"unit-test-session-signing-key-at-least-32-bytes".to_vec()),
+            allowed_media_hosts: Arc::new(HashSet::new()),
+            media_sessions: Arc::new(Mutex::new(HashMap::new())),
+            media_slots: Arc::new(Semaphore::new(16)),
+            probe_slots: Arc::new(Semaphore::new(8)),
+            pmdb_slots: Arc::new(Semaphore::new(8)),
+            ffmpeg_path: None,
+            ffmpeg_caps: None,
+            conversion_dir: Arc::new(std::env::temp_dir().join("aurales-media-worker-cancel-test")),
+            conversion_slots: Arc::new(Semaphore::new(2)),
+            conversion_jobs: jobs.clone(),
+            conversion_tasks: tasks.clone(),
+            access_code: None,
+            access_attempts: Arc::new(Mutex::new(HashMap::new())),
+            allowed_origins: Arc::new(HashSet::from(["https://app.example".to_string()])),
+        };
+        let response = router(state, origins)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/media/conversions/{id}"))
+                    .header(AUTHORIZATION, format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(abort_handle.is_finished());
+        assert!(matches!(
+            jobs.lock().await.get(&id).unwrap().status,
+            ConversionStatus::Cancelled
+        ));
     }
 }

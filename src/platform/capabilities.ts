@@ -69,5 +69,10 @@ export function shouldReloadAfterVaultRestore(): boolean {
 }
 
 export function isHlsUrl(url: string): boolean {
-  try { return /\.m3u8$/i.test(new URL(url, typeof location !== 'undefined' ? location.href : 'https://aurales.invalid').pathname) } catch { return /\.m3u8(?:$|\?)/i.test(url) }
+  try {
+    const parsed = new URL(url, typeof location !== 'undefined' ? location.href : 'https://aurales.invalid')
+    return /\.m3u8$/i.test(parsed.pathname) || parsed.searchParams.get('format')?.toLowerCase() === 'hls'
+  } catch {
+    return /\.m3u8(?:$|\?)/i.test(url) || /[?&]format=hls(?:&|$)/i.test(url)
+  }
 }

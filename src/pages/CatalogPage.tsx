@@ -5,7 +5,7 @@ import { EmptyState } from '../components/ui'
 import { getAddonCatalog, getMockCatalog } from '../services/addons'
 import { useAppStore } from '../stores/appStore'
 import { useCatalogStore } from '../stores/catalogStore'
-import type { SearchResult } from '../types'
+import type { HomeRowConfig, SearchResult } from '../types'
 import { discoverTmdb, discoverTmdbWithCache, DISCOVER_ROW_LIMIT, DISCOVER_ROW_PAGES } from '../services/tmdb'
 import { getProviderListItems } from '../services/providerLists'
 import { SERVICE_PROVIDER_MAP } from './DiscoverPage'
@@ -37,9 +37,24 @@ export default function CatalogPage() {
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
   const [focusedItem, setFocusedItem] = useState<SearchResult | null>(null)
 
-  const row = useMemo(() => {
+  const row = useMemo<HomeRowConfig | undefined>(() => {
     const candidate = homeRows.find((r) => r.id === rowId)
     if (candidate) return candidate
+    const routeRow = (location.state as { catalogRow?: HomeRowConfig } | null)?.catalogRow
+    if (routeRow && routeRow.id === rowId) return routeRow
+    const connectionId = searchParams.get('connection')
+    const sourceItemId = searchParams.get('item')
+    if (rowId?.startsWith('jellyfin-') && connectionId && sourceItemId) {
+      return {
+        id: rowId,
+        title: searchParams.get('title') || 'Collection',
+        sourceType: 'jellyfin',
+        providerListId: JSON.stringify([connectionId, `boxset:${sourceItemId}`]),
+        layout: 'poster',
+        enabled: true,
+        order: 0,
+      }
+    }
 
     if (rowId?.startsWith('discover-provider-')) {
       const parts = rowId.split('-') // ['discover', 'provider', providerName, contentType]
@@ -51,6 +66,9 @@ export default function CatalogPage() {
       return {
         id: rowId,
         title: `${providerName} ${contentType === 'movie' ? 'Movies' : 'Series'}`,
+        layout: 'poster',
+        enabled: true,
+        order: 0,
         sourceType: 'discover' as const,
         discoverConfig: {
           source: 'TMDB' as const,
@@ -83,9 +101,10 @@ export default function CatalogPage() {
       }
     }
     return undefined
-  }, [rowId, homeRows, region, minRating, includeAdult])
+  }, [rowId, homeRows, location.state, searchParams, region, minRating, includeAdult])
 
   const title = searchParams.get('title') || row?.title || 'Catalog'
+  const isTopTenCatalog = title.trim().toLocaleLowerCase() === 'top 10 for you'
   const posterSize = useAppStore((s) => s.posterSize)
 
   const gridMinMax = useMemo(() => {
@@ -122,7 +141,11 @@ export default function CatalogPage() {
     loadMoreRef.current = null
 
     const cached = catalogGetCache(rowId)
-    const restoredCache = cached && cached.items.length > 0 ? cached : null
+    const restoredCache = cached && cached.items.length > 0
+      ? isTopTenCatalog
+        ? { ...cached, items: cached.items.slice(0, 10), hasMore: false }
+        : cached
+      : null
     if (restoredCache) {
       setItems(restoredCache.items)
       setHasMore(restoredCache.hasMore)
@@ -155,7 +178,7 @@ export default function CatalogPage() {
     // through navigation state — more reliable than the seeded cache alone
       const stateItems = (location.state as { showAllItems?: SearchResult[] } | null)?.showAllItems
       if (!row && stateItems && stateItems.length > 0) {
-        setItems(stateItems)
+        setItems(isTopTenCatalog ? stateItems.slice(0, 10) : stateItems)
         setHasMore(false)
         setLoading(false)
         return
@@ -425,16 +448,20 @@ export default function CatalogPage() {
       scrollRoot.removeEventListener('scroll', scheduleScrollCheck)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [row, addons])
+  }, [row, addons, isTopTenCatalog])
 
   return (
     <div className={`catalog-page app-content-frame p-6 pb-12 ${cinematic ? 'px-8' : ''}`}>
-      <div className="mb-6">
-        <p className="text-sm uppercase tracking-[0.24em] text-muted mb-2">Catalog</p>
-        <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
-        {!loading && items.length > 0 && (
-          <p className="text-sm text-muted mt-2">{items.length} titles loaded</p>
-        )}
+      <div className="catalog-page__header mb-6">
+        <button type="button" onClick={() => navigate(-1)} aria-label="Go back" className="catalog-page__back focus-ring">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="m15 18-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        </button>
+        <div className="catalog-page__heading">
+          <h1 className="text-3xl font-bold tracking-tight" title={title}>{title}</h1>
+          {!loading && items.length > 0 && (
+            <p className="text-sm text-muted mt-1">{items.length} titles loaded</p>
+          )}
+        </div>
       </div>
 
       {loading ? (
@@ -469,7 +496,7 @@ export default function CatalogPage() {
               </div>
             </div>
           })()}
-          <div className={cinematic ? 'flex flex-wrap items-start gap-5' : 'media-grid grid gap-5'} style={cinematic ? undefined : { gridTemplateColumns: `repeat(auto-fill, ${gridMinMax})`, contain: 'layout style' }}>
+          <div className="catalog-page__items media-grid grid gap-5" style={{ gridTemplateColumns: `repeat(auto-fill, ${gridMinMax})`, contain: 'layout style' }}>
             {items.map((item) => (
               <MediaCard
                 key={item.id}

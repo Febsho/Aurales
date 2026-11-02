@@ -1,7 +1,7 @@
 import BaseSelectMenu from '../components/ui/SelectMenu'
 import Switch from '../components/ui/Switch'
 import { lazy, Suspense, useState, useRef, useEffect, createContext, useContext } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { invoke } from '@tauri-apps/api/core'
 import { useAppStore, APP_LANGUAGES, notifyWatchedProviderAccountChanged } from '../stores/appStore'
 import { getPlatformCapabilities } from '../platform/capabilities'
@@ -45,9 +45,11 @@ import KeyboardShortcutsSettings from '../components/settings/KeyboardShortcutsS
 import { cancelTorBoxDeviceAuth, clearTorBoxToken, getTorBoxAuthGeneration, getTorBoxToken, getTorBoxUser, pollTorBoxDeviceToken, setTorBoxToken, startTorBoxDeviceAuth, type TorBoxDeviceCode, type TorBoxUser } from '../services/torbox'
 import ProfilesSettings from '../components/settings/ProfilesSettings'
 import MediaWorkerSettings from '../components/settings/MediaWorkerSettings'
+import ServerIntegrationsSettings from '../components/settings/ServerIntegrationsSettings'
 import AuralesSyncSettings from '../components/settings/AuralesSyncSettings'
 import AccountsHub from '../components/settings/AccountsHub'
 import { getUpcomingPreferences, setUpcomingPreferences } from '../services/upcoming'
+import { clearPreferredExternalPlayer, getPreferredExternalPlayer, setPreferredExternalPlayer, type ExternalPlayer } from '../services/player/externalPlayers'
 import { getBetterPostersUrl, type BetterPostersRatingSource } from '../services/betterPosters'
 import { getSimklDerivedCatalogItems } from '../services/simkl/lists'
 import { getActiveProfileId, getProfileBackupEntries, isProfileBackupStorageKey, profileBackupStorageKeyForImport, profileStorageKey, PROFILE_BACKUP_KEYS } from '../services/profiles'
@@ -817,8 +819,13 @@ export default function SettingsPage() {
   const [searchParams] = useSearchParams()
   type SettingsTab = 'overview' | 'accounts' | 'servers' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'upcoming' | 'profiles' | 'sync' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery' | 'shortcuts'
   const requestedTab = searchParams.get('tab')
-  const [activeTab, setActiveTab] = useState<SettingsTab>(() => requestedTab === 'profiles' ? 'profiles' : 'overview')
-  const showServerSettings = false
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() => requestedTab && ['accounts', 'servers', 'addons', 'metadata', 'artwork', 'search', 'progress', 'upcoming', 'profiles', 'sync', 'subtitles', 'player', 'advanced', 'interface', 'watch-together', 'discovery', 'shortcuts'].includes(requestedTab) ? requestedTab as SettingsTab : 'overview')
+  const [settingsSearch, setSettingsSearch] = useState('')
+  const [externalPlayer, setExternalPlayer] = useState<ExternalPlayer | ''>(() => getPreferredExternalPlayer() ?? '')
+  // Jellyfin is available through the browser integration as well as Tauri.
+  // Keep the server settings category visible on every platform; WebDAV remains
+  // hidden inside the connection editor when the native backend is unavailable.
+  const showServerSettings = true
 
   useEffect(() => {
     if (requestedTab === 'profiles') setActiveTab('profiles')
@@ -1778,8 +1785,8 @@ export default function SettingsPage() {
         },
         {
           id: 'servers',
-          label: 'Server',
-          description: 'Connect Jellyfin libraries and WebDAV media folders.',
+          label: 'Media servers',
+          description: 'Connect Jellyfin libraries and sync playback history.',
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2" /><rect x="3" y="13" width="18" height="7" rx="2" /><path strokeLinecap="round" d="M7 7.5h.01M7 16.5h.01M11 7.5h6M11 16.5h6" /></svg>
           )
@@ -1918,6 +1925,11 @@ export default function SettingsPage() {
     ...category,
     items: category.items.filter((item) => item.id !== 'servers' || showServerSettings),
   })).filter((category) => category.items.length > 0)
+  const filteredCategories = visibleCategories.map((category) => ({
+    ...category,
+    items: category.items.filter((item) => !settingsSearch.trim()
+      || `${item.label} ${item.description} ${category.title}`.toLowerCase().includes(settingsSearch.trim().toLowerCase())),
+  })).filter((category) => category.items.length > 0)
 
   // Find the active category item for header info
   const activeItem = visibleCategories.flatMap(c => c.items).find(i => i.id === activeTab)
@@ -1935,8 +1947,18 @@ export default function SettingsPage() {
             <p>Personalize how Aurales looks, plays, connects, and keeps your library in sync.</p>
           </section>
 
+          <label className="settings-hub__search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m16 16 4 4" strokeLinecap="round" /></svg>
+            <input type="search" value={settingsSearch} onChange={(event) => setSettingsSearch(event.target.value)} placeholder="Search settings" aria-label="Search settings" />
+          </label>
+
+          <Link to="/docs" className="mb-6 flex items-center justify-between gap-4 rounded-2xl border border-accent/20 bg-accent/[.07] p-4 text-left transition-colors hover:bg-accent/[.12]">
+            <span><span className="block text-sm font-bold text-white">Webversion selbst hosten</span><span className="mt-1 block text-xs text-white/55">Installation, Media Worker und Webplayer erklärt</span></span>
+            <svg className="h-5 w-5 shrink-0 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="m9 18 6-6-6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </Link>
+
           <section className="settings-hub__categories" aria-label="Settings categories">
-            {visibleCategories.map((category) => (
+            {filteredCategories.map((category) => (
               <div className="settings-hub__group" key={category.title}>
                 <p className="settings-hub__group-label">{category.title}</p>
                 <div className="settings-hub__cards">
@@ -1958,6 +1980,7 @@ export default function SettingsPage() {
                 </div>
               </div>
             ))}
+            {filteredCategories.length === 0 && <p className="settings-hub__empty">No settings found.</p>}
           </section>
         </div>
       ) : (
@@ -1986,7 +2009,7 @@ export default function SettingsPage() {
                     className="w-52 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-xl text-sm text-white font-semibold cursor-pointer focus:outline-none focus:border-accent/50"
                   >
                     <option value="all">Every service</option>
-                    <option value="local">Local</option>
+                    <option value="local">Local + Jellyfin</option>
                     <option value="trakt" disabled={!store.traktConnected}>Trakt{store.traktConnected ? '' : ' — not connected'}</option>
                     <option value="simkl" disabled={!store.simklConnected}>Simkl{store.simklConnected ? '' : ' — not connected'}</option>
                     <option value="anilist" disabled={!store.anilistConnected}>AniList{store.anilistConnected ? '' : ' — not connected'}</option>
@@ -2066,6 +2089,8 @@ export default function SettingsPage() {
 
             </>
           )}
+
+          {activeTab === 'servers' && <ServerIntegrationsSettings />}
 
           {activeTab === 'upcoming' && (
             <>
@@ -3229,6 +3254,28 @@ export default function SettingsPage() {
               )}
 
               {getPlatformCapabilities().platform === 'web' && <MediaWorkerSettings />}
+
+              {getPlatformCapabilities().platform === 'web' && (
+                <SettingSection title="External video player" description="Choose which iOS player Aurales opens when you use ‘Open with …’ during playback. App installation cannot be checked from the web app.">
+                  <SettingRow label="Preferred player" description="You can still choose another player from the playback controls.">
+                    <SelectMenu
+                      aria-label="Preferred external video player"
+                      value={externalPlayer}
+                      onChange={(event) => {
+                        const value = event.target.value as ExternalPlayer | ''
+                        setExternalPlayer(value)
+                        if (value) setPreferredExternalPlayer(value)
+                        else clearPreferredExternalPlayer()
+                      }}
+                      className="w-44"
+                    >
+                      <option value="">Ask each time</option>
+                      <option value="infuse">Infuse</option>
+                      <option value="aether">Aether</option>
+                    </SelectMenu>
+                  </SettingRow>
+                </SettingSection>
+              )}
 
               {/* Cache mode */}
               <section className="space-y-3">

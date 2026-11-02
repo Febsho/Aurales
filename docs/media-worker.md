@@ -8,6 +8,64 @@ probing, a direct-media proxy with bounded HLS playlist rewriting, and an
 opt-in FFmpeg conversion job API. FFmpeg is disabled unless an explicit
 executable path is configured, and capabilities report detected encoders.
 
+## Browser playback strategy
+
+The browser first plays the provider URL directly. If the browser reports an
+unsupported media format, it asks the configured worker for `mode: "auto"`.
+Converted output is requested as HLS so playback can use native Safari/iOS HLS
+or hls.js over Media Source Extensions in other browsers.
+The worker downloads the allowlisted HTTPS source into its private conversion
+directory, lets FFmpeg inspect the actual streams, and tries these HLS outputs
+in order:
+
+1. `-c copy` stream remux (video and audio copied).
+2. `-c:v copy -c:a aac` (only audio encoded).
+3. H.264/AAC encoding (video encoding is the last fallback).
+
+Each attempt must complete successfully before it is returned. The status
+response reports the mode that actually worked, and the player shows that mode.
+Before choosing a conversion result, the worker runs `ffprobe` on the downloaded
+bytes and returns a bounded, token-free summary of the detected container and
+audio/video codec names and profiles to the player. URL suffixes and upstream
+MIME types are not treated as source-format proof.
+If the browser rejects a valid remux or audio-only output, the player asks the
+worker for the next stage; it does not advance merely because the prior FFmpeg
+job completed.
+Browser HLS conversion needs FFmpeg's HLS muxer and MPEG-TS support. AAC-only
+conversion and the later video fallback also need AAC encoding. Video fallback prefers a detected VideoToolbox, NVENC,
+QSV, or AMF H.264 encoder, then falls back to `libx264` if that encoder cannot
+run. To enable this path, configure `AURALES_FFMPEG_PATH`
+and verify the capabilities endpoint reports conversion support. Browser
+Direct Play remains available when no worker is configured.
+
+For Stremio-compatible add-ons, `behaviorHints.proxyHeaders.request` is sent to
+the worker only in the authenticated session/conversion request body. The
+worker validates and retains these headers only in the in-memory session or
+active job, applies them to the original source origin, and strips them after a
+cross-origin redirect. The public playback URL contains only an opaque signed
+session identifier and expiry, never provider headers.
+
+Worker conversions return a single-file MPEG-TS HLS VOD playlist. The manifest
+and segment endpoint share the same expiring signed session; segment requests
+support byte ranges for seeking and resume. The worker rewrites the segment URI
+to that signed endpoint and serves it as `video/mp2t`. Existing provider HLS
+uses the proxy session path, which rewrites nested playlists, keys, maps, and
+segment references into expiring signed child sessions; the browser uses native HLS when
+`canPlayType` reports it (notably Safari/iOS) and otherwise loads `hls.js` over
+Media Source Extensions. Codec/container compatibility remains
+browser-dependent: notably HEVC, AV1, VP9 profiles, HDR, and Dolby Vision vary by
+OS, browser, hardware, and DRM. Successful remux only proves FFmpeg can package
+the streams; it does not guarantee a browser decoder can play them.
+Provider HLS inputs remain secure proxy passthrough sources; the worker does not
+download and reassemble remote segment/key graphs into conversion jobs. If a
+browser cannot decode an HLS source, choose another stream or a direct-file
+source for the worker's remux/transcode ladder.
+
+The repository's FFmpeg integration fixtures exercise these paths: H.264/AAC
+MP4 is stream-copy remuxed; H.264/Opus Matroska becomes AAC audio with copied
+H.264 video; VP8/Opus WebM reaches the H.264/AAC video fallback. The browser
+matrix exercises HLS VOD seeking through MSE and native HLS on WebKit/iOS WebKit.
+
 ## Build and run
 
 Install the Rust toolchain supported by this repository (Rust 1.89 or newer),
@@ -59,7 +117,7 @@ AURALES_MEDIA_API_KEY=replace-with-unique-random-secret-at-least-32-bytes
 AURALES_MEDIA_SESSION_KEY=replace-with-a-different-random-secret-at-least-32-bytes
 AURALES_MEDIA_WEB_ORIGINS=https://aurales.example.com
 AURALES_MEDIA_ALLOWED_HOSTS=cdn.example.net,video.example.org
-# Optional; leave unset to disable FFmpeg conversion.
+# Optional; leave unset to disable media conversion (FFmpeg and FFprobe are required).
 # AURALES_FFMPEG_PATH=/usr/bin/ffmpeg
 ```
 
@@ -129,7 +187,7 @@ Set these variables for the service:
 | `AURALES_MEDIA_ALLOWED_HOSTS` | For media proxy | Comma-separated exact DNS hostnames permitted as upstream media sources, such as `cdn.example.net,video.example.org`. Wildcards, ports, IP addresses, HTTP URLs, and unlisted hosts are rejected. Leave empty to disable proxy sessions. |
 | `AURALES_MEDIA_BIND` | No | Listen address; defaults to `127.0.0.1:8188`. |
 | `AURALES_MEDIA_EXTERNAL_TLS` | Only for public binds | Set to `1` only when binding a non-loopback address behind a TLS-terminating reverse proxy. |
-| `AURALES_FFMPEG_PATH` | Optional | Explicit FFmpeg executable path. Unset disables conversions. The worker checks available AAC and `libx264` encoders at startup. |
+| `AURALES_FFMPEG_PATH` | Optional | Explicit FFmpeg executable path. Unset disables conversions. FFprobe must be installed beside FFmpeg or on `PATH`; startup checks both tools and discovers AAC, `libx264`, hardware encoders, and the HLS/MPEG-TS muxers needed for browser conversion. MP4 muxing is needed only for explicit MP4 conversion requests. |
 | `AURALES_MEDIA_CONVERSION_DIR` | Optional with FFmpeg | Private, dedicated directory for source and converted files. Defaults to the OS temporary directory under `aurales-media-worker`. |
 
 Example local launch:

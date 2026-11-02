@@ -27,7 +27,8 @@ use crate::core::request::ProxyResponse;
 use crate::core::request::StreamProbeResponse;
 use crate::core::server::{
     self, ConnectionTestResult, RefreshResult, SaveServerConnectionRequest, ServerCatalog,
-    ServerCatalogItem, ServerConnection, ServerStream, ServerStreamRequest,
+    ReportPlaybackRequest, ServerCatalogItem, ServerConnection, ServerStream, ServerStreamRequest,
+    SetWatchedRequest,
 };
 use crate::core::settings;
 use crate::core::settings::Setting;
@@ -157,6 +158,28 @@ pub async fn get_server_streams(
 ) -> Result<Vec<ServerStream>, String> {
     let db = db.inner().clone();
     tokio::task::spawn_blocking(move || server::streams(&db, request))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn report_server_playback(
+    request: ReportPlaybackRequest,
+    db: State<'_, Database>,
+) -> Result<(), String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::report_playback(&db, request))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn set_server_item_watched(
+    request: SetWatchedRequest,
+    db: State<'_, Database>,
+) -> Result<(), String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::set_item_watched(&db, request))
         .await
         .map_err(|e| e.to_string())?
 }

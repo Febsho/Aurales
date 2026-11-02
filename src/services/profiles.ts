@@ -37,6 +37,13 @@ const MIGRATED_KEYS = [
   'aurales_stream_reliability_v1', 'aurales_stream_playback_memory_v1',
   'aurales_home_rows', 'aurales_discovery_starter_genres', 'aurales_discovery_mode',
   'aurales_upcoming_preferences_v1', 'aurales_continue_watching_suppressions_v1', 'aurales_skip_profile_picker',
+  // Discovery, Jellyfin watch markers and the compact mobile library/catalog
+  // presentation are user preferences; keep them with the profile so the
+  // encrypted Aurales Sync vault and profile export carry the same settings.
+  'aurales_default_start_page', 'aurales_show_poster_watch_status', 'aurales_watched_checkmark_sources',
+  'aurales_cw_limit', 'aurales_cw_source', 'aurales_discovery_region', 'aurales_discovery_min_rating',
+  'aurales_discovery_include_adult', 'aurales_watch_data_source', 'aurales_primary_progress_service',
+  'aurales_hide_unaired_anime_seasons',
   'aurales_poster_size', 'aurales_home_hero_mode', 'aurales_home_card_animations',
   'aurales_fixed_hero_source', 'aurales_fixed_hero_manual_item', 'aurales_hero_trailer_delay',
   'aurales_poster_trailer_previews', 'aurales_poster_trailer_hover_delay_ms',

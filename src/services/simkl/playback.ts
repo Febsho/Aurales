@@ -58,6 +58,12 @@ export interface PlaybackItem extends MediaRef {
   isAnime: boolean
   season?: number
   episode?: number
+  /** Present only when playback came from a connected Jellyfin library. */
+  serverConnectionId?: string
+  serverItemId?: string
+  serverMediaSourceId?: string
+  serverPlaySessionId?: string
+  serverPlayMethod?: 'DirectPlay' | 'DirectStream' | 'Transcode'
 }
 
 // ─── Scrobble hooks (called from player) ──────────────────────────────────────

@@ -24,6 +24,7 @@ export interface ContinueWatchingSnapshotItem {
   anilistId?: number
   sourceConnectionId?: string
   sourceItemId?: string
+  sourceSeriesItemId?: string
   progressSource?: Exclude<ContinueWatchingSource, 'all'>
   updatedAt: string
 }
@@ -258,7 +259,7 @@ export function getContinueWatchingAccountScope(source: ContinueWatchingSource):
 }
 
 function normalizedIdentity(item: SearchResult | ContinueWatchingSnapshotItem): string {
-  if (!('mediaType' in item)) return mediaIdentity(item)
+  if (!('progressPct' in item)) return mediaIdentity(item)
   if (item.imdbId) return `${item.mediaType}:imdb:${item.imdbId.toLowerCase()}`
   if (item.tmdbId != null) return `${item.mediaType}:tmdb:${item.tmdbId}`
   if (item.anilistId != null) return `${item.mediaType}:anilist:${item.anilistId}`
@@ -277,6 +278,7 @@ export function catalogContentFingerprint(items: SearchResult[]): string {
     identity: normalizedIdentity(item),
     id: item.id,
     type: item.type,
+    mediaType: item.mediaType,
     title: item.title,
     year: item.year,
     poster: item.poster,

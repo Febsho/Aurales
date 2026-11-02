@@ -44,7 +44,7 @@ COPY --from=web-build /app/dist-web /srv
 
 FROM debian:bookworm-slim AS worker-runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --home-dir /var/lib/aurales --create-home --shell /usr/sbin/nologin aurales
 COPY --from=worker-build /app/media-worker/target/release/aurales-media-worker /usr/local/bin/aurales-media-worker
@@ -55,4 +55,6 @@ ENV AURALES_MEDIA_BIND=0.0.0.0:8188 \
 RUN install -d -o aurales -g aurales -m 0700 /var/lib/aurales/conversions
 USER aurales
 EXPOSE 8188
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl --fail --silent http://127.0.0.1:8188/health >/dev/null || exit 1
 ENTRYPOINT ["/usr/local/bin/aurales-media-worker"]

@@ -28,7 +28,7 @@ import { annotateTorBoxStreams, isTorBoxCachedStream, isTorBoxConnected, resolve
 import { loadPlaybackMemory, playbackMemoryKey, seriesPlaybackMemoryKey, recordPlaybackPreference } from '../services/streams/playbackMemory'
 import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
-import { getServerStreams } from '../services/serverIntegrations'
+import { getServerStreams, reportJellyfinPlayback } from '../services/serverIntegrations'
 import { markPerformance, measurePerformance } from '../services/performanceMetrics'
 
 interface AddonStream extends StreamResult {
@@ -62,6 +62,7 @@ interface StreamSelectorProps {
   seasonEpisode?: { season: number; episode: number }
   startTime?: number
   tmdbId?: number
+  imdbId?: string
   tvdbId?: number | string
   malId?: number
   anilistId?: number
@@ -144,6 +145,7 @@ function playbackSessionKey(props: StreamSelectorProps): string {
   return JSON.stringify([
     props.mediaType, props.mediaId,
     props.seasonEpisode?.season, props.seasonEpisode?.episode,
+    props.imdbId,
     props.sourceAddonId, props.sourceAddonItemId,
     props.sourceConnectionId, props.sourceItemId,
   ])
@@ -169,13 +171,15 @@ export default function StreamSelector(props: StreamSelectorProps) {
   />
 }
 
-function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, tvdbId, malId, anilistId, sourceAddonId, sourceAddonItemId, sourceConnectionId, sourceItemId, forceManualSelection = false, onResolvingChange, onNextEpisode, nextEpisodeHint }: StreamSelectorProps & { startFirstStream: boolean }) {
+function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, mediaId, title, artwork, seasonEpisode, startTime, tmdbId, imdbId, tvdbId, malId, anilistId, sourceAddonId, sourceAddonItemId, sourceConnectionId, sourceItemId, forceManualSelection = false, onResolvingChange, onNextEpisode, nextEpisodeHint }: StreamSelectorProps & { startFirstStream: boolean }) {
   const nativePlayerAvailable = useNativePlayerSupported()
+  const webRuntime = !(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   const [streams, setStreams] = useState<AddonStream[]>([])
   const [loading, setLoading] = useState(true)
+  const [serverError, setServerError] = useState('')
   const [playError, setPlayError] = useState('')
   const [playingIndex, setPlayingIndex] = useState<number | null>(null)
-  const [playback, setPlayback] = useState<{ url: string; stream: AddonStream; startTime?: number } | null>(null)
+  const [playback, setPlayback] = useState<{ url: string; stream: AddonStream; startTime?: number; playSessionId: string } | null>(null)
   const [smartMode, setSmartMode] = useState<SmartPlayMode>(() => (localStorage.getItem('aurales_smart_play_mode') as SmartPlayMode) || 'best')
   const [sourceDiagnostics, setSourceDiagnostics] = useState<Record<string, SourceDiagnostic>>({})
   // Opening a mixed list makes identical releases from several addons look
@@ -261,6 +265,7 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
     if (playback) return
     setStreams([])
     setLoading(true)
+    setServerError('')
     setPlayError('')
     setPlayingIndex(null)
     setPlayback(null)
@@ -308,6 +313,8 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
     getServerStreams({
       mediaType,
       mediaId: cleanMediaId,
+      title,
+      imdbId: imdbId || (/^tt\d+$/i.test(String(cleanMediaId)) ? String(cleanMediaId) : undefined),
       tmdbId,
       tvdbId,
       malId,
@@ -318,7 +325,9 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
       sourceItemId,
     }).then((results) => {
       serverResults = results
-    }).catch(() => {}).finally(() => {
+    }).catch((error) => {
+      setServerError(error instanceof Error ? error.message : String(error))
+    }).finally(() => {
       serverComplete = true
       publish()
     })
@@ -397,7 +406,7 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
       setSubtitles(unique)
     })
     return () => { cancelled = true }
-  }, [open, mediaId, mediaType, seasonEpisode, addons, sourceAddonId, sourceAddonItemId, sourceConnectionId, sourceItemId, playback, refreshRevision, tmdbId, tvdbId, malId, anilistId])
+  }, [open, mediaId, mediaType, title, seasonEpisode, addons, sourceAddonId, sourceAddonItemId, sourceConnectionId, sourceItemId, playback, refreshRevision, tmdbId, imdbId, tvdbId, malId, anilistId])
 
   useEffect(() => {
     const unchecked = isTorBoxConnected() && streams.some((stream) => stream.infoHash && stream.behaviorHints?.torboxChecked !== true)
@@ -801,7 +810,8 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
       return
     }
 
-    setPlayback({ url, stream, startTime: recoveryStartTime ?? startTime })
+    const randomId = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+    setPlayback({ url, stream, startTime: recoveryStartTime ?? startTime, playSessionId: randomId.replaceAll('-', '') })
     setPlayingIndex(null)
   }
 
@@ -921,6 +931,17 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
 
   const handlePlaybackStarted = () => {
     if (playback) {
+      if (playback.stream.provider === 'jellyfin' && playback.stream.connectionId && playback.stream.sourceItemId) {
+        void reportJellyfinPlayback({
+          connectionId: playback.stream.connectionId,
+          itemId: playback.stream.sourceItemId,
+          mediaSourceId: playback.stream.mediaSourceId,
+          playSessionId: playback.stream.playSessionId || playback.playSessionId,
+          positionTicks: Math.max(0, Math.round((playback.startTime ?? 0) * 10_000_000)),
+          event: 'start', isPaused: false,
+          playMethod: playback.stream.transcode ? 'Transcode' : playback.stream.directPlay ? 'DirectPlay' : 'DirectStream',
+        }).catch(() => undefined)
+      }
       recordReliabilityEvent(playback.stream, 'success')
       setSourceDiagnostics((current) => ({ ...current, [playback.stream.addonId]: diagnosticForStream(playback.stream, 'HEALTHY', undefined, undefined, current[playback.stream.addonId]) }))
     }
@@ -996,8 +1017,8 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
       contentType: mediaType,
       isAnime: isAnimePlayback,
       // imdbId derived from mediaId if it looks like an IMDB id
-      imdbId: /^tt\d+$/i.test(String(mediaId).trim().replace(/:(\d+):(\d+)$/, ''))
-        ? String(mediaId).trim().replace(/:(\d+):(\d+)$/, '') : undefined,
+      imdbId: imdbId || (/^tt\d+$/i.test(String(mediaId).trim().replace(/:(\d+):(\d+)$/, ''))
+        ? String(mediaId).trim().replace(/:(\d+):(\d+)$/, '') : undefined),
       tmdbId: tmdbId || (/^tmdb[-:]/i.test(mediaId) ? Number(mediaId.replace(/^tmdb[-:]/i, '')) : undefined),
       // tvdbId enables the TVDBâ†’AniList/PMDB episode mapping during scrobbling
       tvdbId: tvdbId != null
@@ -1007,6 +1028,13 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
       anilistId,
       season: seasonEpisode?.season,
       episode: seasonEpisode?.episode,
+      serverConnectionId: playback.stream.provider === 'jellyfin' ? playback.stream.connectionId : undefined,
+      serverItemId: playback.stream.provider === 'jellyfin' ? playback.stream.sourceItemId : undefined,
+      serverMediaSourceId: playback.stream.provider === 'jellyfin' ? playback.stream.mediaSourceId : undefined,
+      serverPlaySessionId: playback.stream.provider === 'jellyfin' ? playback.stream.playSessionId || playback.playSessionId : undefined,
+      serverPlayMethod: playback.stream.provider === 'jellyfin'
+        ? (playback.stream.transcode ? 'Transcode' : playback.stream.directPlay ? 'DirectPlay' : 'DirectStream')
+        : undefined,
     }
 
     if (nativePlayerAvailable) {
@@ -1017,6 +1045,7 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
           // attempt cannot immediately fail the next candidate as well.
           key={playback.url}
           url={playback.url}
+          playbackRequestHeaders={playback.stream.behaviorHints?.proxyHeaders?.request}
           title={title}
           subtitle={seasonEpisode ? `From S${seasonEpisode.season} E${seasonEpisode.episode}` : undefined}
           subtitles={mergedSubtitles}
@@ -1062,7 +1091,7 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-[10000] flex items-center justify-center overflow-hidden bg-[#07090c] p-3 text-white sm:p-6" onClick={closeSelector}>
+    <div className={`fixed inset-0 z-[10000] flex items-center justify-center overflow-hidden bg-[#07090c] p-3 text-white sm:p-6 ${webRuntime ? 'max-[640px]:items-end max-[640px]:p-0' : ''}`} onClick={closeSelector}>
       {(artwork?.backdrop || artwork?.poster) && <img src={cachedImage(artwork.backdrop || artwork.poster)} alt="" className="absolute inset-0 h-full w-full scale-110 object-cover opacity-40 blur-xl" />}
       <div className="absolute inset-0 bg-[#07090c]/65" />
       <section ref={selectorPanelRef} aria-label="Select source" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
@@ -1074,7 +1103,7 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
         const next = event.key === 'ArrowDown' ? Math.min(current + 1, choices.length - 1) : Math.max(current - 1, 0)
         choices[next]?.focus()
         event.preventDefault()
-      }} className="relative flex max-h-[min(860px,94vh)] w-full max-w-[1160px] flex-col overflow-hidden rounded-[24px] border border-white/[0.12] bg-[#171b20]/85 shadow-[0_35px_100px_rgba(0,0,0,0.65)] backdrop-blur-3xl">
+      }} className={`relative flex max-h-[min(860px,94vh)] w-full max-w-[1160px] flex-col overflow-hidden rounded-[24px] border border-white/[0.12] bg-[#171b20]/90 shadow-[0_35px_100px_rgba(0,0,0,0.65)] backdrop-blur-3xl ${webRuntime ? 'max-[640px]:max-h-[90dvh] max-[640px]:max-w-none max-[640px]:rounded-b-none max-[640px]:rounded-t-[28px] max-[640px]:pb-[env(safe-area-inset-bottom)]' : ''}`}>
         <header className="flex items-center gap-4 px-5 pb-5 pt-5 sm:px-7 sm:pt-6">
           {artwork?.poster ? <img src={cachedImage(artwork.poster)} alt="" className="h-[72px] w-12 shrink-0 rounded-lg object-cover shadow-lg" /> : <div className="h-[72px] w-12 shrink-0 rounded-lg bg-white/[0.07]" />}
           <div className="min-w-0 flex-1">
@@ -1112,7 +1141,8 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
         <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5 pt-4 sm:px-7" style={{ scrollbarWidth: 'thin' }}>
           {Object.values(sourceDiagnostics).filter((diagnostic) => diagnostic.failureReason).map((diagnostic) => <p key={diagnostic.sourceFingerprint} className="mb-2 text-xs text-amber-200/70">{diagnostic.addonId}: {diagnostic.failureReason?.replaceAll('_', ' ').toLowerCase()}</p>)}
           {loading && <p className="py-10 text-center text-sm text-white/50">Fetching sources…</p>}
-          {!loading && filteredStreams.length === 0 && <p className="py-10 text-center text-sm text-white/50">No playable sources found</p>}
+          {!loading && filteredStreams.length === 0 && <div className="mx-auto flex max-w-lg flex-col items-center gap-3 py-10 text-center"><p className="text-sm font-medium text-white/75">No playable sources found</p>{serverError ? <p role="alert" className="text-xs leading-relaxed text-amber-200/75">Jellyfin · {serverError}</p> : <p className="text-xs leading-relaxed text-white/45">Check your Jellyfin stream add-on and try again.</p>}<button type="button" onClick={() => setRefreshRevision((value) => value + 1)} className="rounded-full border border-white/10 bg-white/[0.07] px-4 py-2 text-xs font-semibold text-white/75 hover:bg-white/[0.12]">Try again</button></div>}
+          {!loading && filteredStreams.length > 0 && serverError && <p role="status" className="mb-3 rounded-xl border border-amber-300/10 bg-amber-300/[0.06] p-3 text-xs text-amber-100/70">Jellyfin stream list unavailable: {serverError}</p>}
           {!loading && filteredStreams.length > 0 && scoredStreams.length === 0 && <p className="py-10 text-center text-sm text-white/50">No sources match these filters.</p>}
           {playError && <p role="alert" className="mb-3 rounded-xl bg-red-500/10 p-3 text-xs text-red-300">{playError}</p>}
           <div className="space-y-2">

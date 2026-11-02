@@ -46,12 +46,17 @@ export default function LibraryCalendar() {
   const mdblistConnected = Boolean(useAppStore((state) => state.mdblistApiKey)) || hasMdblistOAuth()
   const [anchor, setAnchor] = useState(() => new Date())
   const [todayKey, setTodayKey] = useState(() => keyForDate(new Date()))
-  const [view, setView] = useState<CalendarView>(() => (localStorage.getItem('aurales_calendar_view') as CalendarView) || 'month')
+  const [view, setView] = useState<CalendarView>(() => {
+    const mobile = window.matchMedia('(max-width: 700px)').matches
+    const saved = localStorage.getItem(mobile ? 'aurales_calendar_view_mobile' : 'aurales_calendar_view')
+    return (saved as CalendarView) || (mobile ? 'agenda' : 'month')
+  })
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all')
   const [stateFilter, setStateFilter] = useState<StateFilter>('all')
   const [entries, setEntries] = useState<CalendarEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [errors, setErrors] = useState<string[]>([])
+  const [serverRevision, setServerRevision] = useState(0)
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set())
   const [preview, setPreview] = useState<{ entry: CalendarEntry; x: number; y: number } | null>(null)
 
@@ -69,13 +74,20 @@ export default function LibraryCalendar() {
   }, [anchor, view])
 
   useEffect(() => {
-    localStorage.setItem('aurales_calendar_view', view)
+    const key = window.matchMedia('(max-width: 700px)').matches ? 'aurales_calendar_view_mobile' : 'aurales_calendar_view'
+    localStorage.setItem(key, view)
   }, [view])
+
+  useEffect(() => {
+    const refresh = () => setServerRevision((value) => value + 1)
+    window.addEventListener('aurales:server-catalogs-changed', refresh)
+    return () => window.removeEventListener('aurales:server-catalogs-changed', refresh)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    Promise.all(requestedMonths.map((month) => loadLibraryCalendar({ month, watchProgress: watchProgressRef.current, traktConnected, simklConnected, anilistConnected, mdblistConnected })))
+    Promise.all(requestedMonths.map((month) => loadLibraryCalendar({ month, watchProgress: watchProgressRef.current, traktConnected, simklConnected, anilistConnected, mdblistConnected, serverRevision })))
       .then((results) => {
         if (cancelled) return
         const unique = new Map(results.flatMap((result) => result.entries).map((entry) => [entry.id, entry]))
@@ -85,7 +97,7 @@ export default function LibraryCalendar() {
       .catch((error) => { if (!cancelled) setErrors([error instanceof Error ? error.message : 'Could not load the calendar']) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [requestedMonths, progressSignature, todayKey, traktConnected, simklConnected, anilistConnected, mdblistConnected])
+  }, [requestedMonths, progressSignature, todayKey, traktConnected, simklConnected, anilistConnected, mdblistConnected, serverRevision])
 
   const filtered = useMemo(() => entries.filter((entry) => {
     if (mediaFilter !== 'all' && entry.kind !== mediaFilter) return false
@@ -102,7 +114,7 @@ export default function LibraryCalendar() {
 
   const openEntry = (entry: CalendarEntry) => {
     const media = entry.media
-    navigate(media.type === 'movie' ? `/movie/${media.id}` : `/series/${media.id}`, { state: { poster: media.poster, backdrop: media.backdrop, title: media.title, tmdbId: media.tmdbId, tvdbId: media.tvdbId, imdbId: media.imdbId, anilistId: media.anilistId, malId: media.malId } })
+    navigate(media.type === 'movie' ? `/movie/${media.id}` : `/series/${media.id}`, { state: { poster: media.poster, backdrop: media.backdrop, title: media.title, tmdbId: media.tmdbId, tvdbId: media.tvdbId, imdbId: media.imdbId, anilistId: media.anilistId, malId: media.malId, provider: media.provider, sourceConnectionId: media.sourceConnectionId, sourceItemId: media.sourceItemId, season: entry.season, episode: entry.episode } })
   }
 
   const showPreview = (entry: CalendarEntry, x: number, y: number) => {

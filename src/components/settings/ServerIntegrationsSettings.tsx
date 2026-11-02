@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Switch from '../ui/Switch'
 import SelectMenu from '../ui/SelectMenu'
 import { useAppStore } from '../../stores/appStore'
@@ -22,6 +23,8 @@ const EMPTY_FORM: ServerConnectionInput = {
   kind: 'jellyfin', name: '', serverUrl: '', username: '', secret: '', authMode: 'password', baseDirectory: '', enabled: true,
 }
 
+const desktopAvailable = typeof window !== 'undefined' && Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
+
 function statusColor(status: ServerConnectionSummary['status']): string {
   if (status === 'connected') return 'bg-emerald-400'
   if (status === 'error') return 'bg-red-400'
@@ -38,6 +41,7 @@ function realLibraryCatalogs(connection: ServerConnectionSummary, catalogs: Serv
 }
 
 export default function ServerIntegrationsSettings() {
+  const navigate = useNavigate()
   const [connections, setConnections] = useState<ServerConnectionSummary[]>([])
   const [catalogs, setCatalogs] = useState<ServerCatalogDescriptor[]>([])
   const [form, setForm] = useState<ServerConnectionInput | null>(null)
@@ -92,6 +96,7 @@ export default function ServerIntegrationsSettings() {
   }
 
   const save = () => form && run('save', async () => {
+    setMessage('Connecting to Jellyfin…')
     if (!form.serverUrl.trim()) throw new Error('Enter a server URL.')
     if (!form.name.trim()) throw new Error('Enter a connection name.')
     if (!form.secret && !form.id) throw new Error(form.authMode === 'token' ? 'Enter an access token or API key.' : 'Enter a Jellyfin password.')
@@ -111,55 +116,41 @@ export default function ServerIntegrationsSettings() {
     try {
       await refreshServerCatalog(saved.id)
       await reload()
+      setMessage(`Connected to ${saved.serverName || saved.name}.`)
     } catch (error) {
       setMessage(`Server saved. Initial catalog refresh failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   })
 
   const test = () => form && run('test', async () => {
+    setMessage('Testing Jellyfin connection…')
     const result = await testServerConnection(form)
     setMessage(result.ok ? `Connected${result.serverName ? ` to ${result.serverName}` : ''}${result.userName ? ` as ${result.userName}` : ''}.` : result.message || 'Connection failed.')
   })
 
-  const addLibrariesToHome = (connection: ServerConnectionSummary) => {
-    const libraries = realLibraryCatalogs(connection, catalogs)
-    const missing = libraries.filter((catalog) => !homeRows.some((row) => row.sourceType === connection.kind
-      && row.providerListId === serverCatalogListId(connection.id, catalog.catalogId)))
-    missing.forEach((catalog) => addHomeRow({
-      title: catalog.title,
-      sourceType: connection.kind,
-      providerListId: serverCatalogListId(connection.id, catalog.catalogId),
-      layout: 'poster',
-      enabled: true,
-    }))
-    setMessage(missing.length ? `Added ${missing.length} ${missing.length === 1 ? 'server library' : 'server libraries'} to Library.` : 'All server libraries are already in Library.')
-  }
-
   return <div className="space-y-6">
     <section className="settings-panel-card rounded-2xl border border-white/[.06] bg-white/[.03] p-6">
       <div className="flex items-start justify-between gap-4">
-        <div><h2 className="text-lg font-bold text-white">Media servers</h2><p className="mt-1 text-sm text-white/60">Jellyfin libraries and WebDAV folders become normal Aurales catalogs and playback sources.</p></div>
+        <div><h2 className="text-lg font-bold text-white">Media servers</h2><p className="mt-1 text-sm text-white/60">Browse server-provided lists, continue watching and Next Up as Aurales catalogs{desktopAvailable ? '; WebDAV folders are also supported.' : '.'}</p></div>
         <button type="button" onClick={() => setForm({ ...EMPTY_FORM })} className="rounded-xl bg-accent px-4 py-2 text-sm font-bold text-black">Add server</button>
       </div>
       <div className="mt-5 space-y-3">
         {connections.map((connection) => {
           const serverCatalogs = catalogs.filter((catalog) => catalog.connectionId === connection.id)
-          const libraryCount = serverCatalogs.filter((catalog) => catalog.kind === 'library').length
-          const continueWatchingCount = serverCatalogs.find((catalog) => catalog.kind === 'continue-watching')?.itemCount || 0
-          const itemCount = serverCatalogs[0]?.connectionItemCount || 0
+          const listCount = serverCatalogs.filter((catalog) => catalog.kind !== 'library').length
           return <article key={connection.id} className="rounded-xl border border-white/[.08] bg-black/15 p-4">
           <div className="flex items-center gap-3">
             <span className={`h-2.5 w-2.5 rounded-full ${statusColor(connection.status)}`} aria-label={connection.status} />
             <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-white">{connection.name}</p><p className="truncate text-xs text-white/50">{connection.kind === 'jellyfin' ? 'Jellyfin' : 'WebDAV'} · {connection.serverName || connection.serverUrl}</p></div>
             <Switch checked={connection.enabled} onChange={(enabled) => void run(`toggle:${connection.id}`, async () => { await setServerConnectionEnabled(connection.id, enabled); await reload() })} label={`Enable ${connection.name}`} disabled={busy !== null} />
           </div>
-          {connection.hasSecret && <p className="mt-2 text-xs text-white/45">{serverCatalogs.length ? `${libraryCount} ${libraryCount === 1 ? 'library' : 'libraries'} · ${serverCatalogs.length} catalogs · ${itemCount.toLocaleString()} indexed items${continueWatchingCount ? ` · ${continueWatchingCount} in progress` : ''}` : 'No catalogs indexed yet. Refresh catalog to scan this server.'}</p>}
-          {(connection.statusMessage || connection.lastCatalogRefreshAt || !connection.hasSecret) && <p className="mt-2 text-xs text-white/45">{!connection.hasSecret ? 'Credential required. Edit this server to securely save its password or token.' : connection.statusMessage || `Catalog updated ${new Date(connection.lastCatalogRefreshAt!).toLocaleString()}`}</p>}
+          {connection.hasSecret && <p className="mt-2 text-xs text-white/45">{serverCatalogs.length ? `${listCount} server lists available · Continue Watching, Next Up, Upcoming, watchlist and history included` : 'No lists discovered yet. Refresh catalog to read this server’s views.'}</p>}
+          {(connection.statusMessage || connection.lastCatalogRefreshAt || !connection.hasSecret) && <p className="mt-2 text-xs text-white/45">{!connection.hasSecret ? `Sign-in required in this browser tab. Edit ${connection.name} and enter its password or token again.` : connection.statusMessage || `Catalog updated ${new Date(connection.lastCatalogRefreshAt!).toLocaleString()}`}</p>}
           <div className="mt-3 flex flex-wrap gap-2">
             <button type="button" onClick={() => edit(connection)} className="rounded-lg bg-white/[.07] px-3 py-1.5 text-xs font-semibold text-white/75 hover:bg-white/[.12]">Edit</button>
             <button type="button" disabled={!connection.hasSecret || busy !== null} onClick={() => void run(`test:${connection.id}`, async () => { const result = await testServerConnection({ ...connection, secret: undefined }); setMessage(result.ok ? `${connection.name} is reachable.` : result.message || 'Connection failed.'); await reload() })} className="rounded-lg bg-white/[.07] px-3 py-1.5 text-xs font-semibold text-white/75 disabled:opacity-40" title={!connection.hasSecret ? 'Edit the server to add its credential first' : undefined}>Test</button>
             <button type="button" disabled={!connection.enabled || !connection.hasSecret || busy !== null} onClick={() => void run(`refresh:${connection.id}`, async () => { await refreshServerCatalog(connection.id); await reload() })} className="rounded-lg bg-white/[.07] px-3 py-1.5 text-xs font-semibold text-white/75 disabled:opacity-40" title={!connection.hasSecret ? 'Edit the server to add its credential first' : undefined}>Refresh catalog</button>
-            <button type="button" disabled={!realLibraryCatalogs(connection, serverCatalogs).length} onClick={() => addLibrariesToHome(connection)} className="rounded-lg bg-white/[.07] px-3 py-1.5 text-xs font-semibold text-white/75 disabled:opacity-40">Add libraries to Library</button>
+            <button type="button" disabled={!serverCatalogs.length} onClick={() => navigate('/collections')} className="rounded-lg bg-white/[.07] px-3 py-1.5 text-xs font-semibold text-white/75 disabled:opacity-40">Choose lists in Library</button>
             <button type="button" disabled={busy !== null} onClick={() => void run(`remove:${connection.id}`, async () => { await removeServerConnection(connection.id); await reload() })} className="rounded-lg px-3 py-1.5 text-xs font-semibold text-red-300/75 hover:bg-red-500/10 disabled:opacity-40">Remove</button>
           </div>
         </article>
@@ -179,15 +170,17 @@ function ConnectionEditor({ form, hasStoredSecret, busy, onChange, onCancel, onS
   return <section className="settings-panel-card rounded-2xl border border-white/[.08] bg-white/[.035] p-6">
     <div className="flex items-center justify-between"><h2 className="text-lg font-bold text-white">{form.id ? 'Edit server' : 'Connect a server'}</h2><button type="button" onClick={onCancel} className="text-sm text-white/50 hover:text-white">Cancel</button></div>
     <div className="mt-5 grid gap-4 md:grid-cols-2">
-      <div><label className="text-xs font-semibold text-white/60">Type</label><SelectMenu value={form.kind} onChange={(e) => set('kind', e.target.value as ServerIntegrationKind)} aria-label="Server type" className="mt-1.5"><option value="jellyfin">Jellyfin</option><option value="webdav">WebDAV</option></SelectMenu></div>
+      <div><label className="text-xs font-semibold text-white/60">Type</label><SelectMenu value={form.kind} onChange={(e) => set('kind', e.target.value as ServerIntegrationKind)} aria-label="Server type" className="mt-1.5"><option value="jellyfin">Jellyfin</option>{desktopAvailable && <option value="webdav">WebDAV</option>}</SelectMenu></div>
       <label className="text-xs font-semibold text-white/60">Connection name<input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder={form.kind === 'jellyfin' ? 'Home Jellyfin' : 'Media WebDAV'} className={inputClass} /></label>
       <label className="text-xs font-semibold text-white/60 md:col-span-2">Server URL<input type="url" value={form.serverUrl} onChange={(e) => set('serverUrl', e.target.value)} placeholder="https://media.example.com" className={inputClass} /></label>
-      <label className="text-xs font-semibold text-white/60">Username<input value={form.username || ''} onChange={(e) => set('username', e.target.value)} autoComplete="username" className={inputClass} /></label>
+      <label className="text-xs font-semibold text-white/60">Username<input value={form.username || ''} onChange={(e) => set('username', e.target.value)} autoComplete="username" className={inputClass} />{form.kind === 'jellyfin' && form.authMode === 'token' && <span className="mt-1 block text-[11px] font-normal leading-relaxed text-white/35">Optional for a user access token; required for a server API key to select the library account. Use a user access token or password login for playback history sync.</span>}</label>
       <div><label className="text-xs font-semibold text-white/60">Authentication</label><SelectMenu value={form.authMode} onChange={(e) => set('authMode', e.target.value as ServerAuthMode)} aria-label="Authentication method" className="mt-1.5"><option value="password">Username / password</option><option value="token">Access token / API key</option></SelectMenu></div>
-      <label className="text-xs font-semibold text-white/60 md:col-span-2">{form.authMode === 'token' ? 'Token / API key' : 'Password'}<input type="password" value={form.secret || ''} onChange={(e) => set('secret', e.target.value)} autoComplete="new-password" placeholder={hasStoredSecret ? 'Leave blank to keep the securely stored credential' : ''} className={inputClass} /></label>
+      <label className="text-xs font-semibold text-white/60 md:col-span-2">{form.authMode === 'token' ? 'Token / API key' : 'Password'}<input type="password" value={form.secret || ''} onChange={(e) => set('secret', e.target.value)} autoComplete="new-password" placeholder={hasStoredSecret ? `Leave blank to keep the ${desktopAvailable ? 'system-vault credential' : 'current tab session'}` : ''} className={inputClass} /></label>
       {form.kind === 'webdav' && <label className="text-xs font-semibold text-white/60 md:col-span-2">Base directory <span className="font-normal text-white/35">(optional)</span><input value={form.baseDirectory || ''} onChange={(e) => set('baseDirectory', e.target.value)} placeholder="/Media" className={inputClass} /></label>}
     </div>
-    <p className="mt-4 text-xs leading-relaxed text-white/40">Credentials are sent directly to the native Aurales backend and stored in the system credential vault; they are never written to browser storage.</p>
-    <div className="mt-5 flex justify-end gap-2"><button type="button" disabled={busy} onClick={onTest} className="rounded-xl bg-white/[.08] px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">Test connection</button><button type="button" disabled={busy} onClick={onSave} className="rounded-xl bg-accent px-4 py-2 text-sm font-bold text-black disabled:opacity-40">{form.id ? 'Save changes' : 'Connect'}</button></div>
+    {desktopAvailable
+      ? <p className="mt-4 text-xs leading-relaxed text-white/40">Credentials are sent to the native Aurales backend and stored in the system credential vault.</p>
+      : <p className="mt-4 text-xs leading-relaxed text-white/40">The password is exchanged for a Jellyfin access token and held for this browser tab session. Jellyfin requires the token on browser image and playback URLs. Use a trusted browser profile. If the browser reports a CORS error, configure Jellyfin or its reverse proxy to allow this website’s origin, GET, POST and DELETE requests, and the Authorization and Content-Type headers.</p>}
+    <div className="mt-5 flex justify-end gap-2"><button type="button" disabled={busy} onClick={onTest} className="rounded-xl bg-white/[.08] px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">{busy ? 'Working…' : 'Test connection'}</button><button type="button" disabled={busy} onClick={onSave} className="rounded-xl bg-accent px-4 py-2 text-sm font-bold text-black disabled:opacity-40">{busy ? 'Connecting…' : form.id ? 'Save changes' : 'Connect'}</button></div>
   </section>
 }

@@ -66,7 +66,16 @@ interface LocationState {
   title?: string
   year?: number
   rating?: number
+  criticRating?: number
+  originalTitle?: string
+  certification?: string
+  tagline?: string
+  runtime?: number
+  releaseDate?: string
   overview?: string
+  genres?: string[]
+  studios?: string[]
+  people?: Record<string, unknown>[]
   imdbId?: string
   tmdbId?: string | number
   tvdbId?: string | number
@@ -414,7 +423,10 @@ export default function MovieDetailPage() {
       setLoading(true)
       const appManagedMetadata = useAppStore.getState().appManagedMetadata
       const artKey = artworkSettingsKey()
-      const movieCacheKey = id ? `detail:movie:${artKey}:${id}` : null
+      const jellyfinCacheKey = state.provider === 'jellyfin' && state.sourceConnectionId && state.sourceItemId
+        ? `:jellyfin:${state.sourceConnectionId}:${state.sourceItemId}`
+        : ''
+      const movieCacheKey = id ? `detail:movie:${artKey}:${id}${jellyfinCacheKey}` : null
 
       // Catalog cards retain the raw addon meta. When direct addon metadata is
       // selected, it is already the requested record, so publish it before any
@@ -441,12 +453,19 @@ export default function MovieDetailPage() {
       // SQLite, addon metadata, ID mapping, or TMDB's multi-endpoint request.
       // Those sources refine this shell instead of hiding it behind a loader.
       const hotMovie = movieCacheKey ? getSessionDetail<MovieDetails>(movieCacheKey) : null
+      const isJellyfinSource = state.provider === 'jellyfin' && Boolean(state.sourceConnectionId && state.sourceItemId)
       const immediateMovie: MovieDetails | null = hotMovie?.data || (state.title ? applyMovieArt({
         id: id || 'unknown',
         title: state.title,
+        originalTitle: state.originalTitle,
         year: state.year,
+        releaseDate: state.releaseDate,
         overview: state.overview,
+        tagline: state.tagline,
         rating: state.rating,
+        runtime: state.runtime,
+        certification: state.certification,
+        genres: state.genres || [],
         poster: state.poster,
         backdrop: state.backdrop,
         logo: state.logo,
@@ -454,9 +473,10 @@ export default function MovieDetailPage() {
         tmdbId: cleanId(state.tmdbId),
         malId: cleanId(state.malId),
         anilistId: cleanId(state.anilistId),
-        genres: [],
-        cast: [],
-        crew: [],
+        criticRating: state.criticRating,
+        studios: state.studios || [],
+        cast: (state.people || []).filter((person) => String(person.Type || '').toLowerCase() === 'actor').map((person, index) => ({ id: String(person.Id || `jellyfin-cast-${index}`), personProvider: 'addon' as const, name: String(person.Name || 'Unknown'), character: String(person.Role || '') })),
+        crew: (state.people || []).filter((person) => String(person.Type || '').toLowerCase() !== 'actor').map((person, index) => ({ id: String(person.Id || `jellyfin-crew-${index}`), personProvider: 'addon' as const, name: String(person.Name || 'Unknown'), job: String(person.Type || 'Crew'), department: String(person.Type || 'Crew') })),
         recommendations: [],
         trailers: [],
       }) : null)
@@ -466,7 +486,7 @@ export default function MovieDetailPage() {
         // Fresh session data is already the most recent completed enrichment.
         // Stale data remains visible while the normal disk/provider path below
         // revalidates it without returning the page to a skeleton.
-        if (!hotMovie.stale) return
+        if (!hotMovie.stale && !isJellyfinSource) return
       }
 
       if (movieCacheKey) {
@@ -476,7 +496,7 @@ export default function MovieDetailPage() {
           rememberSessionDetail(movieCacheKey, cached.data)
           setMovie(cached.data)
           setLoading(false)
-          if (!cached.stale) return
+          if (!cached.stale && !isJellyfinSource) return
         }
       }
 
@@ -512,6 +532,69 @@ export default function MovieDetailPage() {
           console.error('[MovieDetailPage] Failed early anime resolution:', e)
         }
         if (cancelled) return
+      }
+
+      // Jellyfin is a first-class metadata source too. Resolve its cached item
+      // directly so films with no external provider IDs still have a complete
+      // detail page and never depend on an addon lookup to become playable.
+      if (state.provider === 'jellyfin' && state.sourceConnectionId && state.sourceItemId) {
+        try {
+          const { getServerItem, jellyfinRemoteTrailers } = await import('../services/serverIntegrations')
+          const item = await getServerItem(state.sourceConnectionId, state.sourceItemId)
+          if (cancelled) return
+          if (item) {
+            const raw = item.raw as Record<string, unknown>
+            const people = item.people || []
+            const ticks = Number(raw.RunTimeTicks)
+            const serverMovie = applyMovieArt(applyInitialArtworkPreference({
+              id: id || item.id,
+              title: item.title || state.title || 'Untitled',
+              originalTitle: item.originalTitle || state.originalTitle,
+              year: item.year ?? state.year,
+              releaseDate: item.releaseDate || state.releaseDate,
+              overview: item.overview || state.overview,
+              tagline: item.tagline || state.tagline,
+              runtime: Number.isFinite(ticks) && ticks > 0 ? Math.round(ticks / 10_000_000 / 60) : state.runtime,
+              rating: item.rating ?? state.rating,
+              criticRating: item.criticRating ?? state.criticRating,
+              genres: item.genres || [],
+              studios: item.studios || state.studios || [],
+              poster: item.poster || state.poster,
+              backdrop: item.backdrop || state.backdrop,
+              certification: item.certification || state.certification,
+              originalLanguage: typeof raw.OriginalLanguage === 'string' ? raw.OriginalLanguage : undefined,
+              originCountry: Array.isArray(raw.ProductionLocations) ? raw.ProductionLocations.filter((country): country is string => typeof country === 'string') : undefined,
+              cast: people.filter((person) => String(person.Type || '').toLowerCase() === 'actor').map((person, index) => ({
+                id: String(person.Id || `jellyfin-cast-${index}`), personProvider: 'addon' as const,
+                name: String(person.Name || 'Unknown'), character: String(person.Role || ''),
+              })),
+              crew: people.filter((person) => String(person.Type || '').toLowerCase() !== 'actor').map((person, index) => ({
+                id: String(person.Id || `jellyfin-crew-${index}`), personProvider: 'addon' as const,
+                name: String(person.Name || 'Unknown'), job: String(person.Type || 'Crew'),
+                department: String(person.Type || 'Crew'),
+              })),
+              recommendations: [], trailers: jellyfinRemoteTrailers(raw),
+              imdbId: item.imdbId || state.imdbId || knownIds.imdbId,
+              tmdbId: item.tmdbId || state.tmdbId || knownIds.tmdbId,
+              tvdbId: item.tvdbId || state.tvdbId || knownIds.tvdbId,
+              malId: item.malId || state.malId || knownIds.malId,
+              anilistId: item.anilistId || state.anilistId || knownIds.anilistId,
+              isAnime: item.isAnime || state.isAnime,
+              provider: 'jellyfin',
+            }, 'movie', Boolean(item.isAnime || knownIds.anilistId || knownIds.malId)))
+            setMovie(serverMovie)
+            setLoading(false)
+            if (movieCacheKey) {
+              const cacheOpts = { category: CACHE_CATEGORIES.DETAIL_PAGE, ttlSeconds: CACHE_TTLS.DETAIL_PAGE }
+              rememberSessionDetail(movieCacheKey, serverMovie)
+              void cacheSet(movieCacheKey, serverMovie, cacheOpts)
+            }
+            return
+          }
+        } catch (error) {
+          console.warn('[MovieDetailPage] Jellyfin catalog details unavailable:', error)
+          if (cancelled) return
+        }
       }
 
       if (appManagedMetadata && state.sourceAddonId && state.sourceAddonItemId) {
@@ -637,7 +720,7 @@ export default function MovieDetailPage() {
       }
 
       // Resolve IMDb if missing
-      const finalResult = appResult || result || { ...MOCK_HERO_MOVIE, id: id || 'mock-1' }
+      const finalResult = appResult || result || immediateMovie || { ...MOCK_HERO_MOVIE, id: id || 'mock-1' }
 
       // Preserving AniList artwork if it exists in route state
       if (finalResult && (finalResult.anilistId || finalResult.malId || (id && /^(mal|anilist)[-:]/i.test(id)))) {
@@ -733,6 +816,7 @@ export default function MovieDetailPage() {
     state.year,
     state.overview,
     state.rating,
+    state.criticRating,
     state.poster,
     state.backdrop,
     state.logo,
@@ -745,6 +829,16 @@ export default function MovieDetailPage() {
     state.addonMeta,
     state.sourceAddonId,
     state.sourceAddonItemId,
+    state.sourceConnectionId,
+    state.sourceItemId,
+    state.originalTitle,
+    state.releaseDate,
+    state.tagline,
+    state.runtime,
+    state.certification,
+    state.genres,
+    state.studios,
+    state.people,
     addons,
     artSettingsSignature,
     loadAttempt,
@@ -1005,6 +1099,8 @@ export default function MovieDetailPage() {
               imdbId={movie.imdbId}
               anilistId={movie.anilistId}
               malId={movie.malId}
+              sourceConnectionId={state.sourceConnectionId}
+              sourceItemId={state.sourceItemId}
               isAnime={movieIsAnime}
               watched={movieWatched}
               onMarked={() => {
@@ -1068,6 +1164,7 @@ export default function MovieDetailPage() {
         artwork={{ poster: movie.poster, backdrop: movie.backdrop }}
         startTime={movieWatched ? undefined : liveResumePoint ? liveResumePoint.progressSeconds : (hasProgress ? progressItem.progressSeconds : undefined)}
         tmdbId={Number.isFinite(streamTmdbId) ? streamTmdbId : undefined}
+        imdbId={movie.imdbId}
         malId={movie.malId != null ? Number(movie.malId) : state.malId != null ? Number(state.malId) : undefined}
         anilistId={movie.anilistId != null ? Number(movie.anilistId) : state.anilistId != null ? Number(state.anilistId) : undefined}
         sourceAddonId={state.sourceAddonId}

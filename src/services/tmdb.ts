@@ -322,6 +322,18 @@ function mapSearchResult(item: Record<string, unknown>, type: 'movie' | 'series'
   }
 }
 
+/** TMDB's short-window chart is distinct from Discover's lifetime popularity sort. */
+export async function getTrendingTmdb(
+  contentType: 'movie' | 'series',
+  window: 'day' | 'week' = 'week',
+): Promise<SearchResult[]> {
+  const mediaType = contentType === 'movie' ? 'movie' : 'tv'
+  return cachedFetch<SearchResult[]>(`tmdb_trending_v1:${mediaType}:${window}`, async () => {
+    const data = await tmdbFetch(`/trending/${mediaType}/${window}`, { language: 'en-US' }) as { results?: Record<string, unknown>[] }
+    return (data.results || []).map((item) => mapSearchResult(item, contentType))
+  }, { category: CACHE_CATEGORIES.DISCOVER, ttlSeconds: 3 * 60 * 60 })
+}
+
 export const tmdbProvider: MetadataProvider = {
   id: 'tmdb',
   name: 'TMDB',
@@ -652,7 +664,7 @@ export interface TmdbPersonCredit extends SearchResult {
   character?: string
   job?: string
   releaseDate?: string
-  mediaType: 'movie' | 'tv'
+  mediaType: 'movie' | 'series'
   creditTypes: ('acting' | 'directing' | 'voice')[]
 }
 
@@ -698,7 +710,7 @@ function mapPersonCredit(item: Record<string, unknown>, creditType: 'acting' | '
     character: creditType === 'acting' || creditType === 'voice' ? item.character as string | undefined : undefined,
     job: creditType === 'directing' ? item.job as string | undefined : undefined,
     releaseDate: date,
-    mediaType,
+    mediaType: mediaType === 'movie' ? 'movie' : 'series',
     creditTypes: [creditType],
   }
 }
@@ -792,7 +804,13 @@ export async function getTmdbCertifications(type: 'movie' | 'tv'): Promise<Recor
   }
 }
 
-export async function discoverTmdb(config: DiscoverConfig, page = 1, pages = 1): Promise<SearchResult[]> {
+export interface TmdbDiscoverPage {
+  items: SearchResult[]
+  page: number
+  totalPages: number
+}
+
+async function fetchDiscoverTmdbPage(config: DiscoverConfig, page: number): Promise<TmdbDiscoverPage> {
   const params: Record<string, string> = {
     page: String(page),
   }
@@ -906,15 +924,27 @@ export async function discoverTmdb(config: DiscoverConfig, page = 1, pages = 1):
 
   const endpoint = config.contentType === 'movie' ? '/discover/movie' : '/discover/tv'
 
-  const pageNumbers = Array.from({ length: Math.max(1, pages) }, (_, i) => page + i)
-  const settled = await Promise.allSettled(pageNumbers.map(async (p) => {
-    const data = await tmdbFetch(endpoint, { ...params, page: String(p) }) as { results: Record<string, unknown>[] }
-    return (data.results || []).map((r) => mapSearchResult(r, config.contentType === 'movie' ? 'movie' : 'series'))
-  }))
+  const data = await tmdbFetch(endpoint, { ...params, page: String(page) }) as { results?: Record<string, unknown>[]; page?: number; total_pages?: number }
+  const items = (data.results || []).map((item) => mapSearchResult(item, config.contentType === 'movie' ? 'movie' : 'series'))
+  return {
+    items: config.source === 'TMDB' ? items : items.map((item) => ({ ...item, provider: config.source.toLowerCase() })),
+    page: data.page ?? page,
+    totalPages: Math.min(500, Math.max(1, data.total_pages ?? page)),
+  }
+}
+
+/** Fetch one public TMDB discovery page, including pagination metadata. */
+export async function discoverTmdbPage(config: DiscoverConfig, page = 1): Promise<TmdbDiscoverPage> {
+  return fetchDiscoverTmdbPage(config, Math.max(1, Math.min(500, Math.floor(page))))
+}
+
+export async function discoverTmdb(config: DiscoverConfig, page = 1, pages = 1): Promise<SearchResult[]> {
+  const pageNumbers = Array.from({ length: Math.max(1, pages) }, (_, index) => Math.max(1, Math.min(500, page + index)))
+  const settled = await Promise.allSettled(pageNumbers.map((pageNumber) => fetchDiscoverTmdbPage(config, pageNumber)))
   if (settled.every((result) => result.status === 'rejected')) {
     throw (settled[0] as PromiseRejectedResult).reason
   }
-  const merged = settled.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
+  const merged = settled.flatMap((result) => result.status === 'fulfilled' ? result.value.items : [])
   const seenIds = new Set<string>()
   const items = merged.filter((item) => {
     if (seenIds.has(item.id)) return false
@@ -922,21 +952,30 @@ export async function discoverTmdb(config: DiscoverConfig, page = 1, pages = 1):
     return true
   })
 
-  // If the source is TVDB, Simkl, or AniList, we keep the TMDB results (filters are TMDB-specific)
-  // but we can label the item's provider.
-  if (config.source !== 'TMDB') {
-    return items.map(item => ({
-      ...item,
-      provider: config.source.toLowerCase()
-    }))
-  }
-
   return items
 }
 
 // Discover rows fetch 3 TMDB pages (~50 titles) so catalogs can show a full preview.
 export const DISCOVER_ROW_PAGES = 3
 export const DISCOVER_ROW_LIMIT = 50
+
+/** Cached, demand-loaded continuation page for an existing Discover query. */
+export function discoverTmdbPageWithCache(config: DiscoverConfig, rowId: string, page: number): Promise<TmdbDiscoverPage> {
+  const boundedPage = Math.max(1, Math.min(500, Math.floor(page)))
+  const cacheKey = catalogCacheKey({
+    scope: 'discover',
+    id: `${rowId}:page:${boundedPage}`,
+    mediaType: config.contentType,
+    region: config.releaseRegion,
+    provider: config.source,
+    filters: config,
+  })
+  return cachedFetch<TmdbDiscoverPage>(cacheKey, () => discoverTmdbPage(config, boundedPage), {
+    category: CACHE_CATEGORIES.DISCOVER,
+    ttlSeconds: null,
+    revalidate: 'once-per-session',
+  })
+}
 
 /**
  * Lightweight data source for Library's smart-collection cards.  A card only

@@ -4,6 +4,7 @@ services:
       context: .
       target: web-runtime
       args:
+        VITE_AURALES_INTEGRATED_MEDIA_WORKER: "true"
         VITE_TMDB_API_KEY: ${VITE_TMDB_API_KEY:-}
         VITE_TVDB_API_KEY: ${VITE_TVDB_API_KEY:-}
         VITE_OMDB_API_KEY: ${VITE_OMDB_API_KEY:-}
@@ -22,7 +23,7 @@ services:
       AURALES_DOMAIN: ${AURALES_DOMAIN:?Set AURALES_DOMAIN to the public hostname}
     depends_on:
       media-worker:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - caddy-data:/data
       - caddy-config:/config
@@ -42,6 +43,12 @@ services:
       - media-conversions:/var/lib/aurales/conversions
     expose:
       - "8188"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8188/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
 volumes:
   media-conversions:

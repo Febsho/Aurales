@@ -4,10 +4,12 @@ export type WatchedKey = string
 
 interface WatchedCacheStore {
   watchedKeys: Set<WatchedKey>
+  jellyfinWatchedKeys: Set<WatchedKey>
   loading: boolean
   lastRefresh: number
   setWatchedKeys: (keys: Set<WatchedKey>) => void
   addWatchedKeys: (keys: Iterable<WatchedKey>) => void
+  setJellyfinWatchedKeys: (keys: Iterable<WatchedKey>) => void
   removeWatchedKeys: (keys: Iterable<WatchedKey>) => void
   setLoading: (loading: boolean) => void
   isWatched: (ids: WatchedIdInput) => boolean
@@ -51,6 +53,7 @@ export function makeWatchedKey(prefix: string, value: string | number): WatchedK
 
 export const useWatchedCacheStore = create<WatchedCacheStore>((set, get) => ({
   watchedKeys: new Set(),
+  jellyfinWatchedKeys: new Set(),
   loading: false,
   lastRefresh: 0,
   setWatchedKeys: (keys) => set({ watchedKeys: keys, lastRefresh: Date.now() }),
@@ -59,6 +62,7 @@ export const useWatchedCacheStore = create<WatchedCacheStore>((set, get) => ({
     for (const k of keys) next.add(k)
     return { watchedKeys: next }
   }),
+  setJellyfinWatchedKeys: (keys) => set({ jellyfinWatchedKeys: new Set(keys) }),
   removeWatchedKeys: (keys) => set((s) => {
     const next = new Set(s.watchedKeys)
     for (const k of keys) next.delete(k)
@@ -68,6 +72,7 @@ export const useWatchedCacheStore = create<WatchedCacheStore>((set, get) => ({
   isWatched: (ids) => {
     const keys = keysForItem(ids)
     const store = get().watchedKeys
-    return keys.some((k) => store.has(k))
+    const jellyfin = get().jellyfinWatchedKeys
+    return keys.some((k) => store.has(k) || jellyfin.has(k))
   },
 }))

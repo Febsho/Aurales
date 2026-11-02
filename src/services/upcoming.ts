@@ -14,8 +14,9 @@ export interface ReleaseEvent {
   artwork?: string
   relevanceScore: number
   relevanceReasons: string[]
-  source: 'tmdb' | 'local'
+  source: 'tmdb' | 'local' | 'jellyfin'
   status: 'upcoming' | 'available' | 'tba'
+  watched?: boolean
 }
 export interface UpcomingPreferences {
   showOnHome: boolean

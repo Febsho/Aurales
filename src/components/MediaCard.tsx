@@ -8,6 +8,7 @@ import { getTrailerSource, type TrailerSource } from '../services/trailers'
 import { cachedImage, retryImageFromSource, warmCachedImage, watchStalledImage } from '../services/imageCache'
 import { useAppStore } from '../stores/appStore'
 import { useContextMenu } from '../hooks/useContextMenu'
+import { useLongPressContextMenu } from '../hooks/useLongPressContextMenu'
 import { cardArtworkUrl } from '../services/mediaPresentation'
 import { nativeTrailerPlayerSupported } from '../services/player'
 import { useVisibilityOnce } from '../hooks/useVisibilityOnce'
@@ -16,6 +17,11 @@ import { isMobileWebViewport } from '../platform/mobileWeb'
 
 const TrailerPreview = React.lazy(() => import('./TrailerPreview'))
 const HeroMpvTrailer = React.lazy(() => import('./HeroMpvTrailer'))
+const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
+
+function getReducedMotionSnapshot(): boolean {
+  return typeof window !== 'undefined' && Boolean(window.matchMedia?.(REDUCED_MOTION_QUERY).matches)
+}
 
 const TMDB_GENRES: Record<number, string> = {
   28:'Action',12:'Adventure',16:'Animation',35:'Comedy',80:'Crime',99:'Documentary',
@@ -110,7 +116,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
   const [hoverPreviewOpen, setHoverPreviewOpen] = useState(false)
   const [nativeTrailerVisible, setNativeTrailerVisible] = useState(false)
   const [suppressPosterHover, setSuppressPosterHover] = useState(false)
-  const [reducedMotion, setReducedMotion] = useState(false)
+  const [reducedMotion] = useState(getReducedMotionSnapshot)
   const [seriesCompleted, setSeriesCompleted] = useState(false)
   const [posterProviderWatched, setPosterProviderWatched] = useState(false)
 
@@ -659,8 +665,28 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     }
     showContextMenu(e.clientX, e.clientY, { kind: 'media', item })
   }, [item, showContextMenu, displayItem, posterUrl, backdropUrl, logoUrl, customArt, resolvedPoster, resolvedBackdrop, resolvedLogo])
+  const longPressHandlers = useLongPressContextMenu(handleContextMenu)
 
   const handleClick = () => {
+    if (item.mediaType === 'collection' && item.sourceConnectionId && item.sourceItemId) {
+      const collectionCatalogId = `boxset:${item.sourceItemId}`
+      const rowId = `jellyfin-${encodeURIComponent(item.sourceConnectionId)}-${encodeURIComponent(item.sourceItemId)}`
+      const query = new URLSearchParams({ title: item.title, connection: item.sourceConnectionId, item: item.sourceItemId })
+      navigate(`/catalog/${rowId}?${query}`, {
+        state: {
+          catalogRow: {
+            id: rowId,
+            title: item.title,
+            sourceType: 'jellyfin',
+            providerListId: JSON.stringify([item.sourceConnectionId, collectionCatalogId]),
+            layout: 'poster',
+            enabled: true,
+            order: 0,
+          },
+        },
+      })
+      return
+    }
     warmDetailArtwork()
     try {
       addRecentlyWatched(displayItem)
@@ -674,7 +700,16 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         title: displayItem.title,
         year: displayItem.year,
         rating: displayItem.rating,
+        criticRating: displayItem.criticRating,
         overview: displayItem.overview,
+        originalTitle: displayItem.originalTitle,
+        certification: displayItem.certification,
+        tagline: displayItem.tagline,
+        runtime: displayItem.runtime,
+        releaseDate: displayItem.releaseDate,
+        genres: displayItem.genres,
+        studios: displayItem.studios,
+        people: displayItem.people,
         imdbId: displayItem.imdbId,
         tmdbId: displayItem.tmdbId,
         tvdbId: displayItem.tvdbId,
@@ -713,15 +748,6 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       }
     }, 380)
   }, [cinematicMode, cinematicExpand])
-
-  useEffect(() => {
-    const query = window.matchMedia?.('(prefers-reduced-motion: reduce)')
-    if (!query) return
-    const sync = () => setReducedMotion(query.matches)
-    sync()
-    query.addEventListener?.('change', sync)
-    return () => query.removeEventListener?.('change', sync)
-  }, [])
 
   useEffect(() => {
     const closeTimer = closeTimerRef
@@ -828,6 +854,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         ref={cardRef}
         onClick={handleClick}
         onContextMenu={handleContextMenu}
+        {...longPressHandlers}
         onFocus={() => { warmDetailArtwork(); announceFocus(); revealExpandedCard(); openHoverPreview() }}
         onBlur={() => { onUnfocusItem?.(displayItem, cardIndex); closeHoverPreview() }}
         onMouseEnter={() => { warmDetailArtwork(); announceFocus(); revealExpandedCard(); openHoverPreview() }}
@@ -926,6 +953,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         ref={cardRef}
         onClick={handleClick}
         onContextMenu={handleContextMenu}
+        {...longPressHandlers}
         onFocus={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
         onBlur={closeHoverPreview}
         onMouseEnter={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
@@ -985,6 +1013,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
         ref={cardRef}
         onClick={handleClick}
         onContextMenu={handleContextMenu}
+        {...longPressHandlers}
         onFocus={() => { warmDetailArtwork(); announceFocus() }}
         onMouseEnter={() => { warmDetailArtwork(); announceFocus() }}
         onMouseMove={handleMouseFollow}
@@ -1009,7 +1038,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
               ref={posterImageRef}
               src={cachedImage(posterUrl)}
               alt={displayItem.title}
-              className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
+              className={`w-full h-full ${item.mediaType === 'collection' ? 'object-contain bg-black/70' : 'object-cover'} transition-transform duration-500 ease-out group-hover:scale-105`}
               loading="lazy"
               decoding="async"
               onError={(event) => handleImageError(event, posterUrl)}
@@ -1152,6 +1181,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       ref={cardRef}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
+      {...longPressHandlers}
       onMouseEnter={() => { warmDetailArtwork(); announceFocus(); openHoverPreview() }}
       onMouseMove={handleMouseFollow}
       onMouseLeave={(event) => { resetMouseFollow(event.currentTarget); closeHoverPreview() }}

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { SubtitleResult } from '../types'
 import { formatTime, openRouterChat, shouldMarkWatched } from '../services/player'
@@ -15,6 +15,7 @@ import {
 import { scrobbleMdblist, hasMdblistOAuth, mdblistPlaybackAction } from '../services/mdblist'
 import { saveAniListProgressMapped } from '../services/anilist'
 import { lookupTmdbId, savePMDBPlaybackProgress, scrobblePMDB } from '../services/pmdb'
+import { reportJellyfinPlayback } from '../services/serverIntegrations'
 import { fetchNextEpisodeFromTmdb, type NextEpInfo } from '../services/nextEpisode'
 import { useAppStore, APP_LANGUAGES, getLanguageCodeFromTrack, getLanguageNameFromTrack } from '../stores/appStore'
 import { useWatchTogetherStore } from '../stores/watchTogetherStore'
@@ -36,11 +37,14 @@ import { audioLanguageOrder, selectPreferredLanguageTrack, selectStartupSubtitle
 import { subtitleToVtt } from '../services/player/subtitleFormats'
 import { getPlatformCapabilities, isHlsUrl, togglePictureInPicture } from '../platform/capabilities'
 import { getHttpText } from '../platform/httpText'
-import { AUTOPLAY_GESTURE_MESSAGE, browserPlaybackFailureMessage, isAutoplayGestureError, isMediaSessionExpired, isPlaybackInterruptedError } from '../services/player/browserPlayback'
-import { createMediaSession, getMediaConversionStatus, getMediaWorkerCapabilities, getMediaWorkerConfig, startMediaConversion, type MediaConversionMode } from '../services/mediaWorker'
+import { AUTOPLAY_GESTURE_MESSAGE, browserPlaybackFailureMessage, isAutoplayGestureError, isMediaSessionExpired, isPlaybackInterruptedError, nextPlaybackConversionAfterDecodeFailure } from '../services/player/browserPlayback'
+import { cancelMediaConversion, createMediaSession, getMediaConversionStatus, getMediaWorkerCapabilities, getMediaWorkerConfig, startMediaConversion, type MediaConversionMode, type PlaybackRequestHeaders } from '../services/mediaWorker'
+import { buildExternalPlayerUrl, getPreferredExternalPlayer, setPreferredExternalPlayer, type ExternalPlayer } from '../services/player/externalPlayers'
+import { createExternalPlaybackReturnUrl } from '../services/player/externalPlaybackReturn'
 
 interface InAppPlayerProps {
   url: string
+  playbackRequestHeaders?: PlaybackRequestHeaders
   title: string
   subtitle?: string
   subtitles?: SubtitleResult[]
@@ -84,6 +88,7 @@ interface HlsTrackController {
 
 const MAX_SUBTITLE_BYTES = 10 * 1024 * 1024
 const NO_SUBTITLES: SubtitleResult[] = []
+const NO_PLAYBACK_REQUEST_HEADERS: PlaybackRequestHeaders = {}
 
 async function resolvePmdbPlaybackEpisode(item: PlaybackItem): Promise<{ tmdbId?: number; season?: number; episode?: number }> {
   const tmdbId = item.tmdbId
@@ -176,12 +181,13 @@ async function requestSubtitleTranslation(apiKey: string, model: string, content
   return blocks.join('\n\n')
 }
 
-export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTITLES, playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError, onPlaybackStarted, onNextEpisode, nextEpisodeHint }: InAppPlayerProps) {
+export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_REQUEST_HEADERS, title, subtitle, subtitles = NO_SUBTITLES, playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError, onPlaybackStarted, onNextEpisode, nextEpisodeHint }: InAppPlayerProps) {
   useEffect(() => {
     setRequestPlaybackActive(true)
     return () => setRequestPlaybackActive(false)
   }, [])
   const videoRef = useRef<HTMLVideoElement>(null)
+  const playerShellRef = useRef<HTMLDivElement>(null)
   const hlsTracksRef = useRef<HlsTrackController | null>(null)
   const [hlsSubtitleTracks, setHlsSubtitleTracks] = useState<Array<{ label: string; language?: string; index: number }>>([])
   const [nativeSubtitleTracks, setNativeSubtitleTracks] = useState<Array<{ label: string; language?: string; index: number }>>([])
@@ -191,6 +197,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
   const lastAniListPlaybackSaveRef = useRef(0)
   const lastPmdbPlaybackSaveRef = useRef(0)
   const playbackStartedRef = useRef(false)
+  const lastJellyfinReportAtRef = useRef(0)
   const bufferingRef = useRef(true)
   const autoplayBlockedRef = useRef(false)
   const playbackRunRef = useRef(0)
@@ -201,6 +208,9 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
   const renewedMediaProxyUrlRef = useRef<string | null>(null)
   const conversionModesTriedRef = useRef<MediaConversionMode[]>([])
   const conversionControllerRef = useRef<AbortController | null>(null)
+  const workerConversionActiveRef = useRef(false)
+  const lastWorkerConversionModeRef = useRef<Exclude<MediaConversionMode, 'auto'> | null>(null)
+  const workerPlaybackDescriptionRef = useRef<string | null>(null)
   const conversionOptionsCheckedRef = useRef(false)
   const [paused, setPaused] = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
@@ -209,23 +219,116 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [controlsVisible, setControlsVisible] = useState(true)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [externalPlayerMenuOpen, setExternalPlayerMenuOpen] = useState(false)
+  const [preferredExternalPlayer, setPreferredExternalPlayerState] = useState<ExternalPlayer | null>(() => getPreferredExternalPlayer())
   const [nextEpisode, setNextEpisode] = useState<NextEpInfo | null>(null)
   const [selectedSubtitle, setSelectedSubtitle] = useState('off')
   const [audioTracks, setAudioTracks] = useState<AudioTrackInfo[]>([])
   const [selectedAudio, setSelectedAudio] = useState('0')
   const [preparedSubtitles, setPreparedSubtitles] = useState<PreparedSubtitle[]>([])
   const [conversionModes, setConversionModes] = useState<MediaConversionMode[]>([])
+  const conversionModesRef = useRef<MediaConversionMode[]>([])
+  const convertWithWorkerRef = useRef<(mode: MediaConversionMode) => Promise<boolean>>(async () => false)
+  const updateConversionModes = useCallback((modes: MediaConversionMode[]) => {
+    conversionModesRef.current = modes
+    setConversionModes(modes)
+  }, [])
   const [conversionMessage, setConversionMessage] = useState('')
   const [conversionBusy, setConversionBusy] = useState(false)
+  const [headerSessionUrl, setHeaderSessionUrl] = useState<string | null>(null)
+  const [workerPlaybackUrl, setWorkerPlaybackUrl] = useState<string | null>(null)
+  const needsHeaderProxy = Object.keys(playbackRequestHeaders).length > 0
+  const playbackSourceUrl = workerPlaybackUrl || (needsHeaderProxy ? headerSessionUrl : url)
+  const openExternalPlayer = (player: ExternalPlayer) => {
+    const targetUrl = playbackSourceUrl || url
+    const video = videoRef.current
+    const position = video?.currentTime ?? startTime ?? 0
+    const actualDuration = video?.duration || duration
+    let successUrl: string | undefined
+    if (playbackItem) {
+      const progressId = playbackItem.season != null && playbackItem.episode != null
+        ? `${playbackItem.localId}:${playbackItem.season}:${playbackItem.episode}`
+        : playbackItem.localId
+      successUrl = createExternalPlaybackReturnUrl({
+        progress: {
+          id: progressId,
+          mediaType: playbackItem.contentType === 'series' ? (playbackItem.mediaType === 'anime' ? 'anime' : 'series') : 'movie',
+          mediaId: playbackItem.localId,
+          title: playbackItem.title,
+          poster,
+          backdrop,
+          season: playbackItem.season,
+          episode: playbackItem.episode,
+          progressSeconds: Math.floor(position),
+          durationSeconds: Math.floor(actualDuration),
+          completed: actualDuration > 0 && position / actualDuration >= 0.8,
+          updatedAt: new Date().toISOString(),
+          imdbId: playbackItem.imdbId,
+          tmdbId: playbackItem.tmdbId,
+          malId: playbackItem.malId,
+          anilistId: playbackItem.anilistId,
+        },
+        activity: {
+          mediaKey: playbackItem.localId,
+          title: playbackItem.title,
+          mediaType: playbackItem.mediaType === 'anime' ? 'anime' : playbackItem.contentType === 'movie' ? 'movie' : 'series',
+          poster,
+          tmdbId: playbackItem.tmdbId,
+          season: playbackItem.season,
+          episode: playbackItem.episode,
+        },
+      }) || undefined
+    }
+    const deepLink = buildExternalPlayerUrl(player, targetUrl, {
+      filename: title,
+      title,
+      subtitleUrl: subtitles.find((track) => /^https?:\/\//i.test(track.url))?.url,
+      position,
+      successUrl,
+    })
+    if (!deepLink) {
+      setPlayerNotice('The external player needs a playable HTTP(S) video URL.')
+      return
+    }
+    setPreferredExternalPlayer(player)
+    setPreferredExternalPlayerState(player)
+    setExternalPlayerMenuOpen(false)
+    window.location.href = deepLink
+  }
   useEffect(() => {
-    setConversionModes([])
+    let disposed = false
+    const controller = new AbortController()
+    setHeaderSessionUrl(null)
+    if (!needsHeaderProxy) return
+    setLoading(true)
+    setPlayerNotice('Opening a private, session-bound stream connection for this add-on source…')
+    void createMediaSession(url, controller.signal, playbackRequestHeaders).then((session) => {
+      if (disposed) return
+      mediaProxySessionRef.current = session
+      setHeaderSessionUrl(session.url)
+    }).catch(() => {
+      if (disposed) return
+      const message = 'The add-on stream requires provider headers, but its worker session could not be opened. Check the source access or choose another stream.'
+      setLoading(false)
+      setError(message)
+      playbackStartupRef.current.onPlaybackError?.(message, 0)
+    })
+    return () => { disposed = true; controller.abort() }
+  }, [url, needsHeaderProxy, playbackRequestHeaders])
+  useEffect(() => {
+    workerPlaybackDescriptionRef.current = null
+    setWorkerPlaybackUrl(null)
+    workerConversionActiveRef.current = false
+    lastWorkerConversionModeRef.current = null
+    updateConversionModes([])
     setConversionMessage('')
     setConversionBusy(false)
     conversionModesTriedRef.current = []
     conversionOptionsCheckedRef.current = false
     conversionControllerRef.current?.abort()
     conversionControllerRef.current = null
-  }, [url])
+  }, [updateConversionModes, url])
 
   // HLS.js is loaded only for browsers that need Media Source Extensions.
   // Safari/iOS uses its native HLS implementation, which has stricter gesture
@@ -235,6 +338,8 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
     setHlsSubtitleTracks([])
     setError('')
     if (!video) return
+    if (needsHeaderProxy && !playbackSourceUrl) return
+    const sourceUrl = playbackSourceUrl || url
     if (video.dataset.auralesSourceUrl !== url) {
       video.dataset.auralesSourceUrl = url
       mediaProxyAttemptedRef.current = false
@@ -244,9 +349,12 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
       video.removeAttribute('src')
       video.load()
     }
-    if (!isHlsUrl(url)) {
-      video.src = url
+    if (!isHlsUrl(sourceUrl)) {
+      video.src = sourceUrl
       video.load()
+      setPlayerNotice(sourceUrl === url
+        ? 'Direct Play. Codec compatibility depends on this browser, device, and source.'
+        : 'Direct Play through a private media-worker session. Codec compatibility depends on this browser and device.')
       return
     }
     let disposed = false
@@ -255,8 +363,8 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
     let mediaRecoveryAttempted = false
     const capabilities = getPlatformCapabilities(video)
     if (capabilities.nativeHls) {
-      video.src = url
-      setPlayerNotice('Using native HLS playback. Available audio and subtitle tracks depend on this browser and stream.')
+      video.src = sourceUrl
+      setPlayerNotice(workerPlaybackDescriptionRef.current || 'Using native HLS playback. Available audio and subtitle tracks depend on this browser and stream.')
       return () => { video.removeAttribute('src'); video.load() }
     }
     if (!capabilities.mediaSource) {
@@ -272,7 +380,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
       const instance = new Hls({ enableWorker: true, lowLatencyMode: false })
       hls = instance
       hlsTracksRef.current = instance as unknown as HlsTrackController
-      instance.loadSource(url)
+      instance.loadSource(sourceUrl)
       instance.attachMedia(video)
       instance.on(Hls.Events.MANIFEST_PARSED, () => {
         const tracks = instance.audioTracks
@@ -321,7 +429,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
           instance.subtitleTrack = -1
           setSelectedSubtitle('off')
         }
-        setPlayerNotice('Available HLS audio and subtitle tracks depend on the stream and browser. External subtitles remain available when supplied by the source.')
+        setPlayerNotice(workerPlaybackDescriptionRef.current || 'Available HLS audio and subtitle tracks depend on the stream and browser. External subtitles remain available when supplied by the source.')
       })
       instance.on(Hls.Events.ERROR, (_event, data) => {
         if (!data.fatal) return
@@ -335,7 +443,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
           mediaProxyResumeRef.current = Number.isFinite(video.currentTime) ? video.currentTime : 0
           setLoading(true)
           setPlayerNotice('The media worker session expired. Renewing the playback link…')
-          void createMediaSession(url).then((session) => {
+          void createMediaSession(url, undefined, playbackRequestHeaders).then((session) => {
             if (disposed) return
             mediaProxySessionRef.current = session
             instance.loadSource(session.url)
@@ -357,6 +465,21 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
           }
           setError('The HLS stream or its segments could not be loaded. The source may block browser CORS requests or its session may have expired.')
         } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          if (workerConversionActiveRef.current && !isHlsUrl(url)) {
+            const lastMode = lastWorkerConversionModeRef.current
+            const nextMode = lastMode ? nextPlaybackConversionAfterDecodeFailure(lastMode) : null
+            if (nextMode && conversionModesRef.current.includes(nextMode) && !conversionModesTriedRef.current.includes(nextMode)) {
+              setLoading(true)
+              setPlayerNotice(nextMode === 'audioAac'
+                ? 'The browser rejected the remuxed HLS stream. Trying AAC audio while keeping the video unchanged…'
+                : 'Audio-only HLS conversion was not enough. Trying H.264/AAC video encoding now…')
+              void convertWithWorkerRef.current(nextMode)
+              return
+            }
+            setError('The browser could not decode the converted HLS stream after the available strategies. This codec or profile may not be supported on this browser and device.')
+            setLoading(false)
+            return
+          }
           if (!mediaRecoveryAttempted) {
             mediaRecoveryAttempted = true
             setLoading(true)
@@ -373,7 +496,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
           mediaProxyResumeRef.current = Number.isFinite(video.currentTime) ? video.currentTime : 0
           setLoading(true)
           setPlayerNotice('The HLS source is blocked in this browser. Retrying through your configured Aurales media worker…')
-          void createMediaSession(url).then((session) => {
+          void createMediaSession(url, undefined, playbackRequestHeaders).then((session) => {
             if (disposed) return
             mediaProxySessionRef.current = session
             instance.loadSource(session.url)
@@ -401,7 +524,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
       video.removeAttribute('src')
       video.load()
     }
-  }, [url, playbackItem?.isAnime])
+  }, [url, playbackSourceUrl, needsHeaderProxy, playbackRequestHeaders, playbackItem?.isAnime])
   const SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const
   const [playbackSpeed, setPlaybackSpeed] = useState(1)
   const [showSpeedMenu, setShowSpeedMenu] = useState(false)
@@ -555,7 +678,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
 
     setTranslatingSub(true)
     setTranslationError('')
-    setConversionModes([])
+    updateConversionModes([])
     setConversionMessage('')
     setConversionBusy(false)
     conversionModesTriedRef.current = []
@@ -610,8 +733,27 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
     }
   }
 
+  const reportJellyfinEvent = (event: 'start' | 'progress' | 'pause' | 'unpause' | 'stop', time: number, dur: number, isPaused: boolean) => {
+    if (!playbackItem?.serverConnectionId || !playbackItem.serverItemId || !playbackItem.serverPlaySessionId) return
+    if (event !== 'start' && !playbackStartedRef.current) return
+    const now = Date.now()
+    if (event === 'progress' && now - lastJellyfinReportAtRef.current < 10_000) return
+    lastJellyfinReportAtRef.current = now
+    void reportJellyfinPlayback({
+      connectionId: playbackItem.serverConnectionId,
+      itemId: playbackItem.serverItemId,
+      mediaSourceId: playbackItem.serverMediaSourceId,
+      playSessionId: playbackItem.serverPlaySessionId,
+      positionTicks: Math.max(0, Math.round(time * 10_000_000)),
+      runtimeTicks: dur > 0 ? Math.round(dur * 10_000_000) : undefined,
+      event, isPaused,
+      playMethod: playbackItem.serverPlayMethod || 'DirectPlay',
+    }).catch(() => undefined)
+  }
+
   const saveLocalProgress = (time: number, dur: number, completedFlag: boolean) => {
     if (!playbackItem) return
+    reportJellyfinEvent('progress', time, dur, false)
     const key = playbackItem.season != null && playbackItem.episode != null
       ? `${playbackItem.localId}:${playbackItem.season}:${playbackItem.episode}`
       : playbackItem.localId
@@ -642,6 +784,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
   const showControlsTemporarily = () => {
     setControlsVisible(true)
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+    const touchDevice = window.matchMedia('(pointer: coarse)').matches
     hideTimerRef.current = setTimeout(() => {
       const video = videoRef.current
       // Keep the full control deck available while paused, stalled, or before
@@ -652,8 +795,22 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
         return
       }
       setControlsVisible(false)
-    }, 2600)
+    }, touchDevice ? 7000 : 2600)
   }
+
+  useEffect(() => {
+    const syncFullscreen = () => setIsFullscreen(document.fullscreenElement === playerShellRef.current)
+    const video = videoRef.current as (HTMLVideoElement & { webkitDisplayingFullscreen?: boolean }) | null
+    const syncNativeFullscreen = () => setIsFullscreen(Boolean(video?.webkitDisplayingFullscreen))
+    document.addEventListener('fullscreenchange', syncFullscreen)
+    video?.addEventListener('webkitbeginfullscreen', syncNativeFullscreen)
+    video?.addEventListener('webkitendfullscreen', syncNativeFullscreen)
+    return () => {
+      document.removeEventListener('fullscreenchange', syncFullscreen)
+      video?.removeEventListener('webkitbeginfullscreen', syncNativeFullscreen)
+      video?.removeEventListener('webkitendfullscreen', syncNativeFullscreen)
+    }
+  }, [])
 
   useEffect(() => {
     showControlsTemporarily()
@@ -1063,6 +1220,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
       if (scrobbleSimkl) {
         onSimklPlaybackStop(playbackItem, progress).catch(() => {})
       }
+      reportJellyfinEvent('stop', cur, dur, true)
       saveAniListScrobble(progress)
       syncPmdbPlayback(cur, dur, true)
       sendMdblistScrobble('stop', progress)
@@ -1090,6 +1248,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
       if (scrobbleSimkl) {
         onSimklPlaybackStop(playbackItem, progress).catch(() => {})
       }
+      reportJellyfinEvent('stop', cur, dur, true)
       saveAniListScrobble(progress)
       syncPmdbPlayback(cur, dur, true)
       sendMdblistScrobble('stop', progress)
@@ -1105,6 +1264,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
       const dur = videoRef.current ? videoRef.current.duration || 0 : 0
       recordPlaybackSample({ mediaKey: playbackItem.localId, title: playbackItem.title, mediaType: playbackItem.mediaType === 'anime' ? 'anime' : playbackItem.contentType === 'movie' ? 'movie' : 'series', poster, tmdbId: playbackItem.tmdbId, season: playbackItem.season, episode: playbackItem.episode, positionSeconds: dur, durationSeconds: dur, playing: false, completed: true })
       saveLocalProgress(dur, dur, true)
+      reportJellyfinEvent('stop', dur, dur, true)
       if (scrobbleSimkl) {
         onSimklPlaybackStop(playbackItem, 1).catch(() => {})
       }
@@ -1220,13 +1380,17 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
     conversionControllerRef.current?.abort()
     conversionControllerRef.current = controller
     setConversionBusy(true)
-    setConversionMessage(mode === 'remux'
+    let conversionJobId: string | null = null
+    setConversionMessage(mode === 'auto'
+      ? 'Inspecting the source on your media worker. It will try stream copy, then AAC-only conversion, then video encoding…'
+      : mode === 'remux'
       ? 'Preparing a seekable MP4 copy on your media worker…'
       : mode === 'audioAac'
         ? 'Converting audio to AAC while copying the video unchanged…'
         : 'Encoding video to H.264 and audio to AAC. This can take several minutes…')
     try {
-      const jobId = await startMediaConversion(url, mode, controller.signal)
+      const jobId = await startMediaConversion(url, mode, controller.signal, playbackRequestHeaders, 'hls')
+      conversionJobId = jobId
       const startedAt = Date.now()
       while (Date.now() - startedAt < 2 * 60 * 60 * 1000) {
         await new Promise<void>((resolve, reject) => {
@@ -1241,6 +1405,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
           controller.signal.addEventListener('abort', onAbort, { once: true })
         })
         const status = await getMediaConversionStatus(jobId, controller.signal)
+        if (status.status === 'cancelled') return false
         if (status.status === 'failed') throw new Error('The media worker could not convert this stream.')
         if (status.status !== 'ready') continue
         const video = videoRef.current
@@ -1248,12 +1413,19 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
         const position = Number.isFinite(video.currentTime) ? video.currentTime : 0
         mediaProxyResumeRef.current = position
         mediaProxySessionRef.current = null
-        video.src = status.url
-        video.load()
+        workerConversionActiveRef.current = true
+        lastWorkerConversionModeRef.current = status.mode
         setLoading(true)
         setPaused(true)
         setError('')
-        setPlayerNotice(`Playing worker-converted media (${mode === 'remux' ? 'stream copy' : mode === 'audioAac' ? 'AAC audio' : 'H.264/AAC'}).`)
+      const inputCodecs = status.sourceInfo?.streams
+        .map((stream) => stream.codec_name && `${stream.codec_type || 'stream'}: ${stream.codec_name}${stream.profile ? ` (${stream.profile})` : ''}`)
+        .filter((value): value is string => Boolean(value))
+        .join(', ')
+      const description = `Playing worker-converted HLS (${status.mode === 'remux' ? 'stream copy' : status.mode === 'audioAac' ? 'AAC audio with copied video' : 'H.264/AAC'}).${inputCodecs ? ` Source detected as ${status.sourceInfo?.container}: ${inputCodecs}.` : ''}`
+      workerPlaybackDescriptionRef.current = description
+      setPlayerNotice(description)
+      setWorkerPlaybackUrl(status.url)
         setConversionMessage('Conversion is ready. Resuming from the previous position when the browser loads the new stream.')
         return true
       }
@@ -1263,12 +1435,14 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
       setConversionMessage(error instanceof Error ? error.message : 'The media worker conversion failed.')
       return false
     } finally {
+      if (controller.signal.aborted && conversionJobId) void cancelMediaConversion(conversionJobId).catch(() => undefined)
       if (conversionControllerRef.current === controller) {
         conversionControllerRef.current = null
         setConversionBusy(false)
       }
     }
   }
+  convertWithWorkerRef.current = convertWithWorker
 
   const handleTimeUpdate = (time: number, dur: number) => {
     setCurrentTime(time)
@@ -1289,7 +1463,9 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
 
   return createPortal((
     <div
+      ref={playerShellRef}
       className={`fixed inset-0 z-[10000] bg-black text-white ${controlsVisible ? 'cursor-default' : 'cursor-none'}`}
+      data-player-fullscreen={isFullscreen || undefined}
       onMouseMove={showControlsTemporarily}
       onClick={showControlsTemporarily}
     >
@@ -1300,7 +1476,11 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
         playsInline
         autoPlay
         onPlay={() => { setPaused(false); showControlsTemporarily(); wtSendPlay() }}
-        onPause={() => { setPaused(true); showControlsTemporarily(); wtSendPause() }}
+        onPause={() => {
+          setPaused(true); showControlsTemporarily(); wtSendPause()
+          const video = videoRef.current
+          reportJellyfinEvent('pause', video?.currentTime || 0, video?.duration || 0, true)
+        }}
         onWaiting={() => { bufferingRef.current = true; if (!videoRef.current?.error && !error) setLoading(true); showControlsTemporarily(); const wt = useWatchTogetherStore.getState(); if (wt.currentRoom) wtSendBuffering(true, videoRef.current?.currentTime ?? 0) }}
         onCanPlay={() => {
           bufferingRef.current = false
@@ -1317,7 +1497,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
           if (!playbackStartedRef.current) {
             playbackStartedRef.current = true
             onPlaybackStarted?.()
-          }
+          } else if (videoRef.current) reportJellyfinEvent('unpause', videoRef.current.currentTime, videoRef.current.duration || 0, false)
           const wt = useWatchTogetherStore.getState()
           if (wt.currentRoom) wtSendBuffering(false, videoRef.current?.currentTime ?? 0)
         }}
@@ -1350,7 +1530,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
             setLoading(true)
             setError('')
             setPlayerNotice('The media worker session expired. Renewing the playback link…')
-            void createMediaSession(url).then((session) => {
+            void createMediaSession(url, undefined, playbackRequestHeaders).then((session) => {
               if (!videoRef.current || videoRef.current !== video) return
               mediaProxySessionRef.current = session
               video.src = session.url
@@ -1365,7 +1545,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
           }
           if (video && getPlatformCapabilities(video).platform === 'web' && video.error?.code === 2 && !mediaProxyAttemptedRef.current) {
             mediaProxyAttemptedRef.current = true
-            void createMediaSession(url).then((session) => {
+            void createMediaSession(url, undefined, playbackRequestHeaders).then((session) => {
               if (!videoRef.current || videoRef.current !== video) return
               const position = video.currentTime
               mediaProxySessionRef.current = session
@@ -1384,6 +1564,25 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
             return
           }
           const unsupportedMedia = video?.error?.code === 3 || video?.error?.code === 4
+          if (video && unsupportedMedia && workerConversionActiveRef.current && !isHlsUrl(url)) {
+            const lastMode = lastWorkerConversionModeRef.current
+            const nextMode = lastMode ? nextPlaybackConversionAfterDecodeFailure(lastMode) : null
+            if (nextMode && conversionModes.includes(nextMode) && !conversionModesTriedRef.current.includes(nextMode)) {
+              setLoading(true)
+              setError('The browser could not decode the prepared stream. Trying the next playback strategy…')
+              setPlayerNotice(nextMode === 'audioAac'
+                ? 'Stream copy was not browser-decodable. Trying AAC audio while keeping the video unchanged…'
+                : 'Audio-only conversion was not enough. Trying H.264/AAC video encoding now…')
+              void convertWithWorker(nextMode)
+              return
+            }
+            const message = 'The browser could not decode the prepared stream after the available playback strategies. The source may use an unsupported codec or profile, including some HEVC, VP9, AV1, HDR, or Dolby Vision combinations.'
+            setLoading(false)
+            setPaused(true)
+            setError(message)
+            onPlaybackError?.(message, video.currentTime)
+            return
+          }
           if (video && getPlatformCapabilities(video).platform === 'web' && unsupportedMedia && !isHlsUrl(url) && getMediaWorkerConfig()) {
             const message = browserPlaybackFailureMessage(url, video)
             setLoading(false)
@@ -1394,10 +1593,10 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
               conversionOptionsCheckedRef.current = true
               void getMediaWorkerCapabilities().then((capabilities) => {
                 const modes: MediaConversionMode[] = []
-                if (capabilities.mediaRemux) modes.push('remux')
+                if (capabilities.mediaRemux) modes.push('auto')
                 if (capabilities.audioTranscode) modes.push('audioAac')
                 if (capabilities.audioTranscode && capabilities.videoTranscode) modes.push('h264Aac')
-                setConversionModes(modes)
+                updateConversionModes(modes)
                 if (modes.length === 0) {
                   const unavailable = `${message} The configured media worker does not offer a compatible conversion.`
                   setError(unavailable)
@@ -1406,9 +1605,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
                 }
                 setError('The stream is not browser-compatible. Aurales is trying a stream-copy remux first; the original file is not modified.')
                 void (async () => {
-                  for (const mode of modes) {
-                    if (await convertWithWorker(mode)) return
-                  }
+                  if (await convertWithWorker('auto')) return
                   const failed = `${message} Automatic conversion attempts failed. Pick another stream or check the media worker logs.`
                   setError(failed)
                   onPlaybackError?.(failed, video.currentTime)
@@ -1562,6 +1759,25 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
               </button>
             )}
             <button onClick={handlePickAnother} className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-sm">Pick another</button>
+            <div className="relative">
+              <div className="flex overflow-hidden rounded-full bg-white/10">
+                <button
+                  type="button"
+                  onClick={() => preferredExternalPlayer ? openExternalPlayer(preferredExternalPlayer) : setExternalPlayerMenuOpen((open) => !open)}
+                  className="min-h-11 px-4 py-2 text-sm hover:bg-white/10"
+                >
+                  {preferredExternalPlayer ? `Open in ${preferredExternalPlayer === 'infuse' ? 'Infuse' : 'Aether'}` : 'Open with…'}
+                </button>
+                <button type="button" aria-label="Choose another player" aria-haspopup="menu" aria-expanded={externalPlayerMenuOpen} onClick={() => setExternalPlayerMenuOpen((open) => !open)} className="min-h-11 border-l border-white/10 px-3 text-sm hover:bg-white/10">▾</button>
+              </div>
+              {externalPlayerMenuOpen && (
+                <div role="menu" className="absolute bottom-full left-0 z-50 mb-2 min-w-52 rounded-xl border border-white/15 bg-black/95 p-1.5 shadow-2xl backdrop-blur-xl">
+                  <button type="button" role="menuitem" onClick={() => openExternalPlayer('infuse')} className="block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-white/10">Play in Infuse</button>
+                  <button type="button" role="menuitem" onClick={() => openExternalPlayer('aether')} className="block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-white/10">Play in Aether</button>
+                  <a href={playbackSourceUrl || url} target="_blank" rel="noreferrer" onClick={() => setExternalPlayerMenuOpen(false)} className="block rounded-lg px-3 py-2 text-sm text-white/75 hover:bg-white/10">Open video directly</a>
+                </div>
+              )}
+            </div>
             <button type="button" onClick={() => {
               const video = videoRef.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null
               if (!video) return
@@ -1570,6 +1786,15 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
               // Safari's native video fullscreen needs the original tap event;
               // calling it after a rejected requestFullscreen promise loses
               // that gesture on iPhone and iPad.
+              if (document.fullscreenElement === playerShellRef.current) { void document.exitFullscreen(); return }
+              const shell = playerShellRef.current as (HTMLDivElement & { webkitRequestFullscreen?: () => Promise<void> | void }) | null
+              if (shell?.requestFullscreen) {
+                void shell.requestFullscreen().catch(() => {
+                  if (isAppleMobile && video.webkitEnterFullscreen) video.webkitEnterFullscreen()
+                  else setPlayerNotice('Full screen is not available in this browser for the current stream.')
+                })
+                return
+              }
               if (isAppleMobile && video.webkitEnterFullscreen) {
                 if (video.error || video.readyState < HTMLMediaElement.HAVE_METADATA) {
                   setPlayerNotice('Safari can open native full screen after a playable stream has loaded.')
@@ -1588,7 +1813,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
               }
               if (video.webkitEnterFullscreen) { video.webkitEnterFullscreen(); return }
               setPlayerNotice('Full screen is not available in this browser for the current stream.')
-            }} aria-label="Full screen" title="Full screen" className="grid h-11 w-11 place-items-center rounded-lg text-white/75 hover:bg-white/10 hover:text-white">
+            }} aria-label={isFullscreen ? 'Exit full screen' : 'Full screen'} title={isFullscreen ? 'Exit full screen' : 'Full screen'} className="grid h-11 w-11 place-items-center rounded-lg text-white/75 hover:bg-white/10 hover:text-white">
               <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 00-2 2v3M16 3h3a2 2 0 012 2v3M8 21H5a2 2 0 01-2-2v-3M16 21h3a2 2 0 002-2v-3" /></svg>
             </button>
           </div>
@@ -1620,14 +1845,14 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
                 {playbackSpeed === 1 ? '1x' : `${playbackSpeed}x`}
               </button>
             </div>
-            <select aria-label="Audio track" value={selectedAudio} onChange={(event) => changeAudio(event.target.value)} className="bg-black/80 text-white border border-white/15 rounded-xl px-3 py-2 text-sm outline-none">
+            <label className="inapp-player-track-picker"><span>Audio</span><select aria-label="Audio track" value={selectedAudio} onChange={(event) => changeAudio(event.target.value)} className="bg-black/80 text-white border border-white/15 rounded-xl px-3 py-2 text-sm outline-none">
               {audioTracks.length > 0 ? audioTracks.map((track) => (
                 <option key={track.id} value={track.index}>{track.label}</option>
               )) : (
                 <option value="0">Default audio</option>
               )}
-            </select>
-            <select aria-label="Subtitle track" value={selectedSubtitle} onChange={(event) => changeSubtitle(event.target.value)} className="bg-black/80 text-white border border-white/15 rounded-xl px-3 py-2 text-sm outline-none">
+            </select></label>
+            <label className="inapp-player-track-picker"><span>Subtitles</span><select aria-label="Subtitle track" value={selectedSubtitle} onChange={(event) => changeSubtitle(event.target.value)} className="bg-black/80 text-white border border-white/15 rounded-xl px-3 py-2 text-sm outline-none">
               <option value="off">Subtitles off</option>
               {hlsSubtitleTracks.map((track) => (
                 <option key={`hls:${track.index}`} value={`hls:${track.index}`}>{track.label}</option>
@@ -1638,7 +1863,7 @@ export default function InAppPlayer({ url, title, subtitle, subtitles = NO_SUBTI
               {preparedSubtitles.map((track, index) => (
                 <option key={`${track.id}-${track.url}`} value={index}>{track.label || track.lang || `Subtitle ${index + 1}`}</option>
               ))}
-            </select>
+            </select></label>
             {selectedSubtitle !== 'off' && (
               <button
                 onClick={() => {

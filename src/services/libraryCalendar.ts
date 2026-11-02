@@ -11,6 +11,7 @@ import { cachedFetch } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
 import { getActiveProfileId, profileProviderCacheKey } from './profiles'
 import { isValidDateKey } from './localDate'
+import { loadServerUpcomingEvents } from './upcomingSources'
 
 export interface CalendarEntry {
   id: string
@@ -33,6 +34,7 @@ export interface CalendarLoadOptions {
   simklConnected: boolean
   anilistConnected: boolean
   mdblistConnected: boolean
+  serverRevision?: number
 }
 
 export interface CalendarLoadResult {
@@ -299,12 +301,18 @@ function calendarCacheKey(options: CalendarLoadOptions) {
     options.anilistConnected && profileProviderCacheKey('calendar:anilist', 'anilist', profileId),
     options.mdblistConnected && profileProviderCacheKey('calendar:mdblist', 'mdblist', profileId),
   ].filter(Boolean).join('|')
-  return `library:calendar:v5:${profileId}:${accounts}:${monthRange(options.month).start.slice(0, 7)}:${localTodayKey()}:${progress}`
+  return `library:calendar:v6:${profileId}:${accounts}:server-${options.serverRevision || 0}:${monthRange(options.month).start.slice(0, 7)}:${localTodayKey()}:${progress}`
 }
 
 async function buildLibraryCalendar(options: CalendarLoadOptions): Promise<CalendarLoadResult> {
   const errors: string[] = []
-  const items = await getTrackedItems(options, errors)
+  const [items, serverEvents] = await Promise.all([
+    getTrackedItems(options, errors),
+    loadServerUpcomingEvents().catch((error) => {
+      errors.push(error instanceof Error ? error.message : 'The Jellyfin release feed could not be loaded')
+      return []
+    }),
+  ])
   const progress = indexWatchedProgress(options.watchProgress)
   const range = monthRange(options.month)
   const today = localTodayKey()
@@ -312,7 +320,26 @@ async function buildLibraryCalendar(options: CalendarLoadOptions): Promise<Calen
     errors.push(error instanceof Error ? error.message : `Could not load ${item.title}`)
     return [] as CalendarEntry[]
   }))
-  const entries = batches.flat().sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title))
+  const serverEntries: CalendarEntry[] = serverEvents.flatMap((event) => {
+    const date = toLocalDateKey(event.releaseDate)
+    if (!date || !inMonth(date, range)) return []
+    return [{
+      id: event.id,
+      date,
+      kind: event.type === 'movie' ? 'movie' : 'episode',
+      title: event.media.title,
+      subtitle: event.type === 'movie' ? 'Movie release' : `S${event.seasonNumber ?? '?'} E${event.episodeNumber ?? '?'}${event.episodeTitle ? ` · ${event.episodeTitle}` : ''}`,
+      poster: event.artwork || event.media.poster,
+      media: event.media,
+      season: event.seasonNumber,
+      episode: event.episodeNumber,
+      watched: event.watched ?? isWatched(event.media, progress, event.seasonNumber, event.episodeNumber),
+      releaseState: getReleaseState(date, today),
+    }]
+  })
+  const unique = new Map<string, CalendarEntry>()
+  for (const entry of [...batches.flat(), ...serverEntries]) unique.set(entry.id, entry)
+  const entries = [...unique.values()].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title))
   return { entries, errors }
 }
 

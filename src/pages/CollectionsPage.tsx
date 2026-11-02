@@ -66,7 +66,7 @@ import { cacheGet, cacheSet } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { homeRowCacheKey, providerCacheScope } from '../services/cache/homeRowCacheKeys'
 import { cachedImage } from '../services/imageCache'
-import { SERVER_INTEGRATIONS_ENABLED, listServerCatalogs, serverCatalogListId, type ServerCatalogDescriptor } from '../services/serverIntegrations'
+import { SERVER_INTEGRATIONS_ENABLED, getServerItem, listServerCatalogs, parseServerCatalogListId, serverCatalogListId, type ServerCatalogDescriptor, type ServerCatalogItem } from '../services/serverIntegrations'
 import { getActiveProfileId } from '../services/profiles'
 
 // ── Simkl list options (for add-widget overlay) ────────────────────────────────
@@ -230,6 +230,13 @@ function useRowPosters(row: HomeRowConfig, addons: InstalledAddon[]): { posters:
           const items = await getProviderListItems(row)
           total = items.length
           urls = items.slice(0, 5).map((i) => i.poster || i.backdrop || '').filter(Boolean)
+        } else if ((row.sourceType === 'jellyfin' || row.sourceType === 'webdav') && row.providerListId) {
+          const items = await getProviderListItems(row, false, 5)
+          const catalogId = parseServerCatalogListId(row.providerListId)
+          const catalog = catalogId ? (await listServerCatalogs()).find((entry) => entry.connectionId === catalogId.connectionId && entry.catalogId === catalogId.catalogId) : undefined
+          // Keep the mosaic lightweight while showing the full collection size.
+          total = catalog?.itemCount || items.length
+          urls = items.slice(0, 5).map((i) => i.poster || i.backdrop || '').filter(Boolean)
         } else if (row.sourceType === 'discover' && row.discoverConfig) {
           try {
             const results = await discoverTmdbPreviewWithCache(row.discoverConfig, row.id)
@@ -247,7 +254,7 @@ function useRowPosters(row: HomeRowConfig, addons: InstalledAddon[]): { posters:
         }
 
         // Never replace a useful preview with an empty provider/error result.
-        if (urls.length > 0) {
+        if (urls.length > 0 || total > 0) {
           const snapshot = { posters: urls, count: total }
           libraryShelfPosterMemory.set(cacheKey, snapshot)
           settledWithPosters = true
@@ -1865,9 +1872,11 @@ function AddWidgetOverlay({
     items.push(...providerItems('mdblist', mdblistLists, 'My MDBList Lists'))
     items.push(...providerItems('trakt', [...traktPublicLists, ...globalPublicTrakt], 'Public Trakt Lists', true))
     items.push(...providerItems('mdblist', [...mdblistPublicLists, ...globalPublicMdblist], 'Public MDBList Lists', true))
-    serverCatalogs.filter((catalog) => catalog.catalogId.startsWith('library:')
+    serverCatalogs.filter((catalog) => ['continue-watching', 'next-up', 'upcoming', 'history', 'recently-added', 'favorites'].includes(catalog.catalogId)
+      || catalog.catalogId.startsWith('library:')
       || catalog.catalogId.startsWith('collection:')
-      || ['continue-watching', 'recently-added', 'favorites', 'collections'].includes(catalog.catalogId))
+      || catalog.catalogId.startsWith('view:')
+      || catalog.catalogId.startsWith('boxset:'))
       .forEach((catalog) => {
       const source = catalog.provider as 'jellyfin' | 'webdav'
       if (source !== 'jellyfin' && source !== 'webdav') return
@@ -1875,16 +1884,17 @@ function AddWidgetOverlay({
         title: catalog.title,
         sourceType: source,
         providerListId: serverCatalogListId(catalog.connectionId, catalog.catalogId),
-        layout: 'poster',
+        layout: catalog.provider === 'jellyfin' && (catalog.kind === 'collection' || catalog.catalogId.startsWith('boxset:')) ? 'landscape' : 'poster',
+        ...(catalog.provider === 'jellyfin' && (catalog.kind === 'collection' || catalog.catalogId.startsWith('boxset:')) ? { jellyfinCollection: true } : {}),
         enabled: true,
       }
       const key = shelfDraftKey(row)
       items.push({
         key,
         source,
-        group: source === 'jellyfin' ? 'Jellyfin catalogs' : 'WebDAV folders',
+        group: source === 'jellyfin' ? catalog.group || 'Jellyfin catalogs' : 'WebDAV folders',
         title: catalog.title,
-        subtitle: `${source === 'jellyfin' ? 'Jellyfin' : 'WebDAV'} • ${catalog.itemCount} ${catalog.itemCount === 1 ? 'item' : 'items'}`,
+        subtitle: source === 'jellyfin' ? `Jellyfin • ${catalog.kind === 'catalog' || catalog.kind === 'collection' ? 'server catalog' : 'playback list'}` : `WebDAV • ${catalog.itemCount} ${catalog.itemCount === 1 ? 'item' : 'items'}`,
         contentType: catalog.contentType === 'movie' || catalog.contentType === 'series' || catalog.contentType === 'anime' ? catalog.contentType : 'unknown',
         row,
         added: isAlreadyAdded(key),
@@ -1902,7 +1912,7 @@ function AddWidgetOverlay({
       pmdb: { label: 'PMDB', description: 'Native PMDB account lists', connected: !!pmdbApiKey, letter: 'P' },
       'pmdb-picks': { label: 'PMDB Picks', description: 'Personalized recommendation catalogs', connected: !!pmdbApiKey, letter: 'P' },
       mdblist: { label: 'MDBList', description: 'Account lists and public collections', connected: !!mdblistApiKey, letter: 'M' },
-      jellyfin: { label: 'Jellyfin', description: 'Libraries from connected Jellyfin servers', connected: true, letter: 'J' },
+      jellyfin: { label: 'Jellyfin', description: 'Server catalogs, collections, and playback lists', connected: true, letter: 'J' },
       webdav: { label: 'WebDAV', description: 'Media folders from connected WebDAV servers', connected: true, letter: 'W' },
     }
     const sourceOrder = (Object.keys(sourceMeta) as CatalogPickerSource[])
@@ -1991,9 +2001,9 @@ function AddWidgetOverlay({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-2 backdrop-blur-md sm:p-5" onClick={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <div className="add-shelves-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-2 backdrop-blur-md sm:p-5" onClick={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <div
-        className="glass-panel flex h-[min(860px,calc(100dvh-1rem))] w-full max-w-[1080px] flex-col overflow-hidden rounded-2xl border border-white/[0.11] shadow-2xl shadow-black/70 transition-all duration-300 sm:h-[min(860px,calc(100dvh-2.5rem))]"
+        className="add-shelves-dialog glass-panel flex h-[min(860px,calc(100dvh-1rem))] w-full max-w-[1080px] flex-col overflow-hidden rounded-2xl border border-white/[0.11] shadow-2xl shadow-black/70 transition-all duration-300 sm:h-[min(860px,calc(100dvh-2.5rem))]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Accent line */}
@@ -3583,6 +3593,55 @@ function AddWidgetOverlay({
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 
+function JellyfinCollectionsLibrary({ catalogs, homeRows, onOpen, onAddToHome }: { catalogs: ServerCatalogDescriptor[]; homeRows: HomeRowConfig[]; onOpen: (catalog: ServerCatalogDescriptor, item?: ServerCatalogItem) => void; onAddToHome: (catalog: ServerCatalogDescriptor) => void }) {
+  const [artwork, setArtwork] = useState<Record<string, ServerCatalogItem>>({})
+  useEffect(() => {
+    let cancelled = false
+    void Promise.all(catalogs.map(async (catalog) => {
+      if (!catalog.sourceItemId) return null
+      try { return { key: `${catalog.connectionId}:${catalog.catalogId}`, item: await getServerItem(catalog.connectionId, catalog.sourceItemId) } }
+      catch { return null }
+    })).then((results) => {
+      if (cancelled) return
+      setArtwork(Object.fromEntries(results.flatMap((result) => result?.item ? [[result.key, result.item] as const] : [])))
+    })
+    return () => { cancelled = true }
+  }, [catalogs])
+
+  const groups = new Map<string, ServerCatalogDescriptor[]>()
+  for (const catalog of catalogs) {
+    const group = catalog.group || 'Collections'
+    groups.set(group, [...(groups.get(group) || []), catalog])
+  }
+  if (!catalogs.length) return <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] px-5 py-12 text-center"><h2 className="text-lg font-bold text-white/75">No Jellyfin collections found</h2><p className="mt-2 text-sm text-white/45">Connect AIOMetadata in Settings to browse its collections here.</p></div>
+
+  return <div className="space-y-8">
+    {[...groups].map(([group, entries]) => <section key={group}>
+      <h2 className="mb-4 text-lg font-bold tracking-tight text-white/90">{group}</h2>
+      <div className="jellyfin-collections-grid grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        {entries.map((catalog) => {
+          const item = artwork[`${catalog.connectionId}:${catalog.catalogId}`]
+          const backdrop = item?.backdrop
+          const poster = item?.poster
+          const rowId = serverCatalogListId(catalog.connectionId, catalog.catalogId)
+          const onHome = homeRows.some((row) => row.sourceType === 'jellyfin' && row.providerListId === rowId && row.enabled)
+          return <article key={`${catalog.connectionId}:${catalog.catalogId}`} className="group relative aspect-video min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-[#17191d] shadow-lg transition-transform hover:-translate-y-0.5 hover:border-white/20">
+            <button type="button" onClick={() => onOpen(catalog, item)} aria-label={`Open ${catalog.title}`} className="absolute inset-0 h-full w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+              {backdrop ? <img src={backdrop} alt="" className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]" loading="lazy" /> : poster ? <img src={poster} alt="" className="absolute inset-0 h-full w-full object-contain p-3" loading="lazy" /> : null}
+              <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/15 to-black/10" />
+              <div className="absolute inset-3 flex items-center justify-center text-center text-base font-bold leading-tight text-white drop-shadow-lg sm:text-xl">{catalog.title}</div>
+              {catalog.itemCount > 0 && <span className="absolute bottom-3 right-4 rounded-full bg-black/45 px-2.5 py-1 text-[10px] font-semibold text-white/80 backdrop-blur">{catalog.itemCount} titles</span>}
+            </button>
+            <button type="button" onClick={() => onAddToHome(catalog)} disabled={onHome} className="absolute right-3 top-3 z-10 inline-flex min-h-10 items-center gap-2 rounded-xl border border-white/15 bg-black/65 px-3 text-xs font-bold text-white shadow-lg backdrop-blur-md transition-colors hover:bg-black/85 disabled:cursor-default disabled:border-emerald-300/25 disabled:text-emerald-200">
+              {onHome ? <><span aria-hidden="true">✓</span> On Home</> : <><span aria-hidden="true">＋</span> Add to Home</>}
+            </button>
+          </article>
+        })}
+      </div>
+    </section>)}
+  </div>
+}
+
 export default function CollectionsPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -3597,7 +3656,8 @@ export default function CollectionsPage() {
 
   const [addOverlay, setAddOverlay] = useState(false)
   const [overlayStartMode, setOverlayStartMode] = useState<'preset' | 'discover'>('preset')
-  const activeTab: 'collections' | 'shelves' | 'watchlist' | 'calendar' | 'activity' = searchParams.get('tab') === 'watchlist' ? 'watchlist' : searchParams.get('tab') === 'calendar' ? 'calendar' : searchParams.get('tab') === 'activity' ? 'activity' : searchParams.get('tab') === 'collections' ? 'collections' : 'shelves'
+  const [serverCatalogs, setServerCatalogs] = useState<ServerCatalogDescriptor[]>([])
+  const activeTab: 'collections' | 'jellyfin-collections' | 'shelves' | 'watchlist' | 'calendar' | 'activity' = searchParams.get('tab') === 'watchlist' ? 'watchlist' : searchParams.get('tab') === 'calendar' ? 'calendar' : searchParams.get('tab') === 'activity' ? 'activity' : searchParams.get('tab') === 'collections' ? 'collections' : searchParams.get('tab') === 'jellyfin-collections' ? 'jellyfin-collections' : 'shelves'
   const [editingRow, setEditingRow] = useState<HomeRowConfig | null>(null)
   const [shelfQuery, setShelfQuery] = useState('')
   const [sourceFilter, setSourceFilter] = useState('All')
@@ -3609,7 +3669,8 @@ export default function CollectionsPage() {
     .sort((a, b) => a.order - b.order), [homeRows])
   const smartCollectionRows = useMemo(() => getSmartCollections(allWidgetRows), [allWidgetRows])
   const allHomeShelfRows = useMemo(() => getHomeShelfRows(allWidgetRows), [allWidgetRows])
-  const activeRows = useMemo(() => activeTab === 'collections' ? smartCollectionRows : allHomeShelfRows, [activeTab, smartCollectionRows, allHomeShelfRows])
+  const jellyfinCollections = useMemo(() => serverCatalogs.filter((catalog) => catalog.provider === 'jellyfin' && catalog.kind === 'collection'), [serverCatalogs])
+  const activeRows = useMemo(() => activeTab === 'collections' ? smartCollectionRows : activeTab === 'jellyfin-collections' ? [] : allHomeShelfRows, [activeTab, smartCollectionRows, allHomeShelfRows])
   const enabledWidgetRows = activeRows
   // Upcoming is a protected built-in shelf, but unlike Continue Watching it
   // may be reordered with the rest of the shelves.
@@ -3624,12 +3685,68 @@ export default function CollectionsPage() {
   )
   const filtering = shelfQuery.trim() !== '' || sourceFilter !== 'All'
   const visibleRows = useMemo(() => {
-    let rows = activeTab === 'collections' ? smartCollectionRows : widgetRows
+    let rows = activeTab === 'collections' ? smartCollectionRows : activeTab === 'jellyfin-collections' ? [] : widgetRows
     if (sourceFilter !== 'All') rows = rows.filter((r) => shelfSourceLabel(r) === sourceFilter)
     const q = shelfQuery.trim().toLowerCase()
     if (q) rows = rows.filter((r) => r.title.toLowerCase().includes(q))
     return rows
   }, [activeTab, smartCollectionRows, widgetRows, sourceFilter, shelfQuery])
+
+  useEffect(() => {
+    let cancelled = false
+    const load = () => void listServerCatalogs().then((catalogs) => { if (!cancelled) setServerCatalogs(catalogs) }).catch(() => { if (!cancelled) setServerCatalogs([]) })
+    load()
+    window.addEventListener('aurales:server-catalogs-changed', load)
+    return () => { cancelled = true; window.removeEventListener('aurales:server-catalogs-changed', load) }
+  }, [])
+
+  // Existing Jellyfin BoxSet shelves were originally saved as Poster. Once
+  // the server catalog descriptors are available, migrate those rows to the
+  // wide collection layout automatically so Home and Library agree.
+  useEffect(() => {
+    if (!serverCatalogs.length) return
+    let cancelled = false
+    const collectionIds = new Set(serverCatalogs
+      .filter((catalog) => catalog.provider === 'jellyfin' && (catalog.kind === 'collection' || catalog.catalogId.startsWith('boxset:')))
+      .map((catalog) => serverCatalogListId(catalog.connectionId, catalog.catalogId)))
+    const legacyRows = homeRows.filter((row) => row.sourceType === 'jellyfin' && row.layout !== 'landscape' && row.providerListId)
+    void Promise.all(legacyRows.map(async (row) => {
+      const parsed = parseServerCatalogListId(row.providerListId)
+      if (!parsed) return null
+      const catalogKey = serverCatalogListId(parsed.connectionId, parsed.catalogId)
+      if (collectionIds.has(catalogKey)) return row.id
+      // Older AIOMetadata root views can contain BoxSets while their view
+      // descriptor is still classified as a generic catalog. Inspect one
+      // item so those existing shelves also migrate without title guessing.
+      try {
+        const items = await getProviderListItems(row, false, 1)
+        return items[0]?.mediaType === 'collection' ? row.id : null
+      } catch { return null }
+    })).then((rowIds) => {
+      if (cancelled) return
+      for (const rowId of rowIds) if (rowId) updateHomeRow(rowId, { layout: 'landscape', jellyfinCollection: true })
+    })
+    return () => { cancelled = true }
+  }, [serverCatalogs, homeRows, updateHomeRow])
+
+  const openJellyfinCollection = (catalog: ServerCatalogDescriptor, item?: ServerCatalogItem) => {
+    if (!catalog.sourceItemId) return
+    const rowId = `jellyfin-${encodeURIComponent(catalog.connectionId)}-${encodeURIComponent(catalog.sourceItemId)}`
+    const query = new URLSearchParams({ title: catalog.title, connection: catalog.connectionId, item: catalog.sourceItemId })
+    navigate(`/catalog/${rowId}?${query}`, {
+      state: { catalogRow: { id: rowId, title: catalog.title, sourceType: 'jellyfin', providerListId: serverCatalogListId(catalog.connectionId, catalog.catalogId), layout: 'poster', enabled: true, order: 0 }, collectionItem: item },
+    })
+  }
+
+  const addJellyfinCollectionToHome = (catalog: ServerCatalogDescriptor) => {
+    const providerListId = serverCatalogListId(catalog.connectionId, catalog.catalogId)
+    const existing = homeRows.find((row) => row.sourceType === 'jellyfin' && row.providerListId === providerListId)
+    if (existing) {
+      updateHomeRow(existing.id, { enabled: true, layout: 'landscape', jellyfinCollection: true })
+      return
+    }
+    addHomeRow({ title: catalog.title, sourceType: 'jellyfin', providerListId, layout: 'landscape', jellyfinCollection: true, enabled: true })
+  }
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -3662,9 +3779,10 @@ export default function CollectionsPage() {
     const base = current.filter((row) => !existingIds.has(row.id))
     const additions = selections.map((selection) => {
       const existing = selection.existingId ? current.find((row) => row.id === selection.existingId) : undefined
+      const collectionLayout = selection.row.sourceType === 'jellyfin' && (selection.row.jellyfinCollection || selection.row.layout === 'landscape') ? 'landscape' as const : selection.row.layout
       return existing
-        ? { ...existing, enabled: true, layout: (existing.layout === 'continue' || existing.layout === 'upcoming') ? existing.layout : 'poster' as const }
-        : { ...selection.row, id: uuid(), order: 0, enabled: true, layout: (selection.row.layout === 'continue' || selection.row.layout === 'upcoming') ? selection.row.layout : 'poster' as const }
+        ? { ...existing, enabled: true, layout: (existing.layout === 'continue' || existing.layout === 'upcoming') ? existing.layout : collectionLayout, jellyfinCollection: selection.row.jellyfinCollection || existing.jellyfinCollection }
+        : { ...selection.row, id: uuid(), order: 0, enabled: true, layout: (selection.row.layout === 'continue' || selection.row.layout === 'upcoming') ? selection.row.layout : collectionLayout }
     })
     setHomeRows([...base, ...additions].map((row, index) => ({ ...row, order: index })))
   }
@@ -3678,7 +3796,7 @@ export default function CollectionsPage() {
             <h1 className="text-3xl font-bold tracking-tight text-white mb-1">Library</h1>
             <p className="text-sm text-white/60">Save titles locally, build collections, and curate your home screen</p>
           </div>
-          {activeTab !== 'watchlist' && activeTab !== 'calendar' && activeTab !== 'activity' && <button
+          {activeTab !== 'watchlist' && activeTab !== 'calendar' && activeTab !== 'activity' && activeTab !== 'jellyfin-collections' && <button
             onClick={() => { setEditingRow(null); setOverlayStartMode(activeTab === 'collections' ? 'discover' : 'preset'); setAddOverlay(true) }}
             className="flex items-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent/80 text-black text-sm font-bold rounded-xl transition-all cursor-pointer shadow-lg shadow-accent/20"
           >
@@ -3691,18 +3809,20 @@ export default function CollectionsPage() {
       </div>
 
       <div className="px-8 space-y-6">
-        <div className="inline-flex rounded-xl border border-white/[0.07] bg-white/[0.03] p-1">
-          {([['watchlist', 'Watchlist'], ['shelves', 'Home Shelves'], ['collections', 'Smart Collections'], ['calendar', 'Calendar'], ['activity', 'Activity']] as const).map(([id, label]) => (
+        <div className="library-tabs-scroll max-w-full overflow-x-auto overscroll-x-contain">
+        <div className="library-tabs inline-flex w-max rounded-xl border border-white/[0.07] bg-white/[0.03] p-1">
+          {([['watchlist', 'Watchlist'], ['shelves', 'Home Shelves'], ['collections', 'Smart Collections'], ...(jellyfinCollections.length ? [['jellyfin-collections', 'Jellyfin Collections'] as const] : []), ['calendar', 'Calendar'], ['activity', 'Activity']] as const).map(([id, label]) => (
             <button
               key={id}
               onClick={() => { setSearchParams(id === 'shelves' ? {} : { tab: id }); setShelfQuery(''); setSourceFilter('All') }}
-              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeTab === id ? 'bg-accent/15 text-accent shadow-sm' : 'text-white/60 hover:text-white/65 hover:bg-white/[0.04]'}`}
+              className={`shrink-0 whitespace-nowrap px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeTab === id ? 'bg-accent/15 text-accent shadow-sm' : 'text-white/60 hover:text-white/65 hover:bg-white/[0.04]'}`}
             >
               {label}
             </button>
           ))}
         </div>
-        {activeTab === 'watchlist' ? <LocalWatchlist /> : activeTab === 'calendar' ? <LibraryCalendar /> : activeTab === 'activity' ? <LibraryActivity /> : <>
+        </div>
+        {activeTab === 'watchlist' ? <LocalWatchlist /> : activeTab === 'calendar' ? <LibraryCalendar /> : activeTab === 'activity' ? <LibraryActivity /> : activeTab === 'jellyfin-collections' ? <JellyfinCollectionsLibrary catalogs={jellyfinCollections} homeRows={homeRows} onOpen={openJellyfinCollection} onAddToHome={addJellyfinCollectionToHome} /> : <>
         {/* Hero banner config */}
         {activeTab === 'shelves' && (
           <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-3.5">
@@ -3913,7 +4033,7 @@ function CompactShelfRow({
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`group grid grid-cols-[36px_88px_minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border px-3 py-2.5 transition-all sm:grid-cols-[36px_104px_minmax(0,1fr)_auto] md:grid-cols-[36px_104px_minmax(0,1fr)_150px_48px_40px] ${isDragging ? 'z-50 border-accent/35 bg-surface-elevated shadow-2xl' : 'border-white/[0.07] bg-white/[0.025] hover:border-white/[0.13] hover:bg-white/[0.045]'} ${!row.enabled ? 'opacity-60' : ''}`}
+      className={`library-shelf-row group grid grid-cols-[36px_88px_minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border px-3 py-2.5 transition-all sm:grid-cols-[36px_104px_minmax(0,1fr)_auto] md:grid-cols-[36px_104px_minmax(0,1fr)_150px_48px_40px] ${isDragging ? 'z-50 border-accent/35 bg-surface-elevated shadow-2xl' : 'border-white/[0.07] bg-white/[0.025] hover:border-white/[0.13] hover:bg-white/[0.045]'} ${!row.enabled ? 'opacity-60' : ''}`}
     >
       <button
         {...(movable ? attributes : {})}

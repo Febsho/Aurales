@@ -92,6 +92,7 @@ test('landscape touch player keeps transport and track controls inside the safe 
   const layout = await controls.evaluate((element) => {
     const row = element.querySelector<HTMLElement>('.inapp-player-control-row')!
     const transport = row.querySelector<HTMLElement>('.inapp-player-transport')!
+    const options = row.querySelector<HTMLElement>('.inapp-player-options')!
     return {
       viewportWidth: document.documentElement.clientWidth,
       viewportHeight: document.documentElement.clientHeight,
@@ -99,17 +100,19 @@ test('landscape touch player keeps transport and track controls inside the safe 
       display: getComputedStyle(element).display,
       rowDisplay: getComputedStyle(row).display,
       transport: transport.getBoundingClientRect().toJSON(),
+      options: options.getBoundingClientRect().toJSON(),
       controlsBounds: Array.from(row.querySelectorAll('button, select, input')).map((control) => {
         const rect = control.getBoundingClientRect()
         return { left: rect.left, right: rect.right, width: rect.width, height: rect.height }
       }),
     }
   })
-  expect(layout.display).toBe('block')
-  expect(layout.rowDisplay).toBe('contents')
+  expect(layout.display).toBe('flex')
+  expect(layout.rowDisplay).toBe('flex')
   expect(layout.controls.height).toBeLessThanOrEqual(layout.viewportHeight + 1)
-  expect(Math.abs(layout.transport.x + layout.transport.width / 2 - layout.viewportWidth / 2)).toBeLessThanOrEqual(2)
-  expect(Math.abs(layout.transport.y + layout.transport.height / 2 - layout.viewportHeight / 2)).toBeLessThanOrEqual(2)
+  expect(layout.transport.y + layout.transport.height).toBeLessThanOrEqual(layout.viewportHeight + 1)
+  expect(layout.options.y + layout.options.height).toBeLessThanOrEqual(layout.viewportHeight + 1)
+  expect(layout.options.y).toBeGreaterThanOrEqual(layout.transport.y + layout.transport.height - 1)
   expect(layout.controlsBounds.every((control) => control.left >= -1 && control.right <= layout.viewportWidth + 1), JSON.stringify(layout.controlsBounds)).toBe(true)
 
   await page.locator('video').evaluate((element: HTMLVideoElement) => {

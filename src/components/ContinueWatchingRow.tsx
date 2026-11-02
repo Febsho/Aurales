@@ -8,6 +8,7 @@ import { getPMDBPlaybackProgress } from '../services/pmdb'
 import { getMdblistUpNext, getMdblistPlaybackProgress, hasMdblistOAuth } from '../services/mdblist'
 import { getAniListContinueWatching } from '../services/anilist'
 import { tmdbProvider } from '../services/tmdb'
+import { setJellyfinItemWatched } from '../services/serverIntegrations'
 import { compareTimestampsNewestFirst } from '../services/timestamps'
 // Lazy: StreamSelector pulls in the full player stack; only load it on demand
 const StreamSelector = lazy(() => import('./StreamSelector'))
@@ -35,7 +36,7 @@ type SourceType = ContinueWatchingSource
 
 const PROGRESS_SOURCE_OPTIONS: { id: ProgressSelection; label: string }[] = [
   { id: 'all', label: 'Every service' },
-  { id: 'local', label: 'Local' },
+  { id: 'local', label: 'Local + Jellyfin' },
   { id: 'trakt', label: 'Trakt' },
   { id: 'simkl', label: 'Simkl' },
   { id: 'anilist', label: 'AniList' },
@@ -70,7 +71,7 @@ function continueContentFingerprint(items: ContinueWatchingItem[]): string {
     item.poster, item.backdrop, item.season, item.episode,
     item.progressSeconds, item.durationSeconds, item.progressPct,
     item.imdbId, item.tmdbId, item.malId, item.anilistId,
-    item.sourceConnectionId, item.sourceItemId, item.updatedAt,
+    item.sourceConnectionId, item.sourceItemId, item.sourceSeriesItemId, item.updatedAt,
   ]))
 }
 
@@ -160,6 +161,9 @@ function serverContinueWatchingItem(item: ServerCatalogItem): ContinueWatchingIt
     anilistId: item.anilistId != null ? Number(item.anilistId) || undefined : undefined,
     sourceConnectionId: item.sourceConnectionId,
     sourceItemId: item.sourceItemId,
+    sourceSeriesItemId: typeof (item.raw as Record<string, unknown>).SeriesId === 'string'
+      ? String((item.raw as Record<string, unknown>).SeriesId)
+      : undefined,
     updatedAt: typeof raw.UserData?.LastPlayedDate === 'string' ? raw.UserData.LastPlayedDate : new Date(0).toISOString(),
   }
 }
@@ -180,7 +184,11 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   useEffect(() => {
     const refresh = () => setRemoteRefreshRevision((revision) => revision + 1)
     window.addEventListener('aurales:mdblist-auth-changed', refresh)
-    return () => window.removeEventListener('aurales:mdblist-auth-changed', refresh)
+    window.addEventListener('aurales:server-catalogs-changed', refresh)
+    return () => {
+      window.removeEventListener('aurales:mdblist-auth-changed', refresh)
+      window.removeEventListener('aurales:server-catalogs-changed', refresh)
+    }
   }, [])
   const [streamSelectorData, setStreamSelectorData] = useState<{
     mediaId: string
@@ -190,6 +198,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     seasonEpisode?: { season: number; episode: number }
     startTime?: number
     tmdbId?: number
+    imdbId?: string
     malId?: number
     anilistId?: number
     sourceConnectionId?: string
@@ -747,9 +756,12 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined,
     startTime: Number.isFinite(item.progressSeconds) && item.progressSeconds > 0 ? item.progressSeconds : undefined,
     tmdbId: item.tmdbId,
+    imdbId: item.imdbId,
     malId: item.malId,
     anilistId: item.anilistId,
     sourceConnectionId: item.sourceConnectionId,
+    // Continue Watching entries are episode ids on Jellyfin; using SeriesId
+    // asks PlaybackInfo for a folder instead of the actual episode stream.
     sourceItemId: item.sourceItemId,
   })
 
@@ -1014,6 +1026,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             seasonEpisode={streamSelectorData.seasonEpisode}
             startTime={streamSelectorData.startTime}
             tmdbId={streamSelectorData.tmdbId}
+            imdbId={streamSelectorData.imdbId}
             malId={streamSelectorData.malId}
             anilistId={streamSelectorData.anilistId}
             sourceConnectionId={streamSelectorData.sourceConnectionId}
@@ -1052,6 +1065,15 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 poster: item.poster,
                 backdrop: item.backdrop,
                 title: item.title,
+                provider: item.sourceConnectionId ? 'jellyfin' : undefined,
+                sourceConnectionId: item.sourceConnectionId,
+                sourceItemId: item.sourceSeriesItemId || item.sourceItemId,
+                imdbId: item.imdbId,
+                tmdbId: item.tmdbId,
+                malId: item.malId,
+                anilistId: item.anilistId,
+                season: item.season,
+                episode: item.episode,
               },
             })
             setCwMenu(null)
@@ -1065,6 +1087,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
               seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined,
               startTime: Number.isFinite(item.progressSeconds) && item.progressSeconds > 0 ? item.progressSeconds : undefined,
               tmdbId: item.tmdbId,
+              imdbId: item.imdbId,
               malId: item.malId,
               anilistId: item.anilistId,
               sourceConnectionId: item.sourceConnectionId,
@@ -1073,10 +1096,23 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
             setCwMenu(null)
           }}
           onRestart={(item) => {
-            setStreamSelectorData({ mediaId: item.mediaId, mediaType: item.mediaType, title: item.title, artwork: { poster: item.poster, backdrop: item.backdrop }, seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined, tmdbId: item.tmdbId, malId: item.malId, anilistId: item.anilistId, sourceConnectionId: item.sourceConnectionId, sourceItemId: item.sourceItemId })
+            setStreamSelectorData({ mediaId: item.mediaId, mediaType: item.mediaType, title: item.title, artwork: { poster: item.poster, backdrop: item.backdrop }, seasonEpisode: item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined, tmdbId: item.tmdbId, imdbId: item.imdbId, malId: item.malId, anilistId: item.anilistId, sourceConnectionId: item.sourceConnectionId, sourceItemId: item.sourceItemId })
             setCwMenu(null)
           }}
-          onMarkWatched={(item) => {
+          onMarkWatched={async (item) => {
+            if (item.sourceConnectionId && item.sourceItemId) {
+              try {
+                await setJellyfinItemWatched(
+                  item.sourceConnectionId,
+                  item.sourceItemId,
+                  true,
+                  item.season != null && item.episode != null ? { season: item.season, episode: item.episode } : undefined,
+                )
+              } catch (error) {
+                setError(error instanceof Error ? error.message : String(error))
+                return
+              }
+            }
             if ((item.progressSource || source) === 'local') {
               const key = item.season != null && item.episode != null ? `${item.mediaId}:${item.season}:${item.episode}` : item.mediaId
               setWatchProgress(key, { id: key, mediaId: item.mediaId, mediaType: item.mediaType, season: item.season, episode: item.episode, title: item.title, poster: item.poster, backdrop: item.backdrop, progressSeconds: item.durationSeconds, durationSeconds: item.durationSeconds, completed: true, updatedAt: new Date().toISOString(), imdbId: item.imdbId, tmdbId: item.tmdbId, malId: item.malId, anilistId: item.anilistId })

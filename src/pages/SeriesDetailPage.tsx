@@ -36,6 +36,7 @@ import { getMdblistPlaybackProgress, hasMdblistOAuth } from '../services/mdblist
 import { getAniListContinueWatching } from '../services/anilist'
 import { batchIsWatchedFromProviders, type WatchedLookupItem } from '../services/watchedStatus'
 import { useContextMenu } from '../hooks/useContextMenu'
+import { useLongPressContextMenu } from '../hooks/useLongPressContextMenu'
 import { resolveAppMetadata, type AppMediaItem } from '../services/metadata'
 import { resolveAnimeMetadata } from '../services/metadata/animeResolver'
 import { debugAnimeMapping, validateAnimeTvdbStructure } from '../services/metadata/animeStructureValidator'
@@ -59,6 +60,7 @@ import { seriesPrimaryLabel } from '../services/detailPresentation'
 import { isValidDateKey, localDateKey } from '../services/localDate'
 import { withRequestTimeout } from '../services/network/timeout'
 import { getPlatformCapabilities } from '../platform/capabilities'
+import { getServerEpisodes, listServerConnections, searchServerCatalogs } from '../services/serverIntegrations'
 
 function shouldUseTvdbAnimeSeasonStructure(): boolean {
   // Web installs keep preferences per origin/device. Keep anime season layout
@@ -242,13 +244,24 @@ interface LocationState {
   title?: string
   year?: number
   rating?: number
+  criticRating?: number
+  originalTitle?: string
+  certification?: string
+  tagline?: string
+  runtime?: number
+  releaseDate?: string
   overview?: string
+  genres?: string[]
+  studios?: string[]
+  people?: Record<string, unknown>[]
   imdbId?: string
   tmdbId?: string | number
   tvdbId?: string | number
   malId?: string | number
   anilistId?: string | number
   isAnime?: boolean
+  season?: number
+  episode?: number
   addonUrl?: string
   provider?: string
   sourceAddonId?: string
@@ -563,24 +576,21 @@ function addonVideosToSeason(meta: Record<string, unknown>, seasonNum: number): 
 }
 
 function processSeasons(seasons: ShowDetails['seasons'], isAnime = false): ShowDetails['seasons'] {
-  const now = new Date()
-  const today = localDateKey(now)
   const settings = useAppStore.getState()
+  const today = localDateKey()
 
   const hasEpisodeCounts = seasons.some((s) => s.episodeCount > 0)
 
   return seasons
     .filter((s) => {
       if (isAnime && !settings.includeAnimeSpecials && s.seasonNumber === 0) return false
-      // A future-dated season is announced but not watchable yet. Do not put
-      // it in the selector until its release date arrives.
       const dateKey = s.airDate?.slice(0, 10)
-      if (dateKey && isValidDateKey(dateKey) && dateKey > today) return false
+      const announcedFutureSeason = Boolean(dateKey && isValidDateKey(dateKey) && dateKey > today)
       // TVDB frequently uses 0 when an anime season's episode summary has not
       // been fetched yet. Keep that season shell visible; its real count and
-      // episodes are filled when selected/background-prefetched. Ordinary
-      // series retain the established empty-season filtering behavior.
-      if (!isAnime && hasEpisodeCounts && s.episodeCount === 0) return false
+      // episodes are filled when selected/background-prefetched. Keep future
+      // announced seasons too, even when metadata has no episode count yet.
+      if (!isAnime && hasEpisodeCounts && s.episodeCount === 0 && !announcedFutureSeason) return false
       return true
     })
     .map((s) => {
@@ -682,6 +692,7 @@ export default function SeriesDetailPage() {
   const autoPlayHandledRef = useRef(false)
   const detailStreamPreloadRef = useRef<string | null>(null)
   const [watchedEpisodes, setWatchedEpisodes] = useState<Set<string>>(new Set())
+  const [jellyfinWatchedEpisodes, setJellyfinWatchedEpisodes] = useState<Set<string>>(new Set())
   const fetchedSeasonRef = useRef<string | null>(null)
   const seasonRequestsRef = useRef(new Map<string, Promise<SeasonDetails | null>>())
   const detailMetricPrefixRef = useRef('')
@@ -1047,6 +1058,8 @@ export default function SeriesDetailPage() {
   const removeWatchProgress = useAppStore((s) => s.removeWatchProgress)
   const watchedCheckmarkSources = useAppStore((s) => s.watchedCheckmarkSources)
   const showCtxMenu = useContextMenu((s) => s.show)
+  const longPressContextActionRef = useRef<(event: React.MouseEvent) => void>(() => undefined)
+  const longPressContextHandlers = useLongPressContextMenu((event) => longPressContextActionRef.current(event))
   const blurSpoilers = useAppStore((s) => s.blurSpoilers)
   const blurThumbnails = useAppStore((s) => s.blurThumbnails)
   const blurTitles = useAppStore((s) => s.blurTitles)
@@ -1179,12 +1192,124 @@ export default function SeriesDetailPage() {
         return
       }
 
+      // Jellyfin already owns the authoritative series and episode records.
+      // Use its cached catalog directly when the route came from that server,
+      // including titles with no TMDB/TVDB mapping and no addon metadata.
+      if (state.provider === 'jellyfin' && state.sourceConnectionId && state.sourceItemId) {
+        try {
+          const { getServerItem, getServerEpisodes, jellyfinRemoteTrailers } = await import('../services/serverIntegrations')
+          const requestedItem = await getServerItem(state.sourceConnectionId, state.sourceItemId)
+          const requestedRaw = (requestedItem?.raw || {}) as Record<string, unknown>
+          // Next Up and server views can route an episode card here. Resolve
+          // its parent series before loading the series details and episode list.
+          const seriesItemId = requestedItem?.mediaType === 'episode' && typeof requestedRaw.SeriesId === 'string'
+            ? requestedRaw.SeriesId
+            : state.sourceItemId
+          const [seriesItems, episodeItems] = await Promise.all([
+            seriesItemId === state.sourceItemId ? Promise.resolve(requestedItem) : getServerItem(state.sourceConnectionId, seriesItemId),
+            getServerEpisodes(state.sourceConnectionId, seriesItemId, 50000),
+          ])
+          if (cancelled) return
+          const serverSeries = seriesItems
+          const raw = (serverSeries?.raw || {}) as Record<string, unknown>
+          const rawEpisodes = episodeItems.filter((item) => {
+            const metadata = item.raw as Record<string, unknown>
+            return metadata.SeriesId === seriesItemId || item.parentSourceItemId === seriesItemId
+          })
+          const grouped = new Map<number, typeof rawEpisodes>()
+          for (const item of rawEpisodes) {
+            const season = item.season ?? 0
+            grouped.set(season, [...(grouped.get(season) || []), item])
+          }
+          const seasons = [...grouped.entries()].sort(([left], [right]) => left - right).map(([seasonNumber, items]) => ({
+            seasonNumber,
+            name: seasonNumber === 0 ? 'Specials' : `Season ${seasonNumber}`,
+            episodeCount: items.length,
+          }))
+          const serverShow: ShowDetails = applyShowArt({
+            id: id || state.sourceItemId,
+            title: serverSeries?.title || state.title || String(raw.Name || 'Untitled'),
+            originalTitle: typeof raw.OriginalTitle === 'string' ? raw.OriginalTitle : undefined,
+            year: serverSeries?.year ?? state.year,
+            firstAirDate: typeof raw.PremiereDate === 'string' ? raw.PremiereDate : undefined,
+            overview: serverSeries?.overview || state.overview,
+            tagline: serverSeries?.tagline,
+            rating: serverSeries?.rating ?? state.rating,
+            criticRating: serverSeries?.criticRating ?? state.criticRating,
+            genres: serverSeries?.genres || [],
+            studios: serverSeries?.studios || state.studios || [],
+            poster: serverSeries?.poster || state.poster,
+            backdrop: serverSeries?.backdrop || state.backdrop,
+            certification: serverSeries?.certification,
+            originalLanguage: typeof raw.OriginalLanguage === 'string' ? raw.OriginalLanguage : undefined,
+            originCountry: Array.isArray(raw.ProductionLocations) ? raw.ProductionLocations.filter((country): country is string => typeof country === 'string') : undefined,
+            seasons,
+            numberOfSeasons: seasons.filter((season) => season.seasonNumber > 0).length,
+            numberOfEpisodes: rawEpisodes.length,
+            cast: (serverSeries?.people || []).filter((person) => String(person.Type || '').toLowerCase() === 'actor').map((person, index) => ({ id: String(person.Id || `jellyfin-cast-${index}`), personProvider: 'addon' as const, name: String(person.Name || 'Unknown'), character: String(person.Role || '') })),
+            crew: (serverSeries?.people || []).filter((person) => String(person.Type || '').toLowerCase() !== 'actor').map((person, index) => ({ id: String(person.Id || `jellyfin-crew-${index}`), personProvider: 'addon' as const, name: String(person.Name || 'Unknown'), job: String(person.Type || 'Crew'), department: String(person.Type || 'Crew') })),
+            recommendations: [], trailers: jellyfinRemoteTrailers(raw),
+            imdbId: serverSeries?.imdbId || state.imdbId,
+            tmdbId: serverSeries?.tmdbId || state.tmdbId,
+            tvdbId: serverSeries?.tvdbId || state.tvdbId,
+            malId: serverSeries?.malId || state.malId,
+            anilistId: serverSeries?.anilistId || state.anilistId,
+          })
+          const nextSeasonCache: Record<number, SeasonDetails> = {}
+          for (const [seasonNumber, items] of grouped) {
+            nextSeasonCache[seasonNumber] = {
+              seasonNumber,
+              name: seasonNumber === 0 ? 'Specials' : `Season ${seasonNumber}`,
+              episodes: items.sort((left, right) => (left.episode || 0) - (right.episode || 0)).map((item) => {
+                const metadata = item.raw as Record<string, unknown>
+                const ticks = Number(metadata.RunTimeTicks)
+                return {
+                  id: item.sourceItemId,
+                  episodeNumber: item.episode || 0,
+                  seasonNumber,
+                  name: item.title,
+                  overview: item.overview,
+                  airDate: typeof metadata.PremiereDate === 'string' ? metadata.PremiereDate : undefined,
+                  runtime: Number.isFinite(ticks) && ticks > 0 ? Math.round(ticks / 600000000) : undefined,
+                  still: item.poster,
+                  imdbId: item.imdbId,
+                  tmdbId: item.tmdbId,
+                  tvdbId: item.tvdbId,
+                  rating: item.rating,
+                }
+              }),
+            }
+          }
+          const preferredSeason = resumeProgress?.season ?? state.season
+          const selected = preferredSeason != null && nextSeasonCache[preferredSeason]
+            ? preferredSeason
+            : seasons.find((season) => season.seasonNumber > 0)?.seasonNumber ?? seasons[0]?.seasonNumber ?? null
+          setShow(serverShow)
+          showRef.current = serverShow
+          setSeasonCache(nextSeasonCache)
+          setSelectedSeason(selected)
+          setDetailResolved(true)
+          setMetadataStatus('resolved')
+          setLoading(false)
+          if (seasons.length === 0) setSeasonError(null)
+          return
+        } catch (error) {
+          console.warn('[SeriesDetailPage] Jellyfin catalog details unavailable:', error)
+          if (cancelled) return
+        }
+      }
+
       const immediateShow: ShowDetails | null = state.title ? applyShowArt(applyInitialArtworkPreference({
         id: id || 'unknown',
         title: state.title,
+        originalTitle: state.originalTitle,
         year: state.year,
+        firstAirDate: state.releaseDate,
         overview: state.overview,
+        tagline: state.tagline,
         rating: state.rating,
+        criticRating: state.criticRating,
+        studios: state.studios || [],
         poster: state.poster,
         backdrop: state.backdrop,
         logo: state.logo,
@@ -1194,7 +1319,7 @@ export default function SeriesDetailPage() {
         malId: cleanId(state.malId),
         anilistId: cleanId(state.anilistId),
         isAnime: routeIsAnime,
-        genres: [],
+        genres: state.genres || [],
         seasons: [],
         cast: [],
         crew: [],
@@ -2480,6 +2605,15 @@ export default function SeriesDetailPage() {
     state.anilistId,
     state.isAnime,
     state.addonMeta,
+    state.criticRating,
+    state.genres,
+    state.originalTitle,
+    state.releaseDate,
+    state.season,
+    state.sourceConnectionId,
+    state.sourceItemId,
+    state.studios,
+    state.tagline,
     state.sourceAddonId,
     state.sourceAddonItemId,
     addons,
@@ -2550,6 +2684,12 @@ export default function SeriesDetailPage() {
         .filter(isReleasedEpisode)
         .map((episode) => applyEpisodeArt(episode, { ...show, season: seasonNum })),
     })
+
+    const seasonInfo = show.seasons.find((season) => season.seasonNumber === seasonNum)
+    const seasonAirDate = seasonInfo?.airDate?.slice(0, 10)
+    if (seasonAirDate && isValidDateKey(seasonAirDate) && seasonAirDate > localDateKey()) {
+      return { seasonNumber: seasonNum, name: seasonInfo?.name || `Season ${seasonNum}`, overview: seasonInfo?.overview, poster: seasonInfo?.poster, episodes: [] }
+    }
 
     const tmdbId = show.tmdbId ? String(show.tmdbId).replace(/^[a-z_]+[-:]/i, '') : (id && /^(?:tmdb)[-:]/i.test(id) ? id.replace(/^[a-z_]+[-:]/i, '') : null)
     const tvdbId = show.tvdbId ? String(show.tvdbId).replace(/^[a-z_]+[-:]/i, '') : (id && /^(?:tvdb)[-:]/i.test(id) ? id.replace(/^[a-z_]+[-:]/i, '') : null)
@@ -2793,9 +2933,9 @@ export default function SeriesDetailPage() {
       return applyArt(addonVideosToSeason(addonMeta, seasonNum))
     }
 
-    const seasonInfo = show.seasons.find(s => s.seasonNumber === seasonNum)
-    if (seasonInfo && seasonInfo.episodeCount > 0) {
-      const episodes = Array.from({ length: seasonInfo.episodeCount }, (_, i) => ({
+    const fallbackSeasonInfo = show.seasons.find(s => s.seasonNumber === seasonNum)
+    if (fallbackSeasonInfo && fallbackSeasonInfo.episodeCount > 0) {
+      const episodes = Array.from({ length: fallbackSeasonInfo.episodeCount }, (_, i) => ({
         id: `${seasonNum}-${i + 1}`,
         episodeNumber: i + 1,
         seasonNumber: seasonNum,
@@ -2803,7 +2943,7 @@ export default function SeriesDetailPage() {
         debugSource: 'ui-generated',
         debugResolverStep: 'fetchSeason.seasonInfoFallback',
       }))
-      return applyArt({ seasonNumber: seasonNum, name: seasonInfo.name, episodes })
+      return applyArt({ seasonNumber: seasonNum, name: fallbackSeasonInfo.name, episodes })
     }
 
     return applyArt(MOCK_SEASON)
@@ -2878,7 +3018,12 @@ export default function SeriesDetailPage() {
     fetchSeason(selectedSeason).then((data) => {
       if (cancelled) return
       if (!data || data.episodes.length === 0) {
-        if (data) removeUnavailableSeason(selectedSeason)
+        const seasonInfo = show.seasons.find((season) => season.seasonNumber === selectedSeason)
+        const airDate = seasonInfo?.airDate?.slice(0, 10)
+        const isFutureSeason = Boolean(airDate && isValidDateKey(airDate) && airDate > localDateKey())
+        if (isFutureSeason) {
+          setSeasonCache((prev) => ({ ...prev, [selectedSeason]: data || { seasonNumber: selectedSeason, name: seasonInfo?.name || `Season ${selectedSeason}`, episodes: [] } }))
+        } else if (data) removeUnavailableSeason(selectedSeason)
         else setSeasonError(selectedSeason)
         return
       }
@@ -2900,7 +3045,12 @@ export default function SeriesDetailPage() {
     const activeSeason = selectedSeason
     const uncachedSeasons = showSeasons
       .map(s => s.seasonNumber)
-      .filter(num => num !== activeSeason && seasonCacheRef.current[num] === undefined)
+      .filter((num) => {
+        if (num === activeSeason || seasonCacheRef.current[num] !== undefined) return false
+        const season = showSeasons.find((entry) => entry.seasonNumber === num)
+        const airDate = season?.airDate?.slice(0, 10)
+        return !(airDate && isValidDateKey(airDate) && airDate > localDateKey())
+      })
       .sort((left, right) => Math.abs(left - activeSeason) - Math.abs(right - activeSeason))
 
     if (uncachedSeasons.length === 0) return
@@ -3011,15 +3161,24 @@ export default function SeriesDetailPage() {
     return () => { cancelled = true }
   }, [showId, showImdbId, showTitle, selectedSeason, seasonData])
 
-  // Check watched status — uses refs for watchProgress/completedIds to avoid re-triggering on every progress update
+  const completedEpisodeSignature = useMemo(() => [...watchedProgress.values()]
+    .filter((progress) => progress.completed && progress.mediaId === show?.id && progress.season != null && progress.episode != null)
+    .map((progress) => `${progress.season}:${progress.episode}`)
+    .sort()
+    .join(','), [watchedProgress, show?.id])
+
+  // Recheck when an episode crosses into completed state, and merge Jellyfin's
+  // own UserData Played marks when this detail page came from a server item.
   useEffect(() => {
     if (!show || selectedSeason === null) {
       setWatchedEpisodes(new Set())
+      setJellyfinWatchedEpisodes(new Set())
       return
     }
     const visibleSeason = seasonData
     if (!visibleSeason) return
     let cancelled = false
+    setJellyfinWatchedEpisodes(new Set())
 
     const toLookup = (episode: { seasonNumber: number; episodeNumber: number; absoluteEpisodeNumber?: number; debugOriginalAbsoluteNumber?: number; tmdbId?: string | number; tvdbId?: string | number }): WatchedLookupItem => ({
       id: show.id,
@@ -3042,23 +3201,58 @@ export default function SeriesDetailPage() {
 
     // Check visible season first via batch
     const visibleLookups = visibleSeason.episodes.map(toLookup)
-    batchIsWatchedFromProviders(visibleLookups, watchedCheckmarkSources, completedIdsRef.current).then((watchedKeys) => {
+    const localAndProviderMarks = batchIsWatchedFromProviders(visibleLookups, watchedCheckmarkSources, completedIdsRef.current)
+    const jellyfinMarks = (async () => {
+      let connectionId = state.sourceConnectionId
+      let seriesItemId = state.sourceItemId
+      // Metadata/addon detail routes often have no Jellyfin source id. Resolve
+      // the matching server series so its UserData.Played marks still appear
+      // on episode thumbnails.
+      if (!connectionId || !seriesItemId) {
+        const connections = await listServerConnections()
+        if (!connections.some((connection) => connection.enabled && connection.kind === 'jellyfin')) return new Set<string>()
+        const candidates = (await searchServerCatalogs(show.title)).filter((item) => item.type === 'series' && item.sourceConnectionId && item.sourceItemId)
+        const sameId = (key: 'imdbId' | 'tmdbId' | 'tvdbId') => {
+          const value = show[key]
+          if (value == null || value === '') return undefined
+          const normalized = String(value).replace(/^tt/i, '').toLowerCase()
+          return candidates.find((item) => item[key] != null && String(item[key]).replace(/^tt/i, '').toLowerCase() === normalized)
+        }
+        const normalizedTitle = show.title.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+        const match = sameId('imdbId') || sameId('tmdbId') || sameId('tvdbId') || candidates.find((item) =>
+          item.title.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '') === normalizedTitle
+        )
+        connectionId = match?.sourceConnectionId
+        seriesItemId = match?.sourceItemId
+      }
+      if (!connectionId || !seriesItemId) return new Set<string>()
+      const episodes = await getServerEpisodes(connectionId, seriesItemId)
+      return new Set(episodes
+        .filter((episode) => episode.raw.UserData && typeof episode.raw.UserData === 'object' && (episode.raw.UserData as Record<string, unknown>).Played === true)
+        .map((episode) => `${episode.season}:${episode.episode}`))
+    })()
+    Promise.all([localAndProviderMarks, jellyfinMarks]).then(([watchedKeys, jellyfinWatchedKeys]) => {
       if (cancelled) return
+      setJellyfinWatchedEpisodes(jellyfinWatchedKeys)
       setWatchedEpisodes((prev) => {
         const next = new Set(prev)
+        for (const key of jellyfinWatchedKeys) next.add(key)
         for (const ep of visibleSeason.episodes) {
           const k = `${ep.seasonNumber}:${ep.episodeNumber}`
-          if (watchedKeys.has(k)) next.add(k)
+          if (watchedKeys.has(k) || jellyfinWatchedKeys.has(k)) next.add(k)
           else next.delete(k)
         }
         return next
       })
 
     }).catch(() => {
-      if (!cancelled) setWatchedEpisodes(new Set())
+      if (!cancelled) {
+        setWatchedEpisodes(new Set())
+        setJellyfinWatchedEpisodes(new Set())
+      }
     })
     return () => { cancelled = true }
-  }, [show, selectedSeason, seasonData, watchedCheckmarkSources, isAnime, appSeasonCounts])
+  }, [show, selectedSeason, seasonData, watchedCheckmarkSources, isAnime, appSeasonCounts, completedEpisodeSignature, state.sourceConnectionId, state.sourceItemId])
 
   useEffect(() => {
     if (!show || show.recommendations.length > 0) return
@@ -3267,7 +3461,13 @@ export default function SeriesDetailPage() {
   const orderedLoadedEpisodes = [...allEpisodes].sort((left, right) =>
     left.seasonNumber - right.seasonNumber || left.episodeNumber - right.episodeNumber
   )
-  const nextUnwatched = orderedLoadedEpisodes.find((episode) => !watchedEpisodes.has(`${episode.seasonNumber}:${episode.episodeNumber}`))
+  const hasRegularEpisodes = orderedLoadedEpisodes.some((episode) => episode.seasonNumber > 0)
+  const nextUnwatched = orderedLoadedEpisodes.find((episode) =>
+    (!hasRegularEpisodes || episode.seasonNumber > 0)
+      && !watchedEpisodes.has(`${episode.seasonNumber}:${episode.episodeNumber}`)
+      && !jellyfinWatchedEpisodes.has(`${episode.seasonNumber}:${episode.episodeNumber}`)
+      && (!episode.airDate || episode.airDate <= new Date().toISOString().slice(0, 10))
+  )
   const defaultEpisode = activeResume
     ? { season: activeResume.season, episode: activeResume.episode }
     : nextUnwatched
@@ -3277,7 +3477,7 @@ export default function SeriesDetailPage() {
         : null
   const allEpisodesWatched = allEpisodes.length > 0
     && show.seasons.every((season) => seasonCache[season.seasonNumber] !== undefined)
-    && allEpisodes.every((episode) => watchedEpisodes.has(`${episode.seasonNumber}:${episode.episodeNumber}`))
+    && allEpisodes.every((episode) => watchedEpisodes.has(`${episode.seasonNumber}:${episode.episodeNumber}`) || jellyfinWatchedEpisodes.has(`${episode.seasonNumber}:${episode.episodeNumber}`))
   const latestSeasonAirDate = show.seasons
     .map((season) => season.airDate)
     .filter((date): date is string => Boolean(date))
@@ -3293,6 +3493,38 @@ export default function SeriesDetailPage() {
     ? () => handlePlayEpisode(defaultEpisode.season, defaultEpisode.episode)
     : undefined
   const visibleSeasonData = seasonData || presentedSeasonData
+
+  const handleEpisodeElementContextMenu = (event: React.MouseEvent) => {
+    event.preventDefault()
+    const element = event.currentTarget as HTMLElement
+    const kind = element.dataset.contextKind
+    const seasonNumber = Number(element.dataset.contextSeason)
+    if (!show || !Number.isFinite(seasonNumber)) return
+    const searchResult = {
+      id: show.id, title: show.title, type: 'series' as const, year: show.year,
+      poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId,
+      tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId,
+      anilistId: show.anilistId, isAnime, provider: state.provider || 'tmdb',
+      sourceConnectionId: state.sourceConnectionId, sourceItemId: state.sourceItemId,
+    }
+    if (kind === 'season') {
+      showCtxMenu(event.clientX, event.clientY, {
+        kind: 'season', item: searchResult, seasonNumber,
+        episodeCount: Number(element.dataset.contextEpisodeCount) || 0,
+        showImdbId: show.imdbId, appSeasonCounts,
+      })
+      return
+    }
+    const episodeNumber = Number(element.dataset.contextEpisode)
+    const episode = allEpisodes.find((candidate) => candidate.seasonNumber === seasonNumber && candidate.episodeNumber === episodeNumber)
+    if (!episode) return
+    showCtxMenu(event.clientX, event.clientY, {
+      kind: 'episode', item: searchResult, episode, seasonNumber,
+      showImdbId: show.imdbId, appSeasonCounts,
+      onSelectSource: () => handlePlayEpisode(seasonNumber, episodeNumber, true),
+    })
+  }
+  longPressContextActionRef.current = handleEpisodeElementContextMenu
 
   return (
     <div className={`detail-page ${isAnime ? 'detail-page--anime' : 'detail-page--series'} min-h-screen bg-black pb-12`}>
@@ -3423,12 +3655,16 @@ export default function SeriesDetailPage() {
               imdbId={show.imdbId}
               anilistId={show.anilistId}
               malId={show.malId}
+              sourceConnectionId={state.sourceConnectionId}
+              sourceItemId={state.sourceItemId}
               isAnime={isAnime}
               episodes={allEpisodes.map((episode) => ({ season: episode.seasonNumber, episode: episode.episodeNumber, absoluteEpisode: episode.absoluteEpisodeNumber ?? episode.debugOriginalAbsoluteNumber }))}
               watched={allEpisodesWatched}
               appSeasonCounts={appSeasonCounts}
               onMarked={() => {
-                setWatchedEpisodes(new Set(allEpisodes.map((episode) => `${episode.seasonNumber}:${episode.episodeNumber}`)))
+                const watchedKeys = new Set(allEpisodes.map((episode) => `${episode.seasonNumber}:${episode.episodeNumber}`))
+                setWatchedEpisodes(watchedKeys)
+                setJellyfinWatchedEpisodes(watchedKeys)
                 setWatchProgressBatch(allEpisodes.map((episode) => {
                   const id = `${show.id}:${episode.seasonNumber}:${episode.episodeNumber}`
                   return { id, progress: {
@@ -3453,6 +3689,7 @@ export default function SeriesDetailPage() {
               }}
               onUnmarked={() => {
                 setWatchedEpisodes(new Set())
+                setJellyfinWatchedEpisodes(new Set())
                 removeWatchProgress([show.id, show.imdbId || '', String(show.tmdbId || ''), show.tmdbId ? `tmdb-${show.tmdbId}` : '', show.malId ? `mal-${show.malId}` : '', show.anilistId ? `anilist-${show.anilistId}` : ''])
               }}
             />
@@ -3530,14 +3767,14 @@ export default function SeriesDetailPage() {
               <button
                 key={season.seasonNumber}
                 data-season={season.seasonNumber}
+                data-context-kind="season"
+                data-context-season={season.seasonNumber}
+                data-context-episode-count={season.episodeCount}
                 data-detail-focus={`season:${season.seasonNumber}`}
                 onFocus={() => rememberDetailView(detailViewKey, { focusedTarget: `season:${season.seasonNumber}` })}
                 onClick={() => selectSeason(season.seasonNumber)}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, isAnime, provider: 'tmdb' }
-                  showCtxMenu(e.clientX, e.clientY, { kind: 'season', item: searchResult, seasonNumber: season.seasonNumber, episodeCount: season.episodeCount, showImdbId: show.imdbId, appSeasonCounts })
-                }}
+                onContextMenu={handleEpisodeElementContextMenu}
+                {...longPressContextHandlers}
                 className={[
                   'flex-shrink-0 px-7 py-3.5 rounded-2xl text-base font-semibold transition-all duration-300 cursor-pointer focus-ring',
                   selectedSeason === season.seasonNumber
@@ -3561,6 +3798,18 @@ export default function SeriesDetailPage() {
             </button>
           )}
         </div>
+
+        {visibleSeasonData && visibleSeasonData.episodes.length === 0 && (
+          <div className="mb-6 rounded-2xl border border-white/10 bg-white/[.035] px-5 py-4 text-sm text-white/60">
+            {(() => {
+              const season = show.seasons.find((entry) => entry.seasonNumber === selectedSeason)
+              const airDate = season?.airDate?.slice(0, 10)
+              return airDate && isValidDateKey(airDate) && airDate > localDateKey()
+                ? `${season?.name || 'This season'} has not aired yet. It will appear here when episodes are available.`
+                : 'No episodes are available for this season yet.'
+            })()}
+          </div>
+        )}
 
         {visibleSeasonData && (
           <div className="episode-rail relative">
@@ -3599,24 +3848,15 @@ export default function SeriesDetailPage() {
                     key={ep.id}
                     role="button"
                     tabIndex={0}
+                    data-context-kind="episode"
+                    data-context-season={ep.seasonNumber}
+                    data-context-episode={ep.episodeNumber}
                     data-detail-focus={`episode:${ep.seasonNumber}:${ep.episodeNumber}`}
                     onFocus={() => rememberDetailView(detailViewKey, { focusedTarget: `episode:${ep.seasonNumber}:${ep.episodeNumber}` })}
                     onClick={() => handlePlayEpisode(ep.seasonNumber, ep.episodeNumber)}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handlePlayEpisode(ep.seasonNumber, ep.episodeNumber) } }}
-                    onContextMenu={(e) => {
-                      e.preventDefault()
-                      if (!show) return
-                      const searchResult = { id: show.id, title: show.title, type: 'series' as const, year: show.year, poster: show.poster, backdrop: show.backdrop, imdbId: show.imdbId, tmdbId: show.tmdbId, tvdbId: show.tvdbId, malId: show.malId, anilistId: show.anilistId, isAnime, provider: 'tmdb' }
-                          showCtxMenu(e.clientX, e.clientY, {
-                        kind: 'episode',
-                        item: searchResult,
-                        episode: ep,
-                        seasonNumber: ep.seasonNumber,
-                        showImdbId: show.imdbId,
-                        appSeasonCounts,
-                        onSelectSource: () => handlePlayEpisode(ep.seasonNumber, ep.episodeNumber, true),
-                      })
-                    }}
+                    onContextMenu={handleEpisodeElementContextMenu}
+                    {...longPressContextHandlers}
                     className={`episode-showcase-card flex-shrink-0 text-left group flex flex-col cursor-pointer focus-ring ${isNextEpisode ? 'is-next' : ''}`}
                   >
                     <div className="relative aspect-video rounded-2xl overflow-hidden bg-surface-elevated shadow-xl mb-3 ring-1 ring-white/10 group-hover:ring-accent/50 transition-all">
@@ -3734,12 +3974,16 @@ export default function SeriesDetailPage() {
                             imdbId={show.imdbId}
                             anilistId={show.anilistId}
                             malId={show.malId}
+                            sourceConnectionId={state.sourceConnectionId}
+                            sourceItemId={state.sourceItemId}
                             isAnime={isAnime}
                             appSeasonCounts={appSeasonCounts}
                             compact
                             watched={isWatched}
                             onMarked={() => {
-                              setWatchedEpisodes((prev) => new Set([...prev, `${ep.seasonNumber}:${ep.episodeNumber}`]))
+                              const key = `${ep.seasonNumber}:${ep.episodeNumber}`
+                              setWatchedEpisodes((prev) => new Set([...prev, key]))
+                              setJellyfinWatchedEpisodes((prev) => new Set([...prev, key]))
                               setWatchProgress(`${show.id}:${ep.seasonNumber}:${ep.episodeNumber}`, {
                                 id: `${show.id}:${ep.seasonNumber}:${ep.episodeNumber}`,
                                 mediaType: 'series',
@@ -3759,16 +4003,16 @@ export default function SeriesDetailPage() {
                                 updatedAt: new Date().toISOString(),
                               })
                             }}
-                            onUnmarked={() => setWatchedEpisodes((prev) => {
-                              const next = new Set(prev)
-                              next.delete(`${ep.seasonNumber}:${ep.episodeNumber}`)
+                            onUnmarked={() => {
+                              const key = `${ep.seasonNumber}:${ep.episodeNumber}`
+                              setWatchedEpisodes((prev) => { const next = new Set(prev); next.delete(key); return next })
+                              setJellyfinWatchedEpisodes((prev) => { const next = new Set(prev); next.delete(key); return next })
                               removeWatchProgress(
                                 [show.id, show.imdbId || '', String(show.tmdbId || ''), show.tmdbId ? `tmdb-${show.tmdbId}` : '', show.malId ? `mal-${show.malId}` : '', show.anilistId ? `anilist-${show.anilistId}` : ''],
                                 ep.seasonNumber,
                                 ep.episodeNumber,
                               )
-                              return next
-                            })}
+                            }}
                           />
                         </div>
                       </div>
@@ -3815,6 +4059,7 @@ export default function SeriesDetailPage() {
         seasonEpisode={streamEpisode || undefined}
         startTime={streamEpisode ? getEpisodeProgress(streamEpisode.season, streamEpisode.episode)?.progressSeconds : undefined}
         tmdbId={Number.isFinite(streamTmdbId) ? streamTmdbId : undefined}
+        imdbId={show.imdbId}
         tvdbId={show.tvdbId ?? undefined}
         malId={show.malId != null ? Number(show.malId) : state.malId != null ? Number(state.malId) : undefined}
         anilistId={show.anilistId != null ? Number(show.anilistId) : state.anilistId != null ? Number(state.anilistId) : undefined}

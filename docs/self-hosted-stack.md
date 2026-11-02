@@ -102,6 +102,7 @@ service.
 The worker can remux or transcode allowlisted direct files, but must download
 the whole source before conversion. It cannot bypass DRM, provider-specific
 authorization, expiring source URLs, or CORS requirements at the source. HLS
-playlists can be proxied and rewritten, but HLS conversion is not supported.
+playlists can be proxied and rewritten; eligible direct files can also be
+prepared as seekable HLS output for browsers that need Media Source Extensions.
 Codec and HDR/Dolby Vision support still varies by browser and device. See
 [`media-worker.md`](media-worker.md) for route behavior and limits.

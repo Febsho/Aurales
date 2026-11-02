@@ -4,7 +4,7 @@ import { useAppStore } from '../stores/appStore'
 import { subscribeLocalWatchlist } from '../services/localWatchlist'
 import { tmdbProvider } from '../services/tmdb'
 import { buildUpcomingEvents, getUpcomingPreferences, isReleaseInHorizon, releaseTiming, type ReleaseEvent } from '../services/upcoming'
-import { loadUpcomingSeeds, upcomingProgressSignature } from '../services/upcomingSources'
+import { loadServerUpcomingEvents, loadUpcomingSeeds, mergeUpcomingEvents, upcomingProgressSignature } from '../services/upcomingSources'
 import { readUpcomingEventsCache, readUpcomingEventsStartupSnapshot, writeUpcomingEventsCache, writeUpcomingEventsStartupSnapshot } from '../services/upcomingCache'
 import { getActiveProfileId } from '../services/profiles'
 import { cachedImage, warmCachedImages } from '../services/imageCache'
@@ -20,6 +20,7 @@ export default function UpcomingHomeRow() {
   const posterSize = useAppStore((s) => s.posterSize)
   const [events, setEvents] = useState<ReleaseEvent[]>(() => readUpcomingEventsStartupSnapshot() ?? [])
   const [preferencesRevision, setPreferencesRevision] = useState(0)
+  const [serverRevision, setServerRevision] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
   const loadGeneration = useRef(0)
   const prefs = getUpcomingPreferences()
@@ -45,7 +46,11 @@ export default function UpcomingHomeRow() {
       }
       const seeds = await loadUpcomingSeeds(preferences)
       if (cancelled || generation !== loadGeneration.current) return
-      const next = await buildUpcomingEvents({ ...seeds, preferences, getShow: (id) => tmdbProvider.getShow(`tmdb-${id}`), getSeason: (id, season) => tmdbProvider.getSeason(`tmdb-${id}`, season) })
+      const [personal, server] = await Promise.all([
+        buildUpcomingEvents({ ...seeds, preferences, getShow: (id) => tmdbProvider.getShow(`tmdb-${id}`), getSeason: (id, season) => tmdbProvider.getSeason(`tmdb-${id}`, season) }),
+        loadServerUpcomingEvents(),
+      ])
+      const next = mergeUpcomingEvents(personal, server)
       if (cancelled || generation !== loadGeneration.current) return
       void writeUpcomingEventsCache(next, profileId, preferences)
       setEvents(next)
@@ -55,11 +60,16 @@ export default function UpcomingHomeRow() {
       cancelled = true
       if (loadGeneration.current === generation) loadGeneration.current += 1
     }
-  }, [progressSeedSignature, preferencesRevision])
+  }, [progressSeedSignature, preferencesRevision, serverRevision])
   useEffect(() => {
     const refresh = () => setPreferencesRevision((value) => value + 1)
     window.addEventListener('aurales:upcoming-preferences-changed', refresh)
     return () => window.removeEventListener('aurales:upcoming-preferences-changed', refresh)
+  }, [])
+  useEffect(() => {
+    const refresh = () => setServerRevision((value) => value + 1)
+    window.addEventListener('aurales:server-catalogs-changed', refresh)
+    return () => window.removeEventListener('aurales:server-catalogs-changed', refresh)
   }, [])
   useEffect(() => {
     let mounted = true
@@ -74,10 +84,12 @@ export default function UpcomingHomeRow() {
           getShow: (id) => tmdbProvider.getShow(`tmdb-${id}`),
           getSeason: (id, season) => tmdbProvider.getSeason(`tmdb-${id}`, season),
         }))
-        .then((events) => {
+        .then(async (events) => {
           if (!mounted || generation !== loadGeneration.current) return
-          void writeUpcomingEventsCache(events, profileId, preferences)
-          setEvents(events)
+          const combined = mergeUpcomingEvents(events, await loadServerUpcomingEvents())
+          if (!mounted || generation !== loadGeneration.current) return
+          void writeUpcomingEventsCache(combined, profileId, preferences)
+          setEvents(combined)
         })
         .catch(() => {})
     })
@@ -90,15 +102,15 @@ export default function UpcomingHomeRow() {
     void warmCachedImages(events.map((event) => event.artwork))
   }, [events])
 
-  const visible = events.filter((event) => !prefs.hidden[event.id] && isReleaseInHorizon(event, prefs.horizonDays)).slice(0, 12)
+  const visible = events.filter((event) => !prefs.hidden[event.id] && (event.source === 'jellyfin' || isReleaseInHorizon(event, prefs.horizonDays))).slice(0, 12)
   const scroll = (direction: number) => scrollRef.current?.scrollBy({ left: direction * Math.max(640, Math.floor(scrollRef.current.clientWidth * 0.85)), behavior: 'smooth' })
 
   return <section data-home-row="upcoming" className="home-upcoming-row mb-8">
     <div className="home-upcoming-header mb-4 flex items-center justify-between px-6">
-      <div><h2 className="text-xl font-bold tracking-tight text-white">Upcoming</h2><p className="mt-0.5 text-xs text-white/45">Personalized releases in the next {prefs.horizonDays} days</p></div>
+      <div><h2 className="text-xl font-bold tracking-tight text-white">Upcoming</h2><p className="mt-0.5 text-xs text-white/45">Your tracked releases and Jellyfin Upcoming</p></div>
       <div className="flex items-center gap-3"><button onClick={() => navigate('/upcoming')} className="text-sm font-semibold text-white/65 hover:text-white">View all</button><button aria-label="Scroll upcoming left" onClick={() => scroll(-1)} className="rounded-full bg-white/[.08] p-2 text-white/75 hover:bg-white/[.14]">‹</button><button aria-label="Scroll upcoming right" onClick={() => scroll(1)} className="rounded-full bg-white/[.08] p-2 text-white/75 hover:bg-white/[.14]">›</button></div>
     </div>
-    {visible.length === 0 ? <div data-home-upcoming-empty className="mx-6 rounded-xl border border-dashed border-white/[.12] bg-white/[.025] px-5 py-6 text-sm text-white/55">No releases are scheduled in the next {prefs.horizonDays} days for your tracked titles yet.</div> : <div ref={scrollRef} className="cw-track flex gap-4 overflow-x-auto px-6 pb-2" style={{ scrollbarWidth: 'none' }}>
+    {visible.length === 0 ? <div data-home-upcoming-empty className="mx-6 rounded-xl border border-dashed border-white/[.12] bg-white/[.025] px-5 py-6 text-sm text-white/55">No releases are scheduled in the next {prefs.horizonDays} days for your tracked titles yet.</div> : <div ref={scrollRef} className="home-upcoming-track flex items-start gap-4 overflow-x-auto px-6 pb-2" style={{ scrollbarWidth: 'none' }}>
       {visible.map((event) => <button key={event.id} onClick={() => {
         const routeId = event.media.tmdbId ? `tmdb-${String(event.media.tmdbId).replace(/^tmdb[-:]/i, '')}` : event.media.id
         navigate(`/${event.media.type === 'movie' ? 'movie' : 'series'}/${routeId}`, { state: { ...event.media, backdrop: event.media.backdrop || event.artwork, poster: event.media.poster || event.artwork } })

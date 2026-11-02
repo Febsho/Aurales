@@ -33,6 +33,7 @@ import { scrobbleMdblist, hasMdblistOAuth, mdblistPlaybackAction } from '../serv
 import { saveAniListProgressMapped } from '../services/anilist'
 import type { PMDBSkipSegment } from '../services/pmdb'
 import { getIntroDBSkips } from '../services/introdb'
+import { reportJellyfinPlayback } from '../services/serverIntegrations'
 import { getAddonStreams, getStreamAddons } from '../services/addons'
 import { streamPreloadManager, StreamPreloadPriority, type PreloadedStream, type StreamPreloadRequest } from '../services/streams/preloadManager'
 import { canonicalStreamKey } from '../services/streams/preloadUtils'
@@ -70,6 +71,7 @@ import { withRequestTimeout } from '../services/network/timeout'
 
 interface NativeMpvPlayerProps {
   url: string
+  playbackRequestHeaders?: Record<string, string>
   title: string
   subtitle?: string
   subtitles?: SubtitleResult[]
@@ -825,6 +827,8 @@ function FullNativeMpvPlayer({
   const aiSubtitleSourceTrackIdRef = useRef<number | null>(null)
   const progressRef = useRef({ currentTime: 0, duration: 0 })
   const lastSavedTimeRef = useRef(0)
+  const lastJellyfinReportAtRef = useRef(0)
+  const jellyfinStartedRef = useRef(false)
   const lastSimklPlaybackSaveRef = useRef(0)
   const lastPmdbPlaybackSaveRef = useRef(0)
   const lastMdblistPlaybackSaveRef = useRef(0)
@@ -911,9 +915,17 @@ function FullNativeMpvPlayer({
   useEffect(() => { onPlaybackErrorRef.current = onPlaybackError }, [onPlaybackError])
   const smartStartedNotifiedRef = useRef(false)
   const smartErrorNotifiedRef = useRef(false)
-  useEffect(() => { smartStartedNotifiedRef.current = false; smartErrorNotifiedRef.current = false }, [url])
   useEffect(() => {
-    if (playerReady && !smartStartedNotifiedRef.current) { smartStartedNotifiedRef.current = true; onPlaybackStarted?.() }
+    smartStartedNotifiedRef.current = false
+    smartErrorNotifiedRef.current = false
+    jellyfinStartedRef.current = false
+  }, [url])
+  useEffect(() => {
+    if (playerReady && !smartStartedNotifiedRef.current) {
+      smartStartedNotifiedRef.current = true
+      jellyfinStartedRef.current = true
+      onPlaybackStarted?.()
+    }
   }, [playerReady, onPlaybackStarted])
   useEffect(() => {
     if (error && !playerReady && !smartErrorNotifiedRef.current) { smartErrorNotifiedRef.current = true; onPlaybackError?.(error) }
@@ -1518,9 +1530,35 @@ function FullNativeMpvPlayer({
   }, [playerReady, showChapters])
 
   // ─ Progress / Scrobble ───────────────────────────────────────────────────
+  const reportJellyfinEvent = useCallback((
+    event: 'start' | 'progress' | 'pause' | 'unpause' | 'stop',
+    time: number,
+    duration: number,
+    isPaused: boolean,
+    item = currentItemRef.current,
+  ) => {
+    if (!item?.serverConnectionId || !item.serverItemId || !item.serverPlaySessionId) return
+    if (event !== 'start' && !jellyfinStartedRef.current) return
+    const now = Date.now()
+    if (event === 'progress' && now - lastJellyfinReportAtRef.current < 10_000) return
+    lastJellyfinReportAtRef.current = now
+    void reportJellyfinPlayback({
+      connectionId: item.serverConnectionId,
+      itemId: item.serverItemId,
+      mediaSourceId: item.serverMediaSourceId,
+      playSessionId: item.serverPlaySessionId,
+      positionTicks: Math.max(0, Math.round(time * 10_000_000)),
+      runtimeTicks: duration > 0 ? Math.round(duration * 10_000_000) : undefined,
+      event,
+      isPaused,
+      playMethod: item.serverPlayMethod || 'DirectPlay',
+    }).catch(() => undefined)
+  }, [])
+
   const saveLocalProgress = useCallback((time: number, dur: number, completedFlag: boolean) => {
     const item = currentItemRef.current
     if (!item) return
+    reportJellyfinEvent('progress', time, dur, false, item)
     const key = item.season != null && item.episode != null
       ? `${item.localId}:${item.season}:${item.episode}`
       : item.localId
@@ -1547,7 +1585,7 @@ function FullNativeMpvPlayer({
       malId: item.malId,
       anilistId: item.anilistId,
     })
-  }, [])
+  }, [reportJellyfinEvent])
 
   /**
    * Save resume position to PMDB and (only on explicit close/end) scrobble.
@@ -3167,6 +3205,9 @@ function FullNativeMpvPlayer({
 
         // Log property changes
         if (isPause !== null && isPause !== lastPauseRef.current) {
+          if (lastPauseRef.current !== null) {
+            reportJellyfinEvent(isPause ? 'pause' : 'unpause', pos ?? progressRef.current.currentTime, dur ?? progressRef.current.duration, isPause)
+          }
           lastPauseRef.current = isPause
           logEvent('MPV DEBUG', `pause changed to: ${isPause}`)
         }
@@ -3449,7 +3490,7 @@ function FullNativeMpvPlayer({
       cancelled = true
       if (pollRef.current) clearInterval(pollRef.current)
     }
-  }, [skips, autoSkipIntro, autoSkipCredits, nextEpisodeCountdownSeconds, command, saveLocalProgress, savePMDBProgressHelper, saveMdblistProgressHelper, scrobbleSimkl, simklSaveResumePosition, scrobbleAnilist, pmdbApiKey, pmdbSaveResumePosition, mdblistApiKey, scrobbleMdblistEnabled, title, sendWatchTogetherSeek, triggerRestart])
+  }, [skips, autoSkipIntro, autoSkipCredits, nextEpisodeCountdownSeconds, command, saveLocalProgress, savePMDBProgressHelper, saveMdblistProgressHelper, scrobbleSimkl, simklSaveResumePosition, scrobbleAnilist, pmdbApiKey, pmdbSaveResumePosition, mdblistApiKey, scrobbleMdblistEnabled, title, sendWatchTogetherSeek, triggerRestart, reportJellyfinEvent])
 
   // ─ Fetch next episode on mount ────────────────────────────────────────────
   const nextEpisodeHintSeason = nextEpisodeHint?.season
@@ -3634,6 +3675,7 @@ function FullNativeMpvPlayer({
 
     // Stop current, save progress
     const { currentTime: pos, duration: dur } = progressRef.current
+    reportJellyfinEvent('stop', pos, dur, true, item)
     saveLocalProgress(pos, dur, false)
     const promises: Promise<any>[] = []
     if (scrobbleSimkl && item) {
@@ -3651,7 +3693,17 @@ function FullNativeMpvPlayer({
     // starts without tearing down the video surface.
 
     // Update current playback item refs
-    const newItem: PlaybackItem = { ...item, season: nextEp.season, episode: nextEp.episode, title: `${title} · ${nextEp.title}` }
+    const newItem: PlaybackItem = {
+      ...item,
+      season: nextEp.season,
+      episode: nextEp.episode,
+      title: `${title} · ${nextEp.title}`,
+      serverConnectionId: undefined,
+      serverItemId: undefined,
+      serverMediaSourceId: undefined,
+      serverPlaySessionId: undefined,
+      serverPlayMethod: undefined,
+    }
     currentItemRef.current = newItem
     currentStreamUrlRef.current = foundUrl
     currentPosterRef.current = nextEp.stillPath ?? currentPosterRef.current
@@ -3817,7 +3869,7 @@ function FullNativeMpvPlayer({
       setBuffering(false)
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [title, scrobbleSimkl, scrobbleTrakt, isAutoSearching, onNextEpisode, saveLocalProgress, refreshTracks, applySavedVolume, schedulePlayerTimeout, mirrorEmbeddedSubtitles])
+  }, [title, scrobbleSimkl, scrobbleTrakt, isAutoSearching, onNextEpisode, saveLocalProgress, refreshTracks, applySavedVolume, schedulePlayerTimeout, mirrorEmbeddedSubtitles, reportJellyfinEvent])
 
   useEffect(() => {
     if (!showUpNext) { setUpNextCountdown(nextEpisodeCountdownSeconds); return }
@@ -3846,6 +3898,7 @@ function FullNativeMpvPlayer({
     const { currentTime: pos, duration: dur } = progressRef.current
     const progress = dur > 0 ? pos / dur : 0
     if (item) {
+      reportJellyfinEvent('stop', pos, dur, true, item)
       saveLocalProgress(pos, dur, false)
     }
 
@@ -3884,6 +3937,7 @@ function FullNativeMpvPlayer({
     if (item) {
       const { currentTime: pos, duration: dur } = progressRef.current
       const progress = dur > 0 ? pos / dur : 0
+      reportJellyfinEvent('stop', pos, dur, true, item)
       saveLocalProgress(pos, dur, false)
       const promises: Promise<any>[] = []
       if (scrobbleSimkl) {

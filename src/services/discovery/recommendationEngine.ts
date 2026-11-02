@@ -149,7 +149,7 @@ function watchedKeys(activity: DiscoveryActivity): Set<string> {
 
 export function dedupeCandidates(candidates: RecommendationCandidate[]): RecommendationCandidate[] {
   const merged = new Map<string,RecommendationCandidate>()
-  for(const candidate of candidates){const key=mediaKey(candidate.item);const existing=merged.get(key);if(!existing){merged.set(key,candidate);continue}const informativeSource=candidate.source==='tmdb-similar'||candidate.source==='tmdb-cast'||candidate.source==='tmdb-director';merged.set(key,{...existing,source:informativeSource?candidate.source:existing.source,item:{...candidate.item,...existing.item,genreIds:existing.item.genreIds||candidate.item.genreIds,genres:existing.item.genres||candidate.item.genres},runtimeMinutes:existing.runtimeMinutes??candidate.runtimeMinutes,voteCount:existing.voteCount??candidate.voteCount,popularity:existing.popularity??candidate.popularity,releaseDate:existing.releaseDate??candidate.releaseDate,seedTitle:existing.seedTitle??candidate.seedTitle})}
+  for(const candidate of candidates){const key=mediaKey(candidate.item);const existing=merged.get(key);if(!existing){merged.set(key,candidate);continue}const informativeSource=candidate.source==='tmdb-similar'||candidate.source==='tmdb-cast'||candidate.source==='tmdb-director';const favoriteSeed=existing.seedKind==='favorited'?existing:candidate.seedKind==='favorited'?candidate:undefined;merged.set(key,{...existing,source:informativeSource?candidate.source:existing.source,item:{...candidate.item,...existing.item,genreIds:existing.item.genreIds||candidate.item.genreIds,genres:existing.item.genres||candidate.item.genres},runtimeMinutes:existing.runtimeMinutes??candidate.runtimeMinutes,voteCount:Math.max(existing.voteCount||0,candidate.voteCount||0)||undefined,popularity:Math.max(existing.popularity||0,candidate.popularity||0)||undefined,trendSignal:Boolean(existing.trendSignal||candidate.trendSignal||existing.source==='tmdb-trending'||candidate.source==='tmdb-trending'),releaseDate:existing.releaseDate??candidate.releaseDate,seedTitle:favoriteSeed?.seedTitle??existing.seedTitle??candidate.seedTitle,seedKind:favoriteSeed?.seedKind??existing.seedKind??candidate.seedKind})}
   return [...merged.values()]
 }
 
@@ -165,7 +165,39 @@ export interface RankingWeightOverrides {
   language?: number
 }
 
+const RECENT_RELEASE_WINDOW_MS = 365.25 * 24 * 60 * 60 * 1000
+
+function releaseDateTimestamp(item: SearchResult): number | undefined {
+  const date = item.releaseDate?.slice(0, 10)
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return undefined
+  const timestamp = Date.parse(`${date}T00:00:00.000Z`)
+  if (!Number.isFinite(timestamp)) return undefined
+  const parsed = new Date(timestamp)
+  const [year, month, day] = date.split('-').map(Number)
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month! - 1 && parsed.getUTCDate() === day ? timestamp : undefined
+}
+
+function isRecentlyReleased(item: SearchResult, now: number): boolean {
+  const timestamp = releaseDateTimestamp(item)
+  if (timestamp != null) return timestamp <= now && timestamp >= now - RECENT_RELEASE_WINDOW_MS
+  // Some addon and cached results only carry a year. Treat current-year titles
+  // as recent; a previous calendar year alone is too imprecise to call recent.
+  return item.year === new Date(now).getUTCFullYear()
+}
+
+function compareReleaseRecency(left: SearchResult, right: SearchResult): number {
+  const leftTimestamp = releaseDateTimestamp(left)
+  const rightTimestamp = releaseDateTimestamp(right)
+  const leftYear = left.year ?? (leftTimestamp == null ? 0 : new Date(leftTimestamp).getUTCFullYear())
+  const rightYear = right.year ?? (rightTimestamp == null ? 0 : new Date(rightTimestamp).getUTCFullYear())
+  if (leftYear !== rightYear) return rightYear - leftYear
+  if (leftTimestamp != null && rightTimestamp != null) return rightTimestamp - leftTimestamp
+  return 0
+}
+
 export function rankCandidates(candidates: RecommendationCandidate[], profile: TasteProfile, activity: DiscoveryActivity, feedback: RecommendationFeedback[], mode: DiscoveryMode, now = Date.now(), impressions: Record<string,number> = {}, weights: RankingWeightOverrides = {}): RankedRecommendation[] {
+  const uniqueCandidates = dedupeCandidates(candidates)
+  const maxPopularityLog = uniqueCandidates.reduce((max, candidate) => Math.max(max, Math.log1p(Math.max(0, candidate.popularity || 0))), 0)
   const completed = watchedKeys(activity)
   const rewatchKeys=new Set((activity.rewatches||[]).flatMap((item)=>[item.id,normalizedTmdbId(item.tmdbId),normalizedImdbId(item.imdbId)]).filter(Boolean))
   const feedbackMap = new Map<string, RecommendationFeedback>()
@@ -190,7 +222,7 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
   const wRecency = 1 + (weights.recency || 0)
   const wEra = 1 + (weights.era || 0)
   const wLanguage = 1 + (weights.language || 0)
-  const ranked = dedupeCandidates(candidates).map((candidate) => {
+  const ranked = uniqueCandidates.map((candidate) => {
     const item = candidate.item
     const key = mediaKey(item)
     const itemFeedback = feedbackMap.get(key)
@@ -228,7 +260,16 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
     const quality = Math.max(0, ((item.rating || 5) - 5) * RECOMMENDATION_WEIGHTS.quality) * wQuality
     const yearAge = item.year ? Math.max(0, new Date(now).getFullYear() - item.year) : 8
     const novelty = (Math.max(0, 8 - Math.min(8, yearAge)) / 2) * wNovelty
-    const hiddenGem = (candidate.popularity || 0) < 35 && (item.rating || 0) >= 7
+    // TMDB popularity is a relative momentum signal. Normalize its logarithm
+    // within this candidate pool so blockbuster-scale values do not swamp all
+    // other recommendation signals while current/trending titles still rise.
+    const relativeTrend = maxPopularityLog > 0
+      ? Math.max(0, Math.min(20, Math.log1p(Math.max(0, candidate.popularity || 0)) / maxPopularityLog * 20)) * wPopularity
+      : 0
+    const trendSourceBoost = candidate.trendSignal || candidate.source === 'tmdb-trending' ? 28 * wPopularity : 0
+    const trend = Math.max(relativeTrend, trendSourceBoost)
+    const releaseFreshness = item.year ? Math.max(0, 1 - yearAge / 6) * 5 * wRecency : 0
+    const hiddenGem = candidate.popularity != null && candidate.popularity < 35 && (item.rating || 0) >= 7
     const quick = (candidate.runtimeMinutes || 999) <= (item.type === 'movie' ? 105 : 40)
     const runtimeScore = profile.preferredRuntimeMinutes && candidate.runtimeMinutes
       ? Math.max(-5, 7 - Math.abs(candidate.runtimeMinutes - profile.preferredRuntimeMinutes) / 18)
@@ -259,10 +300,10 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
     if (mode === 'recently-released') modeBonus = novelty * 4
     if (mode === 'quick-watch') modeBonus = quick ? 18 : -8
     const availability=item.title&&(item.poster||item.backdrop)&&item.tmdbId!=null?4:-15
-    const score: RecommendationScore = { total: 0, contentSimilarity: preference, preference: preference + languageScore + eraScore + peopleScore + runtimeScore + recencyScore, recency: novelty, quality, popularityConfidence: Math.min(6, Math.log10((candidate.voteCount || 10) + 1) * 2) * wPopularity, availability, novelty, exploration: exploration + modeBonus, feedbackPenalty, watchedPenalty: watched ? (rewatchSuitable?-5:-100) : 0 }
+    const score: RecommendationScore = { total: 0, contentSimilarity: preference, preference: preference + languageScore + eraScore + peopleScore + runtimeScore + recencyScore + releaseFreshness, recency: novelty, quality, trend, popularityConfidence: Math.min(6, Math.log10((candidate.voteCount || 10) + 1) * 2) * wPopularity, availability, novelty, exploration: exploration + modeBonus, feedbackPenalty, watchedPenalty: watched ? (rewatchSuitable?-5:-100) : 0 }
     score.total = Object.entries(score).filter(([name]) => name !== 'total').reduce((sum, [,value]) => sum + value, 48)
     const reasons: RecommendationReason[] = []
-    if (candidate.source === 'tmdb-similar' && candidate.seedTitle) reasons.push({code:'recent-interest',label:`Because you watched ${candidate.seedTitle}`,strength:12})
+    if (candidate.source === 'tmdb-similar' && candidate.seedTitle) reasons.push({code:'recent-interest',label:`Because you ${candidate.seedKind === 'favorited' ? 'favorited' : 'watched'} ${candidate.seedTitle}`,strength:12})
     if (candidate.source === 'tmdb-cast' && candidate.seedTitle) reasons.push({code:'recent-interest',label:`Featuring ${candidate.seedTitle}, from titles you watch`,strength:10})
     if (candidate.source === 'tmdb-director' && candidate.seedTitle) reasons.push({code:'recent-interest',label:`From ${candidate.seedTitle}, a creator in your recent watches`,strength:11})
     const matchingPerson = [...(candidate.cast || []), ...(candidate.directors || [])].sort((a,b) => (profile.personWeights[b.trim()] || 0) - (profile.personWeights[a.trim()] || 0))[0]
@@ -270,6 +311,8 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
     const strongestGenre = [...(item.genreIds || [])].sort((a,b) => (profile.genreWeights[b] || 0) - (profile.genreWeights[a] || 0))[0]
     if (strongestGenre && profile.genreWeights[strongestGenre]) reasons.push({ code:'genre-affinity', label:`Matches your interest in ${GENRES[strongestGenre] || 'similar stories'}`, strength: preference })
     if (keywordScore >= 2) reasons.push({ code:'keyword-affinity', label:'Matches themes in titles you enjoy', strength: keywordScore })
+    if (candidate.trendSignal || candidate.source === 'tmdb-trending') reasons.push({ code:'trend', label:'Trending this week', strength: trend })
+    else if ((candidate.popularity || 0) >= 50 && trend >= 5) reasons.push({ code:'popularity', label:'Popular right now', strength: trend })
     if (quality >= 5) reasons.push({ code:'quality', label:'Highly rated by viewers', strength: quality })
     if (hiddenGem) reasons.push({ code:'hidden-gem', label:'A highly rated title that is easy to miss', strength: 8 })
     if (quick && mode === 'quick-watch') reasons.push({ code:'quick-watch', label:'Fits a shorter watch session', strength: 8 })
@@ -279,7 +322,6 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
     return { ...candidate, score, matchPercent: Math.max(50, Math.min(99, Math.round(score.total))), reasons: reasons.sort((a,b) => b.strength-a.strength) }
   }).filter((entry) => entry.score.feedbackPenalty > -90 && entry.score.availability > -10 && entry.score.watchedPenalty > -90).sort((a,b) => b.score.total-a.score.total)
 
-  const currentYear = new Date(now).getFullYear()
   if (mode === 'for-you') return ranked
 
   let eligible: RankedRecommendation[] = []
@@ -290,8 +332,8 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
     eligible = ranked.filter((entry) => (entry.item.rating || 0) >= 7.5 && (entry.voteCount || 0) >= 250)
       .sort((a,b) => (b.item.rating || 0) - (a.item.rating || 0) || (b.voteCount || 0) - (a.voteCount || 0))
   } else if (mode === 'recently-released') {
-    eligible = ranked.filter((entry) => (entry.item.year || 0) >= currentYear - 1)
-      .sort((a,b) => (b.item.year || 0) - (a.item.year || 0) || b.score.total - a.score.total)
+    eligible = ranked.filter((entry) => isRecentlyReleased(entry.item, now))
+      .sort((a,b) => compareReleaseRecency(a.item, b.item) || (b.popularity || 0) - (a.popularity || 0) || b.score.total - a.score.total)
   } else if (mode === 'quick-watch') {
     eligible = ranked.filter((entry) => entry.runtimeMinutes != null && entry.runtimeMinutes <= (entry.item.type === 'movie' ? 105 : 40))
       .sort((a,b) => (a.runtimeMinutes || 999) - (b.runtimeMinutes || 999) || b.score.total - a.score.total)
@@ -304,11 +346,10 @@ export function rankCandidates(candidates: RecommendationCandidate[], profile: T
 
   // Keep the mode usable with small caches, but never fall back to the exact
   // default ordering: mode-specific ordering still leads the available pool.
-  if (eligible.length >= 3) return eligible
+  if (eligible.length >= 3 || mode === 'recently-released') return eligible
   const eligibleKeys = new Set(eligible.map((entry) => mediaKey(entry.item)))
   return [...eligible, ...ranked.filter((entry) => !eligibleKeys.has(mediaKey(entry.item)))].sort((a,b) => {
     if (mode === 'quick-watch') return (a.runtimeMinutes || 999) - (b.runtimeMinutes || 999)
-    if (mode === 'recently-released') return (b.item.year || 0) - (a.item.year || 0)
     if (mode === 'critically-acclaimed') return (b.item.rating || 0) - (a.item.rating || 0)
     if (mode === 'hidden-gems') return (a.popularity ?? Number.MAX_SAFE_INTEGER) - (b.popularity ?? Number.MAX_SAFE_INTEGER)
     return a.score.contentSimilarity - b.score.contentSimilarity
@@ -352,23 +393,97 @@ export function applyRecommendationFeedback(snapshot: RankedRecommendation[], fe
     .sort((a,b) => b.score.total - a.score.total || mediaKey(a.item).localeCompare(mediaKey(b.item)))
 }
 
-export function generateDiscoverySections(ranked: RankedRecommendation[], profile: TasteProfile, mode: DiscoveryMode, minSize = 5): DiscoverySection[] {
+export function generateDiscoverySections(ranked: RankedRecommendation[], _profile: TasteProfile, mode: DiscoveryMode, minSize = 5, now = Date.now()): DiscoverySection[] {
   const used = new Set<string>()
   // Keep one broad section from exhausting the entire ranked pool before the
   // specialized catalogs get a chance to select their titles.
-  const take = (predicate: (item: RankedRecommendation) => boolean, count = 20) => ranked.filter((item) => predicate(item) && !used.has(mediaKey(item.item))).slice(0, count).filter((item) => { used.add(mediaKey(item.item)); return true })
-  const similaritySeed=ranked.find((item)=>item.source==='tmdb-similar'&&item.seedTitle)?.seedTitle
+  const take = (predicate: (item: RankedRecommendation) => boolean, count = 10) => ranked.filter((item) => predicate(item) && !used.has(mediaKey(item.item))).slice(0, count).filter((item) => { used.add(mediaKey(item.item)); return true })
+  const similaritySeed=ranked.find((item)=>item.source==='tmdb-similar'&&item.seedTitle&&item.seedKind==='favorited')
+    ?? ranked.find((item)=>item.source==='tmdb-similar'&&item.seedTitle)
+  const mainTitle = mode === 'for-you' ? 'Recommended'
+    : mode === 'new' || mode === 'recently-released' ? 'New & Trending'
+      : mode === 'hidden-gems' ? 'Hidden Gems'
+        : mode === 'critically-acclaimed' ? 'Critically Acclaimed'
+          : 'Quick Watches'
+  const similarityDefinition: [string, string, (item: RankedRecommendation) => boolean] | undefined = similaritySeed
+    ? [
+      similaritySeed.seedKind === 'favorited' ? 'because-favorited' : 'because-watched',
+      `Because You ${similaritySeed.seedKind === 'favorited' ? 'Favorited' : 'Watched'} ${similaritySeed.seedTitle}`,
+      (item) => item.source === 'tmdb-similar' && item.seedKind === similaritySeed.seedKind && item.seedTitle === similaritySeed.seedTitle,
+    ]
+    : undefined
+  // Weekly TMDB trending is a general catalog source, independent from user
+  // history. Give it a visible shelf while reserving those titles from the
+  // broad recommendation shelf so the same cards do not appear twice.
+  const trendingCatalog = ranked
+    .filter((item) => item.trendSignal || item.source === 'tmdb-trending')
+    // Keep this rail faithful to the public trending feed even when the user
+    // switches the recommendation mode or sort preference. Within the feed,
+    // popularity is the strongest available signal for what is broadly hot.
+    .sort((left, right) => Number(Boolean(right.trendSignal || right.source === 'tmdb-trending')) - Number(Boolean(left.trendSignal || left.source === 'tmdb-trending'))
+      || (right.popularity || 0) - (left.popularity || 0)
+      || right.score.total - left.score.total)
+  const trendingCandidates = trendingCatalog.slice(0, 10)
+  // Avoid dropping a small trend response when the shelf would be hidden by
+  // the minimum-size rule below. Fold it into Recommended until it can stand
+  // as a useful, independently browsable row.
+  const trending = trendingCandidates.length >= minSize ? trendingCandidates : []
+  const trendingKeys = new Set(trending.map((item) => mediaKey(item.item)))
+  const broadCatalog = ranked.filter((item) => item.source !== 'tmdb-similar' && !trendingKeys.has(mediaKey(item.item)))
+  const broad = broadCatalog.slice(0, 10)
   const definitions: Array<[string,string,(item:RankedRecommendation)=>boolean]> = [
-    ['made-for-you', profile.confidence === 'low' ? 'Popular Right Now' : 'Made for You', () => true],
-    ['because',similaritySeed?`Because You Watched ${similaritySeed}`:'More Like What You Watch',(item)=>item.source==='tmdb-similar'&&(!similaritySeed||item.seedTitle===similaritySeed)],
-    ['directors','From Directors You Like',(item)=>item.source==='tmdb-director'],
-    ['actors','Featuring Actors You Watch',(item)=>item.source==='tmdb-cast'],
-    ['hidden-gems','Hidden Gems for You',(item) => (item.popularity || 0) < 35 && (item.item.rating || 0) >= 7],
-    ['new','Recently Released for You',(item) => Boolean(item.item.year && item.item.year >= new Date().getFullYear()-1)],
-    ['critics','Critically Acclaimed for You',(item) => (item.item.rating || 0) >= 7.5],
-    ['quick','Short Watches for Tonight',(item) => (item.runtimeMinutes || 999) <= (item.item.type === 'movie' ? 105 : 40)],
-    ['explore','Try Something Different',(item) => item.score.contentSimilarity < 4],
+    ['made-for-you', mainTitle, (item) => broad.includes(item)],
+    ['trending-this-week', 'Trending This Week', (item) => trending.includes(item)],
+    ...(similarityDefinition ? [similarityDefinition] : []),
+    ['hidden-gems','Hidden Gems',(item) => item.popularity != null && item.popularity < 35 && (item.item.rating || 0) >= 7],
+    ['new','Recently Released',(item) => isRecentlyReleased(item.item, now)],
   ]
-  if (mode !== 'for-you') definitions.unshift(['mode', mode.split('-').map((x)=>x[0].toUpperCase()+x.slice(1)).join(' '), () => true])
-  return definitions.map(([id,title,predicate]) => ({ id, title, items: take(predicate) })).filter((section) => section.items.length >= minSize)
+  const filteredDefinitions = definitions.filter(([id]) => !(mode === 'hidden-gems' && id === 'hidden-gems') && ((mode !== 'new' && mode !== 'recently-released') || id !== 'new'))
+  return filteredDefinitions.map(([id,title,predicate]) => {
+    const catalogItems = id === 'made-for-you' ? broadCatalog
+      : id === 'trending-this-week' ? trendingCatalog
+        : ranked.filter((item) => predicate(item) && !used.has(mediaKey(item.item)))
+    const items = id === 'made-for-you' ? broad : id === 'trending-this-week' ? trending : take(predicate)
+    items.forEach((item) => used.add(mediaKey(item.item)))
+    return { id, title, items, catalogItems }
+  }).filter((section) => section.items.length >= minSize)
+}
+
+/** High-confidence, highly rated titles from the already-loaded discovery pool. */
+export function selectTopRatedRecommendations(ranked: RankedRecommendation[], limit = 10): RankedRecommendation[] {
+  return ranked
+    .filter((entry) => (entry.item.rating || 0) >= 7.5 && (entry.voteCount || 0) >= 250 && Boolean(entry.item.poster || entry.item.backdrop))
+    .sort((left, right) => (right.item.rating || 0) - (left.item.rating || 0)
+      || (right.voteCount || 0) - (left.voteCount || 0)
+      || (right.popularity || 0) - (left.popularity || 0)
+      || right.score.total - left.score.total)
+    .slice(0, Math.max(0, limit))
+}
+
+/** Prefer live trends, popular and fresh discoveries while preserving choice. */
+export function chooseSurpriseRecommendation(pool: RankedRecommendation[], currentId?: string | number, random = Math.random): RankedRecommendation | undefined {
+  if (!pool.length) return undefined
+  const alternatives = pool.filter((entry) => String(entry.item.id) !== String(currentId))
+  const choices = alternatives.length ? alternatives : pool
+  const maxPopularityLog = choices.reduce((max, entry) => Math.max(max, Math.log1p(Math.max(0, entry.popularity || 0))), 0)
+  const maxTrend = choices.reduce((max, entry) => Math.max(max, entry.score.trend), 0)
+  const year = new Date().getFullYear()
+  const weights = choices.map((entry, index) => {
+    const popularity = maxPopularityLog > 0 ? Math.log1p(Math.max(0, entry.popularity || 0)) / maxPopularityLog : 0
+    const trend = maxTrend > 0 ? Math.max(0, entry.score.trend) / maxTrend : 0
+    const age = entry.item.year ? Math.max(0, year - entry.item.year) : 8
+    const freshness = Math.max(0, 1 - age / 6)
+    const rankPreference = choices.length > 1 ? 1 - index / (choices.length - 1) : 1
+    // Popularity and a live weekly trend should outweigh recency alone. Fresh
+    // releases still beat equally popular catalogue staples, but obscure new
+    // titles should not crowd out known hits in the surprise picker.
+    return 1 + popularity * 6.5 + trend * 6.5 + freshness * 8 + rankPreference * .4
+  })
+  const total = weights.reduce((sum, weight) => sum + weight, 0)
+  let target = Math.min(.999999999, Math.max(0, random())) * total
+  for (let index = 0; index < choices.length; index += 1) {
+    target -= weights[index]!
+    if (target < 0) return choices[index]
+  }
+  return choices[choices.length - 1]
 }

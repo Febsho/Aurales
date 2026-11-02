@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useLongPressContextMenu } from '../../hooks/useLongPressContextMenu'
 
 interface EpisodeCardProps {
   episodeNumber: number
@@ -29,11 +30,13 @@ export default function EpisodeCard({
   className = '',
 }: EpisodeCardProps) {
   const [imgError, setImgError] = useState(false)
+  const longPressHandlers = useLongPressContextMenu(onContextMenu)
 
   return (
     <button
       onClick={onPlay}
       onContextMenu={onContextMenu}
+      {...longPressHandlers}
       className={[
         'episode-card w-full flex gap-4 p-3 rounded-xl',
         'bg-white/[0.02] hover:bg-white/[0.05] border border-white/[0.04] hover:border-white/[0.10]',

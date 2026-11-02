@@ -109,6 +109,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   const loadedBackdropsRef = useRef<Set<string>>(new Set())
   const touchStartRef = useRef<{ x: number; y: number } | null>(null)
   const [logoError, setLogoError] = useState(false)
+  const suppressTapNavigationRef = useRef(false)
   const [cast, setCast] = useState<{ name: string; photo?: string }[]>([])
   const heroRef = useRef<HTMLDivElement>(null)
   const count = items.length
@@ -159,6 +160,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
 
   const handleTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
     if (count < 2 || event.touches.length !== 1) return
+    suppressTapNavigationRef.current = false
     const touch = event.touches[0]
     touchStartRef.current = { x: touch.clientX, y: touch.clientY }
   }
@@ -171,6 +173,8 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     const deltaX = touch.clientX - start.x
     const deltaY = touch.clientY - start.y
     if (Math.abs(deltaX) < 48 || Math.abs(deltaX) < Math.abs(deltaY) * 1.3) return
+    suppressTapNavigationRef.current = true
+    window.setTimeout(() => { suppressTapNavigationRef.current = false }, 500)
     goTo(activeIndex + (deltaX < 0 ? 1 : -1))
   }
 
@@ -537,14 +541,14 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
     navigate(type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`, { state: { ...sharedState, autoPlay } })
 
   const genreStr = item.genres?.[0] || ''
-  const ratingLabel = item.rating ? `R` : ''
-  const metaLine = [item.year, genreStr, ratingLabel].filter(Boolean).join(' · ')
+  const ratingLabel = item.rating ? Number(item.rating).toFixed(1) : ''
+  const metaLine = [ratingLabel, item.year, genreStr, item.certification].filter(Boolean).join(' · ')
 
   // The fixed cinematic Home divides the viewport between the banner and the
   // active shelf. CSS owns that calculation so it can respond to both 1080p TV
   // windows and high-density 4K displays without a 1440p-specific cap.
   const heroHeight = isSmall
-    ? '380px'
+      ? 'clamp(640px, 78svh, 900px)'
     : cinematic
       ? (fixed ? 'var(--fixed-cinematic-hero-height, clamp(580px, 74vh, 900px))' : 'clamp(520px, 68vh, 820px)')
       : 'clamp(550px, 85vh, 1200px)'
@@ -557,10 +561,22 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   return (
     <div
       ref={heroRef}
+      onClick={isSmall ? () => {
+        if (suppressTapNavigationRef.current) return
+        nav(false)
+      } : undefined}
+      onKeyDown={isSmall ? (event) => {
+        if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return
+        event.preventDefault()
+        nav(false)
+      } : undefined}
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
       data-hero-compact={isSmall || undefined}
-      className={`relative overflow-hidden select-none group ${cinematic && fixed && !isSmall ? 'fixed-cinematic-hero' : ''} ${cinematic && !isSmall ? 'home-hero home-hero--inset' : 'w-full'} ${cinematic && !isSmall && usesTopNav ? 'home-hero--under-nav' : ''} ${cinematic && !isSmall && !usesTopNav ? 'mt-8' : ''} ${isSmall ? 'rounded-2xl border border-white/[0.06] shadow-2xl' : ''}`}
+      role={isSmall ? 'link' : undefined}
+      tabIndex={isSmall ? 0 : undefined}
+      aria-label={isSmall ? `Open ${item.title}` : undefined}
+      className={`relative overflow-hidden select-none group ${cinematic && fixed && !isSmall ? 'fixed-cinematic-hero' : ''} ${cinematic && !isSmall ? 'home-hero home-hero--inset' : 'w-full'} ${cinematic && !isSmall && usesTopNav ? 'home-hero--under-nav' : ''} ${cinematic && !isSmall && !usesTopNav ? 'mt-8' : ''} ${isSmall ? 'mobile-home-hero' : ''}`}
       style={{ height: heroHeight, touchAction: count > 1 ? 'pan-y' : undefined }}
     >
       {!isSmall ? (
@@ -693,8 +709,8 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
         })}
 
         {/* Cinematic gradients */}
-        <div className="absolute inset-0" style={{ background: 'linear-gradient(to top, transparent 0%, rgba(0,0,0,0.15) 10%, rgba(0,0,0,0.45) 40%, rgba(0,0,0,0.15) 70%, transparent 100%)' }} />
-        <div className="absolute inset-0 bg-gradient-to-r from-black/70 via-black/15 to-transparent" />
+        <div className="absolute inset-0" style={{ background: isSmall ? 'linear-gradient(to top, rgba(0,0,0,.88) 0%, rgba(0,0,0,.58) 24%, rgba(0,0,0,.12) 54%, rgba(0,0,0,.06) 76%, rgba(0,0,0,.2) 100%)' : 'linear-gradient(to top, transparent 0%, rgba(0,0,0,0.15) 10%, rgba(0,0,0,0.45) 40%, rgba(0,0,0,0.15) 70%, transparent 100%)' }} />
+        <div className={`absolute inset-0 ${isSmall ? 'bg-gradient-to-r from-black/25 via-transparent to-transparent' : 'bg-gradient-to-r from-black/70 via-black/15 to-transparent'}`} />
       </>
     )
   }
@@ -706,7 +722,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
         {count > 1 && (
           <>
             <button
-              onClick={() => goTo(activeIndex - 1)}
+              onClick={(event) => { event.stopPropagation(); goTo(activeIndex - 1) }}
               className={`hero-carousel-arrow hero-carousel-arrow--previous absolute ${isSmall ? 'left-4' : 'left-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
               aria-label="Previous"
             >
@@ -715,7 +731,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
               </svg>
             </button>
             <button
-              onClick={() => goTo(activeIndex + 1)}
+              onClick={(event) => { event.stopPropagation(); goTo(activeIndex + 1) }}
               className={`hero-carousel-arrow hero-carousel-arrow--next absolute ${isSmall ? 'right-4' : 'right-6'} top-1/2 -translate-y-1/2 z-20 ${isSmall ? 'w-9 h-9' : 'w-11 h-11'} rounded-full bg-black/30 hover:bg-black/60 backdrop-blur-md flex items-center justify-center text-white/60 hover:text-white transition-all duration-200 opacity-0 group-hover:opacity-100 cursor-pointer`}
               aria-label="Next"
             >
@@ -765,7 +781,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
 
           {/* Overview */}
           {item.overview && (
-            <p className={`text-white/60 leading-relaxed max-w-xl ${isSmall ? 'text-xs line-clamp-1 mb-3' : 'text-sm line-clamp-2 mb-4'}`}>
+            <p className={`text-white/60 leading-relaxed max-w-xl ${isSmall ? 'mobile-home-hero-overview text-xs line-clamp-2 mb-3' : 'text-sm line-clamp-2 mb-4'}`}>
               {item.overview}
             </p>
           )}
@@ -806,11 +822,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                   Go to Details
                 </Button>
               </div>
-            ) : (
-              <Button variant="white" size="md" onClick={() => nav(false)}>
-                Go to {type === 'movie' ? 'Movie' : 'Series'}
-              </Button>
-            )}
+            ) : null}
 
             {count > 1 && (
               <div
@@ -831,7 +843,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
                   {items.map((_, i) => (
                     <button
                       key={i}
-                      onClick={() => goTo(i)}
+                      onClick={(event) => { event.stopPropagation(); goTo(i) }}
                       className="hero-dots__dot"
                       data-active={i === activeIndex}
                       role="tab"

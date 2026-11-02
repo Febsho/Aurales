@@ -19,20 +19,23 @@ export interface MediaWorkerCapabilities {
   videoTranscode: boolean
 }
 
-export type MediaConversionMode = 'remux' | 'audioAac' | 'h264Aac'
+export type MediaConversionMode = 'auto' | 'remux' | 'audioAac' | 'h264Aac'
 
 export type MediaConversionStatus =
   | { jobId: string; status: 'processing' }
+  | { jobId: string; status: 'cancelled' }
   | { jobId: string; status: 'failed'; error: string }
-  | { jobId: string; status: 'ready'; mode: MediaConversionMode; bytes: number; url: string }
+  | { jobId: string; status: 'ready'; mode: Exclude<MediaConversionMode, 'auto'>; bytes: number; url: string; sourceInfo?: { container: string; streams: Array<{ codec_type?: string; codec_name?: string; profile?: string }> } }
 
-export async function createMediaSession(url: string, signal?: AbortSignal): Promise<{ url: string; expiresAt: number }> {
+export type PlaybackRequestHeaders = Record<string, string>
+
+export async function createMediaSession(url: string, signal?: AbortSignal, requestHeaders: PlaybackRequestHeaders = {}): Promise<{ url: string; expiresAt: number }> {
   const config = requireConfig()
   const response = await fetch(`${config.baseUrl}/v1/media/sessions`, {
     method: 'POST',
     headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
     credentials: workerCredentials(config),
-    body: JSON.stringify({ url }),
+    body: JSON.stringify({ url, headers: validatePlaybackRequestHeaders(requestHeaders) }),
     signal: signal ?? AbortSignal.timeout(10_000),
   })
   if (!response.ok) throw new Error(workerError(response.status))
@@ -43,13 +46,13 @@ export async function createMediaSession(url: string, signal?: AbortSignal): Pro
   return { url: validateMediaSessionUrl(data.url, config.baseUrl), expiresAt: data.expiresAt }
 }
 
-export async function startMediaConversion(url: string, mode: MediaConversionMode, signal?: AbortSignal): Promise<string> {
+export async function startMediaConversion(url: string, mode: MediaConversionMode, signal?: AbortSignal, requestHeaders: PlaybackRequestHeaders = {}, outputFormat: 'mp4' | 'hls' = 'mp4'): Promise<string> {
   const config = requireConfig()
   const response = await fetch(`${config.baseUrl}/v1/media/conversions`, {
     method: 'POST',
     headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
     credentials: workerCredentials(config),
-    body: JSON.stringify({ url, mode }),
+    body: JSON.stringify({ url, mode, outputFormat, headers: validatePlaybackRequestHeaders(requestHeaders) }),
     signal: signal ?? AbortSignal.timeout(10_000),
   })
   if (!response.ok) throw new Error(workerError(response.status))
@@ -70,10 +73,11 @@ export async function getMediaConversionStatus(jobId: string, signal?: AbortSign
   })
   if (!response.ok) throw new Error(workerError(response.status))
   const data = await response.json() as Record<string, unknown>
-  if (data.jobId !== jobId || !['processing', 'ready', 'failed'].includes(String(data.status))) {
+  if (data.jobId !== jobId || !['processing', 'cancelled', 'ready', 'failed'].includes(String(data.status))) {
     throw new Error('Media worker returned an invalid conversion status.')
   }
   if (data.status === 'processing') return { jobId, status: 'processing' }
+  if (data.status === 'cancelled') return { jobId, status: 'cancelled' }
   if (data.status === 'failed') return { jobId, status: 'failed', error: typeof data.error === 'string' ? data.error : 'conversion_failed' }
   if (typeof data.bytes !== 'number' || !Number.isFinite(data.bytes) || typeof data.mode !== 'string' || !['remux', 'audioAac', 'h264Aac'].includes(data.mode) || typeof data.url !== 'string') {
     throw new Error('Media worker returned an invalid conversion result.')
@@ -81,10 +85,36 @@ export async function getMediaConversionStatus(jobId: string, signal?: AbortSign
   return {
     jobId,
     status: 'ready',
-    mode: data.mode as MediaConversionMode,
+    mode: data.mode as Exclude<MediaConversionMode, 'auto'>,
     bytes: data.bytes,
     url: validateMediaSessionUrl(data.url, config.baseUrl),
+    ...(isMediaSourceInfo(data.sourceInfo) ? { sourceInfo: data.sourceInfo } : {}),
   }
+}
+
+function isMediaSourceInfo(value: unknown): value is NonNullable<Extract<MediaConversionStatus, { status: 'ready' }>['sourceInfo']> {
+  if (!value || typeof value !== 'object') return false
+  const info = value as Record<string, unknown>
+  return typeof info.container === 'string'
+    && info.container.length <= 256
+    && Array.isArray(info.streams)
+    && info.streams.length <= 32
+    && info.streams.every((stream) => Boolean(stream) && typeof stream === 'object'
+      && (!('codec_type' in stream) || typeof (stream as Record<string, unknown>).codec_type === 'string')
+      && (!('codec_name' in stream) || typeof (stream as Record<string, unknown>).codec_name === 'string')
+      && (!('profile' in stream) || typeof (stream as Record<string, unknown>).profile === 'string'))
+}
+
+export async function cancelMediaConversion(jobId: string): Promise<void> {
+  if (!/^[a-f\d]{32}$/i.test(jobId)) throw new Error('Invalid media conversion job ID.')
+  const config = requireConfig()
+  const response = await fetch(`${config.baseUrl}/v1/media/conversions/${jobId}`, {
+    method: 'DELETE',
+    headers: workerHeaders(config, { Accept: 'application/json' }),
+    credentials: workerCredentials(config),
+    signal: AbortSignal.timeout(8_000),
+  })
+  if (!response.ok && response.status !== 404) throw new Error(workerError(response.status))
 }
 
 export interface MediaWorkerProbeResult {
@@ -431,6 +461,25 @@ function validateMediaSessionUrl(value: string, baseUrl: string): string {
     throw new Error('Media worker returned an unsafe playback session URL.')
   }
   return sessionUrl.toString()
+}
+
+const PLAYBACK_REQUEST_HEADER_NAMES = new Set(['accept', 'authorization', 'cookie', 'origin', 'referer', 'user-agent'])
+
+export function validatePlaybackRequestHeaders(headers: PlaybackRequestHeaders): PlaybackRequestHeaders {
+  const entries = Object.entries(headers)
+  if (entries.length > 20) throw new Error('Stream supplied too many playback request headers.')
+  const safe: PlaybackRequestHeaders = {}
+  for (const [name, value] of entries) {
+    const normalized = name.toLowerCase()
+    if (!PLAYBACK_REQUEST_HEADER_NAMES.has(normalized) && (!/^x-(?!forwarded-|real-ip$|original-|rewrite-|http-method)[a-z0-9-]{1,64}$/.test(normalized))) {
+      throw new Error('Stream supplied an unsupported playback request header.')
+    }
+    if (typeof value !== 'string' || value.length > 4096 || /[\r\n\0]/.test(value)) {
+      throw new Error('Stream supplied an invalid playback request header value.')
+    }
+    safe[normalized] = value
+  }
+  return safe
 }
 
 function workerError(status: number): string {

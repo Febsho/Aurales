@@ -22,6 +22,7 @@ interface MediaRowProps {
   items: SearchResult[]
   layout?: 'poster' | 'ranked' | 'feature' | 'landscape' | 'list'
   showAllPath?: string
+  showAllItems?: SearchResult[]
   forceShowAll?: boolean
   disableArtOverride?: boolean
   disableTrailerPreview?: boolean
@@ -30,6 +31,8 @@ interface MediaRowProps {
   headerRightControls?: React.ReactNode
   /** Set false to keep cinematic cards at poster size (no landscape expansion on focus). */
   cinematicExpand?: boolean
+  /** Render standard-sized cards even when the app-wide theme is cinematic. */
+  disableCinematic?: boolean
 }
 
 function FixedShelfDetails({ item }: { item: SearchResult }) {
@@ -89,13 +92,12 @@ function FixedShelfDetails({ item }: { item: SearchResult }) {
   )
 }
 
-function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll = false, disableArtOverride = false, disableTrailerPreview = false, headerLeftControls, headerRightControls, cinematicExpand = true }: MediaRowProps) {
+function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, forceShowAll = false, disableArtOverride = false, disableTrailerPreview = false, headerLeftControls, headerRightControls, cinematicExpand = true, disableCinematic = false }: MediaRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
   const location = useLocation()
-  const posterSize = useAppStore((s) => s.posterSize)
   const rowEntryCount = useAppStore((s) => s.rowEntryCount)
-  const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
+  const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic' && !disableCinematic
   const homeCardAnimations = useAppStore((s) => s.homeCardAnimations)
   const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed' && location.pathname === '/' && !isMobileWebViewport()
   // Titles are not unique: a page can show several sections called "Trending".
@@ -109,11 +111,14 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   // that must never turn a user-selected Poster shelf back into Ranked. Feature
   // cards retain their chosen presentation on Fixed Home as well—the fixed-home
   // card sizing in MediaCard keeps them inside the hero-safe shelf area.
-  const effectiveLayout = layout
+  const isJellyfinCollectionRow = items.length > 0 && items.every((item) => item.mediaType === 'collection')
+  const effectiveLayout = isJellyfinCollectionRow ? 'landscape' : layout
   const specialLayout = effectiveLayout === 'ranked' || effectiveLayout === 'feature'
   // Focus belongs to a rendered card instance, not to a media ID. Catalogs can
   // legitimately contain duplicate/canonicalized entries with the same ID.
   const [focusedCardIndex, setFocusedCardIndex] = useState<number | null>(null)
+  const [scrollEdges, setScrollEdges] = useState({ left: false, right: false })
+  const scrollTargetRef = useRef<number | null>(null)
   const [renderedCount, setRenderedCount] = useState(() => getShelfView(shelfViewKey)?.renderedCount || INITIAL_RENDERED_CARDS)
   const renderMoreFrameRef = useRef(0)
   const handleCardFocus = useCallback((_item: SearchResult, cardIndex?: number) => {
@@ -124,53 +129,50 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
       setFocusedCardIndex((current) => current === cardIndex ? null : current)
     }
   }, [])
-  const showAllGeometry = useMemo<React.CSSProperties>(() => {
-    if (fixedHome) {
-      if (effectiveLayout === 'feature') return { width: 'calc(var(--fixed-cinematic-card-height) * .8)', height: 'var(--fixed-cinematic-card-height)', borderRadius: '1.6rem' }
-      // Unlike ranked titles, this action has no numeral gutter. Let it occupy
-      // the same portrait footprint as a normal poster rather than leaving a
-      // visually empty ranked-card-width tile at the end of the rail.
-      if (effectiveLayout === 'ranked') return { width: 'calc(var(--fixed-cinematic-card-height) * 2 / 3)', height: 'var(--fixed-cinematic-card-height)', borderRadius: '1rem' }
-      if (effectiveLayout === 'landscape') return { width: 'var(--fixed-cinematic-landscape-width)', height: 'var(--fixed-cinematic-landscape-height)', borderRadius: '1rem' }
-      return { width: 'var(--fixed-cinematic-card-width)', height: 'var(--fixed-cinematic-card-height)', borderRadius: '1rem' }
-    }
 
-    if (cinematic) {
-      if (effectiveLayout === 'feature' || effectiveLayout === 'ranked') {
-        const height = effectiveLayout === 'ranked'
-          ? posterSize === 'compact' ? '240px' : posterSize === 'large' ? '350px' : posterSize === 'huge' ? '400px' : '300px'
-          : posterSize === 'compact' ? '325px' : posterSize === 'large' ? '450px' : posterSize === 'huge' ? '525px' : '400px'
-        return {
-          width: `calc(${height} * ${effectiveLayout === 'feature' ? '.8' : '2 / 3'})`,
-          height,
-          borderRadius: '1rem',
-        }
-      }
-      if (effectiveLayout === 'landscape') return { width: 'clamp(15rem, 18vw, 21rem)', aspectRatio: '16 / 9', borderRadius: '1rem' }
-      return { width: 'clamp(10rem, 13vw, 13rem)', height: 'clamp(15rem, 19.5vw, 19.5rem)', borderRadius: '1rem' }
-    }
-
-    if (effectiveLayout === 'feature') {
-      const width = posterSize === 'compact' ? 200 : posterSize === 'large' ? 280 : posterSize === 'huge' ? 330 : 240
-      return { width, aspectRatio: '4 / 5', borderRadius: '1.6rem' }
-    }
-    if (effectiveLayout === 'ranked') {
-      const height = posterSize === 'compact' ? 210 : posterSize === 'large' ? 282 : posterSize === 'huge' ? 318 : 246
-      return { width: Math.round(height * 2 / 3), height, borderRadius: '1rem' }
-    }
-    if (effectiveLayout === 'landscape') {
-      const width = posterSize === 'compact' ? 240 : posterSize === 'large' ? 320 : posterSize === 'huge' ? 384 : 288
-      return { width, aspectRatio: '16 / 9', borderRadius: '1rem' }
-    }
-    const width = posterSize === 'compact' ? 112 : posterSize === 'large' ? 176 : posterSize === 'huge' ? 208 : 144
-    return { width, aspectRatio: '2 / 3', borderRadius: '1rem' }
-  }, [cinematic, effectiveLayout, fixedHome, posterSize])
+  const updateScrollEdges = useCallback(() => {
+    const element = scrollRef.current
+    if (!element) return
+    const maxScroll = Math.max(0, element.scrollWidth - element.clientWidth)
+    const next = { left: element.scrollLeft > 1, right: element.scrollLeft < maxScroll - 1 }
+    setScrollEdges((current) => current.left === next.left && current.right === next.right ? current : next)
+  }, [])
 
   const scroll = (direction: 'left' | 'right') => {
-    if (!scrollRef.current) return
-    const amount = Math.max(640, Math.floor(scrollRef.current.clientWidth * 0.85))
-    const scrollAmount = direction === 'left' ? -amount : amount
-    scrollRef.current.scrollBy({ left: scrollAmount, behavior: 'smooth' })
+    const element = scrollRef.current
+    if (!element) return
+    const maxScroll = Math.max(0, element.scrollWidth - element.clientWidth)
+    if (maxScroll <= 1) {
+      scrollTargetRef.current = 0
+      updateScrollEdges()
+      return
+    }
+    const cards = Array.from(element.querySelectorAll<HTMLElement>(':scope > .media-row-card-slot'))
+    const trackRect = element.getBoundingClientRect()
+    const startInset = Number.parseFloat(getComputedStyle(element).paddingLeft) || 0
+    const cardTargets = cards.map((card) => Math.max(0, Math.min(maxScroll,
+      element.scrollLeft + card.getBoundingClientRect().left - trackRect.left - startInset,
+    )))
+    if (!cardTargets.length) return
+
+    // Navigate by actual card starts instead of a guessed pixel distance.
+    // This keeps rapid taps deterministic and clamps the final step to the
+    // real scroll extent when the last card is only partly visible.
+    const current = scrollTargetRef.current ?? element.scrollLeft
+    let currentIndex = 0
+    for (let index = 1; index < cardTargets.length; index += 1) {
+      if (Math.abs(cardTargets[index]! - current) < Math.abs(cardTargets[currentIndex]! - current)) currentIndex = index
+    }
+    const nextIndex = Math.max(0, Math.min(cardTargets.length - 1, currentIndex + (direction === 'left' ? -2 : 2)))
+    let target = cardTargets[nextIndex]!
+    if (direction === 'right' && nextIndex === cardTargets.length - 1) target = maxScroll
+    if (direction === 'left' && nextIndex === 0) target = 0
+    scrollTargetRef.current = target
+    element.scrollTo({ left: target, behavior: 'smooth' })
+    updateScrollEdges()
+    window.setTimeout(() => {
+      if (scrollTargetRef.current === target) scrollTargetRef.current = null
+    }, 450)
   }
 
   const handleRowWheel = (event: React.WheelEvent<HTMLDivElement>) => {
@@ -220,10 +222,11 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
       }
     }
     fillViewport()
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(fillViewport)
+    updateScrollEdges()
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => { fillViewport(); updateScrollEdges() })
     observer?.observe(element)
     return () => observer?.disconnect()
-  }, [renderedCount, rowItems.length, shelfViewKey])
+  }, [renderedCount, rowItems.length, shelfViewKey, updateScrollEdges])
   useEffect(() => {
     setRenderedCount((count) => Math.max(count, getShelfView(shelfViewKey)?.renderedCount || INITIAL_RENDERED_CARDS))
   }, [rowItems, shelfViewKey])
@@ -261,7 +264,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
   }, [rowItems, disableArtOverride])
   // Pass the full row along so catalogs without a backing config (e.g. Discover
   // sections) can render everything even when the seeded cache is unavailable
-  const openShowAll = () => { if (showAllPath) navigate(showAllPath, { state: { showAllItems: visibleItems } }) }
+  const openShowAll = () => { if (showAllPath) navigate(showAllPath, { state: { showAllItems: showAllItems || visibleItems } }) }
   const renderMoreCards = useCallback((element: HTMLDivElement) => {
     if (renderedCount >= rowItems.length) return
     // Grow only when the user approaches the rendered edge. This preserves
@@ -305,7 +308,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2.5">
             {headerLeftControls}
-            <h2 className="text-xl font-bold tracking-tight text-white/95">{title}</h2>
+            {showAllPath ? <button onClick={openShowAll} aria-label={`Open ${title} catalog`} title="Open full list" className="focus-ring rounded-lg text-left"><h2 className="text-xl font-bold tracking-tight text-white/95">{title}</h2></button> : <h2 className="text-xl font-bold tracking-tight text-white/95">{title}</h2>}
           </div>
           <div>
             {headerRightControls}
@@ -328,11 +331,12 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
           {showAllPath ? (
             <button
               onClick={openShowAll}
+              aria-label={`Open ${title} catalog`}
               className="group/title flex items-center gap-1.5 cursor-pointer focus-ring rounded-lg"
-              title="Show all"
+              title="Open full list"
             >
               <h2 className="text-xl font-bold tracking-tight text-white/95 transition-colors group-hover/title:text-white">{title}</h2>
-              <svg className="w-4 h-4 text-white/0 transition-all duration-200 group-hover/title:text-white/60 group-hover/title:translate-x-0.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+              <svg className="w-4 h-4 text-white/45 transition-all duration-200 group-hover/title:text-white/80 group-hover/title:translate-x-0.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
                 <path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
@@ -345,7 +349,8 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
           <div className="flex gap-1">
           <button
             onClick={() => scroll('left')}
-            className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/15 flex items-center justify-center transition-colors cursor-pointer text-white/50 hover:text-white"
+            disabled={!scrollEdges.left}
+            className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/15 flex items-center justify-center transition-colors cursor-pointer text-white/50 hover:text-white disabled:opacity-20 disabled:cursor-default"
             aria-label="Scroll left"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
@@ -354,7 +359,8 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
           </button>
           <button
             onClick={() => scroll('right')}
-            className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/15 flex items-center justify-center transition-colors cursor-pointer text-white/50 hover:text-white"
+            disabled={!scrollEdges.right}
+            className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/15 flex items-center justify-center transition-colors cursor-pointer text-white/50 hover:text-white disabled:opacity-20 disabled:cursor-default"
             aria-label="Scroll right"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
@@ -367,7 +373,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
       <div
         ref={scrollRef}
         onKeyDown={handleRowKeyDown}
-        onScroll={handleRowScroll}
+        onScroll={(event) => { handleRowScroll(event); updateScrollEdges() }}
         onWheel={handleRowWheel}
         className={`flex items-start overflow-x-auto overflow-y-hidden overscroll-x-contain px-6 pt-4 -mt-4 pb-4 scrollbar-none ${effectiveLayout === 'ranked' ? 'gap-1' : effectiveLayout === 'feature' ? 'gap-5' : 'gap-4'} ${cinematic ? 'cinematic-row-track px-8 pb-8' : ''}`}
         style={{ scrollbarWidth: 'none', scrollSnapType: 'x proximity' }}
@@ -398,21 +404,6 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, forceShowAll =
             </React.Fragment>
           )
         })}
-        {shouldShowAll && showAllPath && (
-          <button
-            onClick={openShowAll}
-            data-show-all-layout={effectiveLayout}
-            className={`show-all-card focus-ring group flex flex-shrink-0 flex-col items-center justify-center self-start overflow-hidden border border-white/10 text-white ${effectiveLayout === 'ranked' ? 'ml-4' : ''}`}
-            style={showAllGeometry}
-          >
-            <div className="show-all-card__icon relative z-10 mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-white/[.12]">
-              <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2.25" viewBox="0 0 24 24">
-                <path d="M9 5l7 7-7 7" />
-              </svg>
-            </div>
-            <span className="relative z-10 text-sm font-bold tracking-tight">Show all</span>
-          </button>
-        )}
       </div>
     </section>
   )

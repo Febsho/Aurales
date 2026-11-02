@@ -8,9 +8,11 @@ import { markPerformance, measurePerformance } from './services/performanceMetri
 import WhoWatching from './components/WhoWatching'
 import ProfileSwitchTransition from './components/ProfileSwitchTransition'
 import { getProfileSetting } from './services/profiles'
-import { disconnectDisabledServerIntegrations } from './services/serverIntegrations'
 import { syncAddonsFromStore } from './services/addons'
 import { getPlatformCapabilities } from './platform/capabilities'
+import { refreshStaleServerCatalogs } from './services/serverIntegrations'
+import { consumeExternalPlaybackReturn } from './services/player/externalPlaybackReturn'
+import { recordPlaybackSample } from './services/viewingActivity'
 
 const HomePage = lazy(() => import('./pages/HomePage'))
 const SearchPage = lazy(() => import('./pages/SearchPage'))
@@ -24,6 +26,7 @@ const DiscoverPage = lazy(() => import('./pages/DiscoverPage'))
 const PersonPage = lazy(() => import('./pages/PersonPage'))
 const WatchTogetherPage = lazy(() => import('./pages/WatchTogetherPage'))
 const UpcomingPage = lazy(() => import('./pages/UpcomingPage'))
+const DocumentationPage = lazy(() => import('./pages/DocumentationPage'))
 const UpdatePrompt = lazy(() => import('./components/UpdatePrompt'))
 const SimklCallbackPage = lazy(() => import('./pages/SimklCallbackPage'))
 const MdblistCallbackPage = lazy(() => import('./pages/MdblistCallbackPage'))
@@ -67,8 +70,9 @@ function hasConfiguredAuralesSync(): boolean {
 
 export default function App() {
   const isAuthCallback = window.location.pathname === '/auth/simkl/callback' || window.location.pathname === '/auth/mdblist/callback'
+  const isExternalPlaybackCallback = new URLSearchParams(window.location.search).has('aurales_external_playback')
   const [chooseProfile, setChooseProfile] = useState(() => {
-    if (isAuthCallback) return false
+    if (isAuthCallback || isExternalPlaybackCallback) return false
     const switched = sessionStorage.getItem('aurales_profile_switched_v1')
     if (switched) sessionStorage.removeItem('aurales_profile_switched_v1')
     // A profile can opt into direct launch. Profile switching still uses its
@@ -82,9 +86,33 @@ export default function App() {
   const [updatePromptReady, setUpdatePromptReady] = useState(false)
 
   useEffect(() => {
+    if (!isExternalPlaybackCallback) return
+    const returned = consumeExternalPlaybackReturn(window.location.href)
+    if (!returned) return
+    useAppStore.getState().setWatchProgress(returned.progress.id, returned.progress)
+    if (returned.activity) {
+      const { mediaKey, title, mediaType, poster, tmdbId, season, episode } = returned.activity
+      recordPlaybackSample({
+        mediaKey,
+        title,
+        mediaType,
+        poster,
+        tmdbId,
+        season,
+        episode,
+        positionSeconds: returned.progress.progressSeconds,
+        durationSeconds: returned.progress.durationSeconds,
+        playing: false,
+        completed: returned.progress.completed,
+      })
+    }
+  }, [isExternalPlaybackCallback])
+
+  useEffect(() => {
     if (isAuthCallback) return
-    void disconnectDisabledServerIntegrations()
+    void refreshStaleServerCatalogs()
   }, [isAuthCallback])
+
   const addons = useAppStore((s) => s.addons)
   const accentColor = useAppStore((s) => s.accentColor)
   const interfaceTheme = useAppStore((s) => s.interfaceTheme)
@@ -389,6 +417,7 @@ export default function App() {
                 <Route path="/series/:id" element={<SeriesDetailPage />} />
                 <Route path="/person/:id" element={<PersonPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/docs" element={<DocumentationPage />} />
                 <Route path="/developer" element={<DeveloperPage />} />
                 <Route path="/discover" element={<DiscoverPage />} />
                 <Route path="/upcoming" element={<UpcomingPage />} />

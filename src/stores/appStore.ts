@@ -1552,7 +1552,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   useAddonMetadataFallback: localStorage.getItem('aurales_addon_metadata_fallback') !== 'false',
   preferTvdbAnimeSeasons: localStorage.getItem('aurales_tvdb_anime_seasons') !== 'false',
   animeTitleLanguage: (localStorage.getItem('aurales_anime_title_language') || 'auto') as 'english' | 'romaji' | 'native' | 'auto',
-  hideUnairedAnimeSeasons: localStorage.getItem('aurales_hide_unaired_anime_seasons') !== 'false',
+  hideUnairedAnimeSeasons: localStorage.getItem('aurales_hide_unaired_anime_seasons') === 'true',
   hideUnairedAnimeEpisodes: localStorage.getItem('aurales_hide_unaired_anime_eps') !== 'false',
   includeAnimeSpecials: localStorage.getItem('aurales_include_anime_specials') === 'true',
   ignoreAddonMetadataForAnime: localStorage.getItem('aurales_ignore_addon_meta_anime') !== 'false',

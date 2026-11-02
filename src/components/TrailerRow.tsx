@@ -35,7 +35,7 @@ export default function TrailerRow({ title, videos }: TrailerRowProps) {
           return (
           <a
             key={video.id}
-            href={`https://www.youtube.com/watch?v=${video.key}`}
+            href={video.url || `https://www.youtube.com/watch?v=${video.key}`}
             target="_blank"
             rel="noopener noreferrer"
             className="trailer-showcase-card flex-shrink-0 group"

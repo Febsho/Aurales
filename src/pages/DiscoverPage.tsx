@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ChevronDown, RefreshCw, RotateCcw, Search, Shuffle, X } from 'lucide-react'
+import { Info, RefreshCw, RotateCcw, Search, Settings, Shuffle, ThumbsDown, X } from 'lucide-react'
 import type { DiscoverConfig, SearchResult, WatchProgress } from '../types'
-import { discoverTmdbWithCache, getTmdbPerson, tmdbProvider } from '../services/tmdb'
+import { discoverTmdbPageWithCache, discoverTmdbWithCache, getTmdbPerson, getTrendingTmdb, tmdbProvider } from '../services/tmdb'
 import MediaRow from '../components/MediaRow'
+import MediaCard from '../components/MediaCard'
 import { applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
 import { useAppStore } from '../stores/appStore'
 import { useCatalogStore } from '../stores/catalogStore'
 import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
-import WatchlistButton from '../components/WatchlistButton'
 import CatalogKeyNotice from '../components/CatalogKeyNotice'
-import { applyRecommendationFeedback, buildTasteProfile, generateDiscoverySections, rankCandidates } from '../services/discovery/recommendationEngine'
+import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseRecommendation, generateDiscoverySections, rankCandidates } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
 import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktWatchedShows, getRatings as getTraktRatings } from '../services/trakt/sync'
@@ -20,18 +21,21 @@ import { getStremioAuth, getStremioWatchHistory, type StremioLibraryEntry } from
 import type { AniListFullEntry } from '../services/anilist'
 import { useDiscoverPrefsStore, getDiscoverPrefs, excludeGenreIds, onlyGenreIds, candidatePassesPrefs, prefsSignature, prefsWeights } from '../stores/discoverPrefsStore'
 import { loadRecommendationImpressions, recordRecommendationImpressions } from '../services/discovery/impressionStore'
-import { getTrailerSource, type TrailerSource } from '../services/trailers'
-import TrailerPreview from '../components/TrailerPreview'
 import { discoveryViewState } from '../services/discovery/viewState'
 import { collectCandidateSources } from '../services/discovery/candidatePipeline'
 import { catalogContentFingerprint } from '../services/cache/homeStartupSnapshot'
 import { providerCacheScope } from '../services/cache/homeRowCacheKeys'
-import { berlinDaySeed, getBerlinDateKey, getNextBerlinMidnight } from '../services/discovery/berlinDate'
-import { DISCOVERY_ALGORITHM_VERSION, latestSnapshotForScope, makeDailySnapshotKey } from '../services/discovery/dailySnapshot'
-import { getActiveProfileId } from '../services/profiles'
-import { getServerCatalogItems, listServerCatalogs } from '../services/serverIntegrations'
-import { dedupeMediaItems, mediaIdentity } from '../services/mediaPresentation'
-import { getLocalWatchlist, subscribeLocalWatchlist } from '../services/localWatchlist'
+import { getBerlinDateKey, getNextBerlinMidnight } from '../services/discovery/berlinDate'
+import { DISCOVERY_ALGORITHM_VERSION, discoverySourcesSettled, latestSnapshotForScope, makeDailySnapshotKey } from '../services/discovery/dailySnapshot'
+import { getActiveProfile, getActiveProfileId } from '../services/profiles'
+import { mediaIdentity } from '../services/mediaPresentation'
+import { getLocalWatchlist, subscribeLocalWatchlist, type LocalWatchlistItem } from '../services/localWatchlist'
+import { loadAmbientColor } from '../services/ambientColor'
+import { classifyPosterColor, POSTER_COLOR_GROUPS, type PosterColorGroup } from '../services/discovery/posterColor'
+import { parseLibraryAddedAt, type DatedLibraryItem } from '../services/discovery/libraryItems'
+import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
+import DiscoveryLibrariesRow from '../components/discovery/DiscoveryLibrariesRow'
+
 
 const GENRE_MAP_MOVIE: Record<number, string> = {
   28: 'Action', 12: 'Adventure', 16: 'Animation', 35: 'Comedy', 80: 'Crime',
@@ -75,32 +79,11 @@ export const SERVICE_PROVIDER_MAP: Record<string, { ids: number[]; name: string 
   "Netflix Kids": { ids: [8], name: "Netflix Kids" }
 }
 
-const MOVIE_MOODS = [
-  { title: 'Mind Benders', genres: [878, 9648, 53] },
-  { title: 'Comfort Watch', genres: [35, 10751, 16] },
-  { title: 'After Dark', genres: [27, 53] },
-  { title: 'Heists & Cons', genres: [80, 53] },
-  { title: 'Epic Adventures', genres: [12, 28, 14] },
-  { title: 'Date Night', genres: [10749, 35] },
-]
-
-const SERIES_MOODS = [
-  { title: 'Prestige Drama', genres: [18] },
-  { title: 'Mystery Box', genres: [9648, 10765] },
-  { title: 'Laugh Out Loud', genres: [35] },
-  { title: 'Crime Stories', genres: [80, 18] },
-  { title: 'Big Adventures', genres: [10759, 10765] },
-  { title: 'Reality Escape', genres: [10764] },
-]
-
-const ANIME_MOODS = [
-  { title: 'Action Packed', genres: [10759, 10765] },
-  { title: 'Slice of Life & Comedy', genres: [35, 10751] },
-  { title: 'Thrills & Mystery', genres: [9648, 80] },
-  { title: 'Emotional Journeys', genres: [18] },
-  { title: 'Sci-Fi & Fantasy', genres: [10765] },
-  { title: 'Lighthearted Fun', genres: [35, 10762] },
-]
+function formatWatchDuration(minutes: number): string {
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return hours ? `${hours}h${remainingMinutes ? ` ${remainingMinutes}m` : ''}` : `${remainingMinutes}m`
+}
 
 const HENTAI_EXCLUDE_KEYWORDS = [{ id: 293054, name: 'hentai' }, { id: 6126, name: 'ecchi' }]
 // Impressions recorded this session — once per day/tab/mode, so revisiting Discover
@@ -111,20 +94,42 @@ const MAX_DISCOVER_SESSION_KEYS = 500
 const ANIME_EXCLUDE_KEYWORDS = [{ id: 210024, name: 'anime' }]
 
 const DISCOVERY_SECTION_TITLES: Record<string, string> = {
-  'made-for-you': 'Recommended',
   'hidden-gems': 'Hidden Gems',
   new: 'Recently Released',
-  critics: 'Critically Acclaimed',
 }
 
-const DISCOVERY_MODES = [
-  ['for-you', 'Recommended'],
-  ['new', 'Something New'],
-  ['hidden-gems', 'Hidden Gems'],
-  ['critically-acclaimed', 'Critically Acclaimed'],
-  ['recently-released', 'Recently Released'],
-  ['quick-watch', 'Quick Watch'],
-] as const
+type DiscoveryMoodId = 'feel-good' | 'edge-of-your-seat' | 'mind-bending'
+const DISCOVERY_MOODS: Record<DiscoverTab, readonly { id: DiscoveryMoodId; label: string; genres: readonly number[] }[]> = {
+  movies: [
+    { id: 'feel-good', label: 'Feel-Good', genres: [35, 10751, 10749] },
+    { id: 'edge-of-your-seat', label: 'Edge of Your Seat', genres: [53, 27, 80] },
+    { id: 'mind-bending', label: 'Mind-Bending', genres: [878, 9648, 14] },
+  ],
+  series: [
+    { id: 'feel-good', label: 'Feel-Good', genres: [35, 10751, 10762] },
+    { id: 'edge-of-your-seat', label: 'Edge of Your Seat', genres: [80, 9648, 10759] },
+    { id: 'mind-bending', label: 'Mind-Bending', genres: [10765, 9648, 18] },
+  ],
+  anime: [
+    { id: 'feel-good', label: 'Feel-Good', genres: [35, 10751, 10762] },
+    { id: 'edge-of-your-seat', label: 'Edge of Your Seat', genres: [10759, 9648, 80] },
+    { id: 'mind-bending', label: 'Mind-Bending', genres: [10765, 9648, 878] },
+  ],
+}
+
+type DiscoveryTimeChoice = 'short' | 'standard' | 'long'
+const DISCOVERY_TIME_CHOICES: Record<'movie' | 'series', readonly { id: DiscoveryTimeChoice; label: string; runtimeMin?: number; runtimeMax?: number }[]> = {
+  movie: [
+    { id: 'short', label: 'Under 90 Minutes', runtimeMax: 90 },
+    { id: 'standard', label: 'About 2 Hours', runtimeMin: 91, runtimeMax: 150 },
+    { id: 'long', label: 'Long Night', runtimeMin: 151 },
+  ],
+  series: [
+    { id: 'short', label: 'Short Episode', runtimeMax: 30 },
+    { id: 'standard', label: 'About 45 Minutes', runtimeMin: 31, runtimeMax: 55 },
+    { id: 'long', label: 'Long Episode', runtimeMin: 56 },
+  ],
+}
 
 function readDiscoveryPicks(key: string): string[] {
   try {
@@ -135,52 +140,27 @@ function readDiscoveryPicks(key: string): string[] {
   }
 }
 
-function DiscoveryPicker({ item, onClose, onSpin, onOpen, isSpinning }: {
-  item: SearchResult
-  onClose: () => void
-  onSpin: () => void
-  onOpen: () => void
-  isSpinning: boolean
-}) {
-  const closeButtonRef = useRef<HTMLButtonElement>(null)
-  useEffect(() => {
-    const returnFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-      if (event.key !== 'Tab') return
-      const controls = Array.from(document.querySelectorAll<HTMLElement>('.discover-picker button'))
-      if (!controls.length) return
-      const first = controls[0]!
-      const last = controls[controls.length - 1]!
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
-    }
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    closeButtonRef.current?.focus()
-    window.addEventListener('keydown', onKeyDown)
-    return () => { document.body.style.overflow = previousOverflow; window.removeEventListener('keydown', onKeyDown); returnFocusTo?.focus() }
-  }, [onClose])
+function DiscoveryReveal({ children }: { children: import('react').ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [revealed, setRevealed] = useState(false)
 
-  const poster = item.poster || item.backdrop
-  const genre = item.genres?.slice(0, 2).join(' · ') || (item.isAnime ? 'Anime' : item.type === 'series' ? 'Series' : 'Movie')
-  return <div className="discover-picker-backdrop" role="presentation" onClick={onClose}>
-    <section className="discover-picker" role="dialog" aria-modal="true" aria-labelledby="discover-picker-title" onClick={(event) => event.stopPropagation()}>
-      <div className="discover-picker__grabber" aria-hidden="true" />
-      <button ref={closeButtonRef} className="discover-picker__close" type="button" aria-label="Close picker" onClick={onClose}><X size={19} /></button>
-      <div key={item.id} className={`discover-picker__reveal${isSpinning ? ' is-spinning' : ''}`}>
-        {poster ? <img className="discover-picker__poster" src={poster} alt={`${item.title} poster`} /> : <div className="discover-picker__poster discover-picker__poster--empty" aria-hidden="true">A</div>}
-      </div>
-      <p className="discover-picker__eyebrow">Tonight, try</p>
-      <h2 key={`title-${item.id}`} id="discover-picker-title" className={isSpinning ? 'is-spinning' : ''} aria-live="polite">{item.title}</h2>
-      <p className="discover-picker__meta">{genre}{item.year ? ` · ${item.year}` : ''}{item.rating != null ? ` · ★ ${Number(item.rating).toFixed(1)}` : ''}</p>
-      {isSpinning && <p className="discover-picker__status" role="status">Finding tonight’s pick…</p>}
-      <div className="discover-picker__actions">
-        <button className="discover-picker__open" type="button" onClick={onOpen} disabled={isSpinning}>Open</button>
-        <button className="discover-picker__spin" type="button" onClick={onSpin} disabled={isSpinning}><Shuffle size={17} /> <span>Another option</span></button>
-      </div>
-    </section>
-  </div>
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('IntersectionObserver' in window) || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setRevealed(true)
+      return
+    }
+    const element = ref.current
+    if (!element) return
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry?.isIntersecting) return
+      setRevealed(true)
+      observer.disconnect()
+    }, { rootMargin: '0px 0px -32px 0px', threshold: 0.06 })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+
+  return <div ref={ref} className="discover-reveal" data-revealed={revealed}>{children}</div>
 }
 
 // Anime = explicitly flagged, or Japanese-language animation. Plain genre-16 animation
@@ -321,16 +301,20 @@ function makeConfig(
   return config
 }
 
-function useDiscoverRow(config: DiscoverConfig, rowId: string, fallback: SearchResult[] = [], enabled = true, refreshNonce = 0) {
+function useDiscoverRow(config: DiscoverConfig, rowId: string, enabled = true, refreshNonce = 0, onLoadingChange?: (rowId: string, loading: boolean) => void) {
   const setCachedRow = useDiscoverStore((s) => s.setCachedRow)
 
   // Read cache snapshot once — avoid putting cachedRows in deps to prevent feedback loops
   const items = useDiscoverStore((s) => s.cachedRows[rowId]?.items) ?? []
   useEffect(() => {
-    if (!enabled) return
+    if (!enabled) {
+      onLoadingChange?.(rowId, false)
+      return
+    }
 
     let cancelled = false
     let staleRefreshStarted = false
+    onLoadingChange?.(rowId, items.length === 0)
     const forceKey = `${rowId}:${refreshNonce}`
     const forceRefresh = refreshNonce > 0 && !FORCED_DISCOVERY_REFRESHES.has(forceKey)
     if (forceRefresh) rememberDiscoverSessionKey(FORCED_DISCOVERY_REFRESHES, forceKey)
@@ -345,22 +329,18 @@ function useDiscoverRow(config: DiscoverConfig, rowId: string, fallback: SearchR
       .then(async (results) => {
         if (cancelled) return
         if (results.length === 0 && items.length > 0) return
-        const rawItems = results.length > 0 ? results : fallback
         const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
-        const enriched = await enrichSearchResultsWithAppMetadata(rawItems)
+        const enriched = await enrichSearchResultsWithAppMetadata(results)
         const finalItems = enriched.map(applySearchResultArt)
         if (!cancelled && !staleRefreshStarted && (finalItems.length > 0 || items.length === 0)) setCachedRow(rowId, finalItems)
       })
-      .catch(async () => {
-        if (cancelled || items.length > 0) return
-        const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
-        const enriched = await enrichSearchResultsWithAppMetadata(fallback)
-        const finalItems = enriched.map(applySearchResultArt)
-        if (!cancelled) setCachedRow(rowId, finalItems)
+      .catch(() => {
+        if (!cancelled && items.length === 0) setCachedRow(rowId, [])
       })
+      .finally(() => { if (!cancelled) onLoadingChange?.(rowId, false) })
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rowId, enabled, refreshNonce])
+  }, [rowId, enabled, refreshNonce, onLoadingChange])
 
   return items
 }
@@ -374,12 +354,6 @@ function getTopGenre(items: SearchResult[], type: 'movie' | 'series'): number | 
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
 }
 
-function rotateItems(items: SearchResult[], offset: number): SearchResult[] {
-  if (items.length === 0) return items
-  const start = offset % items.length
-  return [...items.slice(start), ...items.slice(0, start)]
-}
-
 function opaqueScope(value: string | null): string {
   if (!value) return 'none'
   let hash = 2166136261
@@ -388,7 +362,7 @@ function opaqueScope(value: string | null): string {
 }
 
 function recommendationCandidate(item: SearchResult, source: RecommendationCandidate['source'], overrides: Partial<RecommendationCandidate> = {}): RecommendationCandidate {
-  return { item, source, voteCount:item.voteCount, popularity:item.popularity, runtimeMinutes:item.runtime, releaseDate:item.releaseDate, ...overrides }
+  return { item, source, voteCount:item.voteCount, popularity:item.popularity, trendSignal:source === 'tmdb-trending', runtimeMinutes:item.runtime, releaseDate:item.releaseDate, ...overrides }
 }
 
 function discoveryProgressSignature(progress: Map<string, WatchProgress>, rankingNow: number): string {
@@ -413,6 +387,7 @@ function discoveryProgressSignature(progress: Map<string, WatchProgress>, rankin
 
 export default function DiscoverPage() {
   const navigate = useNavigate()
+  const activeProfile = getActiveProfile()
   const tab = useDiscoverStore((s) => s.tab)
   const setTab = useDiscoverStore((s) => s.setTab)
   const persistedRankings = useDiscoverStore((s) => s.rankedSnapshots)
@@ -426,6 +401,8 @@ export default function DiscoverPage() {
   const traktConnected = useAppStore((s) => s.traktConnected)
   const simklConnected = useAppStore((s) => s.simklConnected)
   const anilistConnected = useAppStore((s) => s.anilistConnected)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
+  const homeRows = useAppStore((s) => s.homeRows)
   const stremioAuthKey = useMemo(() => getStremioAuth()?.authKey ?? null, [])
   const accountScope = useMemo(() => [
     traktConnected ? `trakt:${providerCacheScope('trakt')}` : '',
@@ -433,51 +410,57 @@ export default function DiscoverPage() {
     anilistConnected ? `anilist:${providerCacheScope('anilist')}` : '',
     stremioAuthKey ? `stremio:${opaqueScope(stremioAuthKey)}` : '',
   ].filter(Boolean).join('|') || 'local', [traktConnected, simklConnected, anilistConnected, stremioAuthKey])
-  const [mode, setMode] = useState<DiscoveryMode>(() => (localStorage.getItem('aurales_discovery_mode') as DiscoveryMode) || 'for-you')
+  // Discovery is one blended stream; the old top-level Browse selector split
+  // titles into modes even though the page already presents every shelf.
+  const mode: DiscoveryMode = 'for-you'
   const prefs = useDiscoverPrefsStore((s) => s.prefs)
 
   const [feedback, setFeedback] = useState<RecommendationFeedback[]>(() => loadRecommendationFeedback())
+  const [trendingSnapshot, setTrendingSnapshot] = useState<{ scope: string; items: SearchResult[] }>({ scope: '', items: [] })
   const [similarCandidates, setSimilarCandidates] = useState<RecommendationCandidate[]>([])
   const [watchedTasteMetadata, setWatchedTasteMetadata] = useState<NonNullable<import('../services/discovery/types').DiscoveryActivity['tasteMetadata']>>([])
-  const [connectedActivity, setConnectedActivity] = useState<{ items: SearchResult[]; progress: import('../types').WatchProgress[]; ratings: Array<{item:SearchResult;rating:number}>; watchlist:SearchResult[]; rewatches:SearchResult[]; bingeItems:SearchResult[] }>({ items:[], progress:[], ratings:[], watchlist:[], rewatches:[], bingeItems:[] })
-  const [localWatchlist, setLocalWatchlist] = useState<SearchResult[]>(() => getLocalWatchlist())
+  const [connectedActivity, setConnectedActivity] = useState<{ items: SearchResult[]; progress: import('../types').WatchProgress[]; ratings: Array<{item:SearchResult;rating:number}>; watchlist:DatedLibraryItem[]; rewatches:SearchResult[]; bingeItems:SearchResult[] }>({ items:[], progress:[], ratings:[], watchlist:[], rewatches:[], bingeItems:[] })
+  const [localWatchlist, setLocalWatchlist] = useState<LocalWatchlistItem[]>(() => getLocalWatchlist())
   useEffect(() => subscribeLocalWatchlist(() => setLocalWatchlist(getLocalWatchlist())), [])
   const [impressions] = useState(() => loadRecommendationImpressions())
-  const [heroTrailer, setHeroTrailer] = useState<TrailerSource | null>(null)
-  const [trailerOpen, setTrailerOpen] = useState(false)
   const [initialWaitComplete, setInitialWaitComplete] = useState(false)
-  const [serverDiscoverItems, setServerDiscoverItems] = useState<SearchResult[]>([])
-  const [moodIndex, setMoodIndex] = useState(0)
+  const [genreLoading, setGenreLoading] = useState(false)
+  const [discoveryRowLoads, setDiscoveryRowLoads] = useState<Record<string, boolean>>({})
+  const reportDiscoveryRowLoading = useCallback((rowId: string, loading: boolean) => {
+    setDiscoveryRowLoads((current) => current[rowId] === loading ? current : { ...current, [rowId]: loading })
+  }, [])
+  const reportGenreLoading = useCallback((_rowId: string, loading: boolean) => setGenreLoading(loading), [])
+  const [trendingReadyScope, setTrendingReadyScope] = useState('')
+  const [similarReadyScope, setSimilarReadyScope] = useState('')
+  const [connectedReadyScope, setConnectedReadyScope] = useState('')
+  const [selectedGenreId, setSelectedGenreId] = useState<number | null>(null)
+  const [selectedMoodId, setSelectedMoodId] = useState<DiscoveryMoodId>('feel-good')
+  const [selectedPosterColor, setSelectedPosterColor] = useState<PosterColorGroup | 'all'>('all')
+  const [posterColorSamples, setPosterColorSamples] = useState<Array<{ item: SearchResult; color: PosterColorGroup }>>([])
+  const [timeChoice, setTimeChoice] = useState<DiscoveryTimeChoice>('short')
   const [tasteQuery, setTasteQuery] = useState('')
   const [bingeIndex, setBingeIndex] = useState(0)
+  const [moreToDiscover, setMoreToDiscover] = useState<SearchResult[]>([])
+  const [moreToDiscoverStatus, setMoreToDiscoverStatus] = useState<'idle' | 'loading' | 'error' | 'done'>('idle')
+  const moreToDiscoverSentinelRef = useRef<HTMLDivElement>(null)
+  const moreToDiscoverScopeRef = useRef('')
+  const moreToDiscoverItemsRef = useRef<SearchResult[]>([])
+  const moreToDiscoverStatusRef = useRef<'idle' | 'loading' | 'error' | 'done'>('idle')
+  const moreToDiscoverLoadingRef = useRef(false)
+  const moreToDiscoverPagesRef = useRef({ movie: 3, series: 3 })
+  const moreToDiscoverExhaustedRef = useRef({ movie: false, series: false })
+  const loadMoreDiscoveryRef = useRef<() => Promise<void>>(async () => undefined)
+  const genrePicksRef = useRef<HTMLDivElement>(null)
+  const surpriseButtonRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      try {
-        const catalogs = await listServerCatalogs()
-        const relevant = catalogs.filter((catalog) => {
-          if (catalog.kind !== 'library') return false
-          if (tab === 'movies') return catalog.contentType === 'movie' || catalog.catalogId === 'movies'
-          if (tab === 'anime') return catalog.contentType === 'anime' || catalog.catalogId === 'anime'
-          return catalog.contentType === 'series' || catalog.catalogId === 'series'
-        })
-        const settled = await Promise.allSettled(relevant.map((catalog) => (
-          getServerCatalogItems(catalog.connectionId, catalog.catalogId, 40)
-        )))
-        if (cancelled) return
-        const merged = dedupeMediaItems(settled.flatMap((result) => result.status === 'fulfilled' ? result.value : []))
-          .filter((item) => tab === 'anime' ? item.isAnime : tab === 'movies' ? item.type === 'movie' && !item.isAnime : item.type === 'series' && !item.isAnime)
-          .slice(0, 40)
-        setServerDiscoverItems(merged)
-      } catch {
-        if (!cancelled) setServerDiscoverItems([])
-      }
-    }
-    void load()
-    window.addEventListener('aurales:server-catalogs-changed', load)
-    return () => { cancelled = true; window.removeEventListener('aurales:server-catalogs-changed', load) }
-  }, [tab])
+    if (selectedGenreId == null) return
+    const frame = window.requestAnimationFrame(() => {
+      genrePicksRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [selectedGenreId])
+
   // Rank against the start of the day, not the exact mount time, so recency scoring
   // is identical on every visit within a day (a source of visit-to-visit reshuffling)
   const [berlinDateKey, setBerlinDateKey] = useState(() => getBerlinDateKey())
@@ -494,15 +477,30 @@ export default function DiscoverPage() {
   const watchProgressRef = useRef(watchProgress)
   watchProgressRef.current = watchProgress
   const [starterGenres]=useState<number[]>(()=>{try{const saved=JSON.parse(localStorage.getItem('aurales_discovery_starter_genres')||'[]');return Array.isArray(saved)?saved.filter((value):value is number=>Number.isFinite(value)):[]}catch{return[]}})
-  const [heroIndex,setHeroIndex]=useState(0)
+  const [pickerSelectionKey, setPickerSelectionKey] = useState<string | null>(null)
   const [heroLogoError,setHeroLogoError]=useState(false)
+  const [pickerLogoError,setPickerLogoError]=useState(false)
   const [heroArt,setHeroArt]=useState<Record<string,{poster?:string;backdrop?:string;logo?:string}>>({})
+  const [loadedHeroBackdrop,setLoadedHeroBackdrop]=useState<string | null>(null)
+  const [surpriseSpinning, setSurpriseSpinning] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerClosing, setPickerClosing] = useState(false)
+  const [preferencesOpen, setPreferencesOpen] = useState(false)
+  const preferencesButtonRef = useRef<HTMLButtonElement>(null)
+  const setDiscoverPrefs = useDiscoverPrefsStore((s) => s.setPrefs)
+  const resetDiscoverPrefs = useDiscoverPrefsStore((s) => s.resetPrefs)
+  const pickerClosingRef = useRef(false)
+  const pickerCloseTimerRef = useRef<number | null>(null)
+  const surpriseRunRef = useRef(0)
   const [pickOffset, setPickOffset] = useState(0)
   const pickStorageKey = `aurales_discovery_picks:${getActiveProfileId()}:${tab}`
   const [pickedIds, setPickedIds] = useState<string[]>(() => readDiscoveryPicks(pickStorageKey))
 
   useEffect(() => { setPickedIds(readDiscoveryPicks(pickStorageKey)); setPickOffset(0) }, [pickStorageKey])
+  useEffect(() => () => {
+    surpriseRunRef.current += 1
+    if (pickerCloseTimerRef.current != null) window.clearTimeout(pickerCloseTimerRef.current)
+  }, [])
 
   useEffect(() => {
     const refreshDate = () => setBerlinDateKey((current) => {
@@ -525,14 +523,8 @@ export default function DiscoverPage() {
   }, [])
 
   const genreMap = tab === 'movies' ? GENRE_MAP_MOVIE : tab === 'series' ? GENRE_MAP_TV : GENRE_MAP_ANIME
+  const genreOptions = useMemo(() => Object.entries(genreMap).map(([id, title]) => ({ id: Number(id), title })), [genreMap])
   const contentType = tab === 'movies' ? 'movie' : 'series'
-  const fallback = useMemo<SearchResult[]>(() => [], [])
-  const fallbackVariants = useMemo(() => ({
-    taste: rotateItems(fallback, 1),
-    mood: rotateItems(fallback, 3),
-    gems: rotateItems(fallback, 5),
-    quick: rotateItems(fallback, 7),
-  }), [fallback])
   const preferences = useMemo(() => ({ region, minRating, includeAdult }), [region, minRating, includeAdult])
   const preferenceKey = `${region}-${minRating}-${includeAdult}`
   // Advanced preferences change the TMDB request itself. Include a compact
@@ -540,20 +532,43 @@ export default function DiscoverPage() {
   // silently reuse results fetched for the previous query.
   const discoveryPrefsKey = opaqueScope(prefsSignature(prefs))
   const discoveryQueryKey = `${preferenceKey}-${discoveryPrefsKey}`
+  const continuationScope = `${tab}:${discoveryQueryKey}`
+  useEffect(() => {
+    moreToDiscoverScopeRef.current = continuationScope
+    moreToDiscoverItemsRef.current = []
+    moreToDiscoverStatusRef.current = 'idle'
+    moreToDiscoverLoadingRef.current = false
+    moreToDiscoverPagesRef.current = { movie: 3, series: 3 }
+    moreToDiscoverExhaustedRef.current = tab === 'anime'
+      ? { movie: false, series: false }
+      : tab === 'movies'
+        ? { movie: false, series: true }
+        : { movie: true, series: false }
+    setMoreToDiscover([])
+    setMoreToDiscoverStatus('idle')
+  }, [continuationScope, tab])
+  const trendingScope = `${tab}:${discoveryQueryKey}:week`
+  const currentTrending = useMemo(() => trendingSnapshot.scope === trendingScope ? trendingSnapshot.items : [], [trendingSnapshot, trendingScope])
+  // A daily snapshot is stable for an unchanged taste profile, but connected
+  // watchlists and playback history can hydrate after the first render. Include
+  // their identity fingerprint so those newly available seeds replace a stale
+  // anonymous snapshot on the same day.
+  const personalizationScope = opaqueScope(JSON.stringify({
+    favorites: [...localWatchlist, ...connectedActivity.watchlist].map(mediaIdentity).sort(),
+    watched: [...recentlyViewed, ...connectedActivity.items].map(mediaIdentity).sort(),
+    progress: progressSignals.watchedSeeds,
+    trending: currentTrending.map(mediaIdentity).sort(),
+  }))
   // Snapshots are durable per person and Berlin date.  Switching away and
-  // back therefore restores that profile's frozen daily Discover ranking.
-  const dailySnapshotScope = `${getActiveProfileId()}:${tab}:${mode}:${discoveryQueryKey}:${accountScope}`
+  // back therefore restores that profile's frozen daily Discover ranking,
+  // updated when its local or connected taste signals have changed.
+  const dailySnapshotScope = `${getActiveProfileId()}:${tab}:${mode}:${discoveryQueryKey}:${accountScope}:${personalizationScope}`
   const dailySnapshotKey = makeDailySnapshotKey(berlinDateKey, dailySnapshotScope)
   const dailySnapshot = persistedRankings[dailySnapshotKey]
-  const hasDailySnapshot = Boolean(dailySnapshot?.length)
+  const hasDailySnapshot = Boolean(dailySnapshot?.length && dailySnapshotMeta[dailySnapshotKey]?.algorithmVersion === DISCOVERY_ALGORITHM_VERSION)
   const refreshNonce = 0
   useEffect(() => { const reset=window.setTimeout(()=>setInitialWaitComplete(false),0); const timer=window.setTimeout(()=>setInitialWaitComplete(true),4000); return()=>{window.clearTimeout(reset);window.clearTimeout(timer)} },[tab,discoveryQueryKey,mode])
   const tasteGenre = useMemo(() => getTopGenre(recentlyViewed, contentType), [recentlyViewed, contentType])
-  const moodOptions = useMemo(() => tab === 'movies' ? MOVIE_MOODS : tab === 'series' ? SERIES_MOODS : ANIME_MOODS, [tab])
-  const mood = moodOptions[moodIndex % moodOptions.length]!
-
-  useEffect(() => { setMoodIndex(berlinDaySeed(new Date(`${berlinDateKey}T12:00:00.000Z`)) % 3) }, [tab, berlinDateKey])
-
   const animeOverrides = tab === 'anime' ? {
     originalLanguage: 'ja',
     includeGenres: ['16'],
@@ -561,36 +576,54 @@ export default function DiscoverPage() {
   } : {
     excludeKeywords: ANIME_EXCLUDE_KEYWORDS,
   }
+  const recommendationRowIds = [
+    `discover-trending-${tab}-${discoveryQueryKey}`,
+    `discover-toprated-${tab}-${discoveryQueryKey}`,
+    `discover-gems-${tab}-${discoveryQueryKey}`,
+    `discover-quick-${tab}-${discoveryQueryKey}`,
+    `discover-for-you-${tab}-${tasteGenre || 'starter'}-${discoveryQueryKey}`,
+    ...(tab === 'anime' ? [`discover-anime-movies-${discoveryQueryKey}`, `discover-anime-movies-top-${discoveryQueryKey}`] : []),
+  ]
 
   const trending = useDiscoverRow(
     makeConfig(contentType, 'popularity.desc', preferences, animeOverrides),
     `discover-trending-${tab}-${discoveryQueryKey}`,
-    fallback,
     !hasDailySnapshot,
     refreshNonce,
+    reportDiscoveryRowLoading,
   )
+  useEffect(() => {
+    let cancelled = false
+    getTrendingTmdb(contentType, 'week')
+      .then((items) => {
+        if (!cancelled) setTrendingSnapshot({ scope: trendingScope, items: items.map(applySearchResultArt) })
+      })
+      .catch(() => undefined)
+      .finally(() => { if (!cancelled) setTrendingReadyScope(trendingScope) })
+    return () => { cancelled = true }
+  }, [contentType, trendingScope])
   const topRated = useDiscoverRow(
     makeConfig(contentType, 'vote_average.desc', preferences, {
       voteCountMin: tab === 'anime' ? 150 : 500,
       ...animeOverrides
     }),
     `discover-toprated-${tab}-${discoveryQueryKey}`,
-    fallback,
     !hasDailySnapshot,
     refreshNonce,
+    reportDiscoveryRowLoading,
   )
-  const moodItems = useDiscoverRow(
+  const genreItems = useDiscoverRow(
     makeConfig(contentType, 'popularity.desc', preferences, {
-      includeGenres: tab === 'anime' ? ['16', ...mood.genres.map(String)] : mood.genres.map(String),
-      genreMatchMode: tab === 'anime' ? 'AND' : 'OR',
-      voteAverageMin: Math.max(6.5, minRating),
-      voteCountMin: tab === 'anime' ? 80 : 250,
-      ...(tab === 'anime' ? { originalLanguage: 'ja', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS } : { excludeKeywords: ANIME_EXCLUDE_KEYWORDS })
+      includeGenres: [...new Set([...(tab === 'anime' ? ['16'] : []), ...(selectedGenreId == null ? [] : [String(selectedGenreId)])])],
+      genreMatchMode: 'AND',
+      voteAverageMin: Math.max(6, minRating),
+      voteCountMin: tab === 'anime' ? 50 : 100,
+      ...(tab === 'anime' ? { originalLanguage: 'ja', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS } : { excludeKeywords: ANIME_EXCLUDE_KEYWORDS }),
     }),
-    `discover-mood-${tab}-${mood.title}-${discoveryQueryKey}`,
-    fallbackVariants.mood,
-    !hasDailySnapshot,
+    `discover-genre-${tab}-${selectedGenreId ?? 'none'}-${discoveryQueryKey}`,
+    selectedGenreId != null,
     refreshNonce,
+    reportGenreLoading,
   )
   const hiddenGems = useDiscoverRow(
     makeConfig(contentType, 'vote_average.desc', preferences, {
@@ -599,9 +632,9 @@ export default function DiscoverPage() {
       ...animeOverrides
     }),
     `discover-gems-${tab}-${discoveryQueryKey}`,
-    fallbackVariants.gems,
     !hasDailySnapshot,
     refreshNonce,
+    reportDiscoveryRowLoading,
   )
   const quickWatches = useDiscoverRow(
     makeConfig(contentType, 'popularity.desc', preferences, {
@@ -611,26 +644,62 @@ export default function DiscoverPage() {
       ...animeOverrides
     }),
     `discover-quick-${tab}-${discoveryQueryKey}`,
-    fallbackVariants.quick,
     !hasDailySnapshot,
     refreshNonce,
+    reportDiscoveryRowLoading,
   )
+  const timeChoices = DISCOVERY_TIME_CHOICES[contentType]
+  const selectedTimeChoice = timeChoices.find((choice) => choice.id === timeChoice) ?? timeChoices[0]!
+  const timeConfig = makeConfig(contentType, 'popularity.desc', preferences, {
+    voteCountMin: tab === 'anime' ? 50 : 150,
+    ...animeOverrides,
+    runtimeMin: selectedTimeChoice.runtimeMin,
+    runtimeMax: selectedTimeChoice.runtimeMax,
+  })
+  const timeRuntimeMin = Math.max(timeConfig.runtimeMin ?? 0, selectedTimeChoice.runtimeMin ?? 0)
+  const timeRuntimeMax = Math.min(timeConfig.runtimeMax ?? Number.POSITIVE_INFINITY, selectedTimeChoice.runtimeMax ?? Number.POSITIVE_INFINITY)
+  const timeRangeAvailable = timeRuntimeMin <= timeRuntimeMax
+  if (timeRuntimeMin > 0) timeConfig.runtimeMin = timeRuntimeMin
+  else delete timeConfig.runtimeMin
+  if (Number.isFinite(timeRuntimeMax)) timeConfig.runtimeMax = timeRuntimeMax
+  else delete timeConfig.runtimeMax
+  const timeRowId = `discover-time-${tab}-${timeChoice}-${discoveryQueryKey}`
+  const timeRow = useDiscoverRow(timeConfig, timeRowId, timeRangeAvailable, refreshNonce, reportDiscoveryRowLoading)
+  const timeRecommendations = useMemo(() => timeRangeAvailable
+    ? [...timeRow]
+      .filter((item) => matchesDiscoverTab(item, tab) && candidatePassesPrefs(item, prefs))
+      .sort((left, right) => (right.popularity || 0) - (left.popularity || 0) || (right.rating || 0) - (left.rating || 0))
+    : [], [timeRangeAvailable, timeRow, tab, prefs])
+  const moodOptions = DISCOVERY_MOODS[tab]
+  const selectedMood = moodOptions.find((mood) => mood.id === selectedMoodId) ?? moodOptions[0]!
+  const moodRowId = `discover-mood-${tab}-${selectedMood.id}-${discoveryQueryKey}`
+  const genreRowId = `discover-genre-${tab}-${selectedGenreId ?? 'all'}-${discoveryQueryKey}`
+  const posterColorRowId = `discover-color-${tab}-${selectedPosterColor}-${discoveryQueryKey}`
+  const moodConfig = makeConfig(contentType, 'popularity.desc', preferences, {
+    includeGenres: tab === 'anime' ? ['16'] : selectedMood.genres.map(String),
+    genreMatchMode: tab === 'anime' ? 'AND' : 'OR',
+    voteCountMin: tab === 'anime' ? 25 : 100,
+    ...(tab === 'anime'
+      ? { originalLanguage: 'ja', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS }
+      : { excludeKeywords: ANIME_EXCLUDE_KEYWORDS }),
+  })
+  const moodRow = useDiscoverRow(moodConfig, moodRowId, true, refreshNonce, reportDiscoveryRowLoading)
   // Anime movies — the anime tab's discover rows are series-only, so without these
   // rows anime films would never surface in the anime category
   const animeMovieOverrides = { originalLanguage: 'ja', includeGenres: ['16'], genreMatchMode: 'AND' as const, excludeKeywords: HENTAI_EXCLUDE_KEYWORDS }
   const animeMovies = useDiscoverRow(
     makeConfig('movie', 'popularity.desc', preferences, { ...animeMovieOverrides, voteCountMin: 100 }),
     `discover-anime-movies-${discoveryQueryKey}`,
-    fallback,
     tab === 'anime' && !hasDailySnapshot,
     refreshNonce,
+    reportDiscoveryRowLoading,
   )
   const animeMoviesTop = useDiscoverRow(
     makeConfig('movie', 'vote_average.desc', preferences, { ...animeMovieOverrides, voteCountMin: 150, voteAverageMin: Math.max(7, minRating) }),
     `discover-anime-movies-top-${discoveryQueryKey}`,
-    fallback,
     tab === 'anime' && !hasDailySnapshot,
     refreshNonce,
+    reportDiscoveryRowLoading,
   )
   const forYou = useDiscoverRow(
     makeConfig(contentType, 'popularity.desc', preferences, {
@@ -643,9 +712,23 @@ export default function DiscoverPage() {
       ...(tab === 'anime' ? { originalLanguage: 'ja', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS } : { excludeKeywords: ANIME_EXCLUDE_KEYWORDS })
     }),
     `discover-for-you-${tab}-${tasteGenre || 'starter'}-${discoveryQueryKey}`,
-    fallbackVariants.taste,
     !hasDailySnapshot,
     refreshNonce,
+    reportDiscoveryRowLoading,
+  )
+  // The binge feature is about long-form series, even when the visitor is
+  // browsing movies. Fetch a popular TV shelf independently instead of trying
+  // to derive series from the movie-only ranking pool.
+  const bingeSeries = useDiscoverRow(
+    makeConfig('series', 'popularity.desc', preferences, {
+      voteAverageMin: Math.max(6.5, minRating),
+      voteCountMin: 150,
+      excludeKeywords: ANIME_EXCLUDE_KEYWORDS,
+    }),
+    `discover-binge-series-${discoveryQueryKey}`,
+    tab === 'movies',
+    refreshNonce,
+    reportDiscoveryRowLoading,
   )
 
   // Titles the user actually watched — local playback progress + connected watch
@@ -660,33 +743,56 @@ export default function DiscoverPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [progressSignals.watchedSeeds, connectedActivity.items])
 
+  const similaritySeeds = useMemo(() => {
+    const matchesTab = (item: SearchResult) => tab === 'anime'
+      ? isAnimeLike(item)
+      : item.type === contentType && !isAnimeLike(item)
+    const unique = (items: SearchResult[]) => [...new Map(items
+      .filter((item) => item.tmdbId != null && item.title?.trim() && matchesTab(item))
+      .map((item) => [mediaIdentity(item), item])).values()].slice(0, 3)
+    const favorites = unique([...localWatchlist, ...connectedActivity.watchlist])
+    const seeds = favorites.length ? favorites.map((item) => ({ item, kind: 'favorited' as const }))
+      : unique(watchedForSeeds).map((item) => ({ item, kind: 'watched' as const }))
+    return seeds
+  }, [localWatchlist, connectedActivity.watchlist, watchedForSeeds, tab, contentType])
+  const similarScope = opaqueScope(JSON.stringify([tab, similaritySeeds.map(({ item, kind }) => [mediaIdentity(item), kind])]))
+
   useEffect(() => {
     if (hasDailySnapshot) return
     // Clear previous tab's candidates and metadata before collecting new seeds.
     setSimilarCandidates([])
     setWatchedTasteMetadata([])
-    // Seeds and candidates must match the active tab: movies seed movies, series seed
-    // non-anime series, and the anime tab only seeds/keeps anime titles (movies included).
-    const matchesTab = (entry: SearchResult) => tab === 'anime'
-      ? isAnimeLike(entry)
-      : entry.type === contentType && !isAnimeLike(entry)
-    const seeds = watchedForSeeds.filter((item) => item.tmdbId != null && matchesTab(item)).slice(0, 3)
-    if (!seeds.length) return
+    if (!similaritySeeds.length) {
+      setSimilarReadyScope(similarScope)
+      return
+    }
     let cancelled = false
     const metadata: NonNullable<import('../services/discovery/types').DiscoveryActivity['tasteMetadata']> = []
-    collectCandidateSources(seeds.map((seed)=>({id:`similar:${seed.type}:${seed.tmdbId}`,load:async()=>{
-      const id=`tmdb-${seed.tmdbId}`;const details=seed.type==='movie'?await tmdbProvider.getMovie(id):await tmdbProvider.getShow(id);metadata.push({item:seed,runtimeMinutes:'runtime' in details ? details.runtime : undefined,cast:details.cast.slice(0,5).map((person)=>person.name),directors:details.crew.filter((person)=>person.job==='Director'||person.job==='Creator').slice(0,3).map((person)=>person.name)});const candidates=details.recommendations.map((item)=>recommendationCandidate(item,'tmdb-similar',{seedTitle:seed.title}));const director=details.crew.find((person)=>person.job==='Director'||person.job==='Creator');const people=[details.cast[0]?{id:details.cast[0].id,name:details.cast[0].name,source:'tmdb-cast' as const}:null,director?{id:director.id,name:director.name,source:'tmdb-director' as const}:null].filter((person):person is NonNullable<typeof person>=>Boolean(person));const credits=await Promise.allSettled(people.map(async(person)=>({person,details:await getTmdbPerson(person.id)})));for(const result of credits)if(result.status==='fulfilled')candidates.push(...result.value.details.credits.slice(0,12).map((item)=>recommendationCandidate(item,result.value.person.source,{seedTitle:result.value.person.name,...(result.value.person.source === 'tmdb-cast' ? {cast:[result.value.person.name]} : {directors:[result.value.person.name]})})));return candidates
-    }}))).then((result) => {
+    collectCandidateSources(similaritySeeds.map(({ item: seed, kind }) => ({ id: `similar:${kind}:${seed.type}:${seed.tmdbId}`, load: async () => {
+      const id = `tmdb-${seed.tmdbId}`
+      const details = seed.type === 'movie' ? await tmdbProvider.getMovie(id) : await tmdbProvider.getShow(id)
+      metadata.push({ item: seed, runtimeMinutes: 'runtime' in details ? details.runtime : undefined, cast: details.cast.slice(0, 5).map((person) => person.name), directors: details.crew.filter((person) => person.job === 'Director' || person.job === 'Creator').slice(0, 3).map((person) => person.name) })
+      const candidates = details.recommendations.map((item) => recommendationCandidate(item, 'tmdb-similar', { seedTitle: seed.title, seedKind: kind }))
+      const director = details.crew.find((person) => person.job === 'Director' || person.job === 'Creator')
+      const people = [details.cast[0] ? { id: details.cast[0].id, name: details.cast[0].name, source: 'tmdb-cast' as const } : null, director ? { id: director.id, name: director.name, source: 'tmdb-director' as const } : null].filter((person): person is NonNullable<typeof person> => Boolean(person))
+      const credits = await Promise.allSettled(people.map(async (person) => ({ person, details: await getTmdbPerson(person.id) })))
+      for (const result of credits) if (result.status === 'fulfilled') candidates.push(...result.value.details.credits.slice(0, 12).map((item) => recommendationCandidate(item, result.value.person.source, { seedTitle: result.value.person.name, ...(result.value.person.source === 'tmdb-cast' ? { cast: [result.value.person.name] } : { directors: [result.value.person.name] }) })))
+      return candidates
+    } }))).then((result) => {
       if (cancelled) return
-      setSimilarCandidates(result.items.filter((candidate) => matchesTab(candidate.item)).slice(0, 50))
+      const matchesTab = (candidate: RecommendationCandidate) => tab === 'anime'
+        ? isAnimeLike(candidate.item)
+        : candidate.item.type === contentType && !isAnimeLike(candidate.item)
+      setSimilarCandidates(result.items.filter(matchesTab).slice(0, 50))
       setWatchedTasteMetadata(metadata)
     })
+      .finally(() => { if (!cancelled) setSimilarReadyScope(similarScope) })
     return () => { cancelled = true }
-  }, [watchedForSeeds, tab, contentType, hasDailySnapshot])
+  }, [similaritySeeds, similarScope, tab, contentType, hasDailySnapshot])
 
   useEffect(() => {
     if (hasDailySnapshot) return
-    if (!traktConnected && !simklConnected && !stremioAuthKey && !anilistConnected) { const timer=window.setTimeout(()=>setConnectedActivity({items:[],progress:[],ratings:[],watchlist:[],rewatches:[],bingeItems:[]}),0); return()=>window.clearTimeout(timer) }
+    if (!traktConnected && !simklConnected && !stremioAuthKey && !anilistConnected) { const timer=window.setTimeout(()=>{setConnectedActivity({items:[],progress:[],ratings:[],watchlist:[],rewatches:[],bingeItems:[]});setConnectedReadyScope(accountScope)},0); return()=>window.clearTimeout(timer) }
     let cancelled = false
     Promise.allSettled([
       traktConnected ? Promise.all([getTraktWatchedMovies(),getTraktWatchedShows(),getTraktRatings('movies'),getTraktRatings('shows'),import('../services/trakt/sync').then((m)=>m.getWatchlist('movies')),import('../services/trakt/sync').then((m)=>m.getWatchlist('shows'))]) : Promise.resolve([[],[],[],[],[],[]] as const),
@@ -696,12 +802,12 @@ export default function DiscoverPage() {
     ]).then(async ([traktResult,simklResult,stremioResult,anilistResult]) => {
       const items: SearchResult[] = []
       const rawRatings: Array<{item:SearchResult;rating:number}> = []
-      const rewatches:SearchResult[]=[]; const bingeItems:SearchResult[]=[]; const watchlist:SearchResult[]=[]
+      const rewatches:SearchResult[]=[]; const bingeItems:SearchResult[]=[]; const watchlist:DatedLibraryItem[]=[]
       if (traktResult.status === 'fulfilled') for (const entry of [...traktResult.value[0],...traktResult.value[1]]) { const media=entry.movie||entry.show; if(media) { const mapped={id:`tmdb-${media.ids.tmdb}`,title:media.title,type:entry.movie?'movie' as const:'series' as const,year:media.year,provider:'trakt',tmdbId:media.ids.tmdb,imdbId:media.ids.imdb}; items.push(mapped); if(entry.plays>1)rewatches.push(mapped); if(entry.seasons?.some((season)=>season.episodes.filter((episode)=>episode.plays>0).length>=3))bingeItems.push(mapped) } }
       if (traktResult.status === 'fulfilled') for (const raw of [...traktResult.value[2],...traktResult.value[3]]) { if(!raw||typeof raw!=='object')continue; const record=raw as Record<string,unknown>; const media=(record.movie||record.show) as {title?:string;year?:number;ids?:{tmdb?:number;imdb?:string}}|undefined; const rating=Number(record.rating); if(media?.title&&Number.isFinite(rating)) rawRatings.push({rating,item:{id:media.ids?.tmdb?`tmdb-${media.ids.tmdb}`:media.ids?.imdb||media.title,title:media.title,type:record.movie?'movie':'series',year:media.year,provider:'trakt',tmdbId:media.ids?.tmdb,imdbId:media.ids?.imdb}}) }
-      if(traktResult.status==='fulfilled')for(const raw of [...traktResult.value[4],...traktResult.value[5]]){if(!raw||typeof raw!=='object')continue;const record=raw as Record<string,unknown>;const media=(record.movie||record.show) as {title?:string;year?:number;ids?:{tmdb?:number;imdb?:string}}|undefined;if(media?.title)watchlist.push({id:media.ids?.tmdb?`tmdb-${media.ids.tmdb}`:media.ids?.imdb||media.title,title:media.title,type:record.movie?'movie':'series',year:media.year,provider:'trakt',tmdbId:media.ids?.tmdb,imdbId:media.ids?.imdb})}
+      if(traktResult.status==='fulfilled')for(const raw of [...traktResult.value[4],...traktResult.value[5]]){if(!raw||typeof raw!=='object')continue;const record=raw as Record<string,unknown>;const media=(record.movie||record.show) as {title?:string;year?:number;ids?:{tmdb?:number;imdb?:string}}|undefined;const libraryAddedAt=parseLibraryAddedAt(record.listed_at);if(media?.title&&libraryAddedAt)watchlist.push({id:media.ids?.tmdb?`tmdb-${media.ids.tmdb}`:media.ids?.imdb||media.title,title:media.title,type:record.movie?'movie':'series',year:media.year,provider:'trakt',tmdbId:media.ids?.tmdb,imdbId:media.ids?.imdb,libraryAddedAt})}
       if (simklResult.status === 'fulfilled') for (const entry of [...simklResult.value[0],...simklResult.value[1]]) items.push({id:entry.tmdbId?`tmdb-${entry.tmdbId}`:entry.id,title:entry.title,type:entry.type==='movie'?'movie':'series',year:entry.year,provider:'simkl',tmdbId:entry.tmdbId,imdbId:entry.imdbId,simklId:entry.simklId,isAnime:entry.type==='anime',poster:entry.poster,backdrop:entry.backdrop})
-      if(simklResult.status==='fulfilled')for(const entry of simklResult.value[2])watchlist.push({id:entry.tmdbId?`tmdb-${entry.tmdbId}`:entry.id,title:entry.title,type:entry.type==='movie'?'movie':'series',year:entry.year,provider:'simkl',tmdbId:entry.tmdbId,imdbId:entry.imdbId,simklId:entry.simklId,isAnime:entry.type==='anime',poster:entry.poster,backdrop:entry.backdrop})
+      if(simklResult.status==='fulfilled')for(const entry of simklResult.value[2]){const libraryAddedAt=parseLibraryAddedAt(entry.addedAt);if(libraryAddedAt)watchlist.push({id:entry.tmdbId?`tmdb-${entry.tmdbId}`:entry.id,title:entry.title,type:entry.type==='movie'?'movie':'series',year:entry.year,provider:'simkl',tmdbId:entry.tmdbId,imdbId:entry.imdbId,simklId:entry.simklId,isAnime:entry.type==='anime',poster:entry.poster,backdrop:entry.backdrop,libraryAddedAt})}
       if(stremioResult.status==='fulfilled')for(const entry of stremioResult.value){const mapped={id:entry.imdbId||entry.id,title:entry.title,type:entry.type,year:entry.year,provider:'stremio',imdbId:entry.imdbId,poster:entry.poster};items.push(mapped)}
       // AniList watched anime → taste/Discovery. Include anything the user engaged
       // with (progress > 0 or completed); enrichment resolves tmdb ids downstream.
@@ -709,11 +815,28 @@ export default function DiscoverPage() {
       const unique=[...new Map(items.map((item)=>[mediaIdentity(item),item])).values()].slice(0,150)
       const { enrichSearchResultsWithAppMetadata } = await import('../services/metadata/metadataResolver')
       const enriched=await enrichSearchResultsWithAppMetadata(unique)
+      // Trakt's watchlist endpoint supplies stable TMDB IDs and listed_at but no art.
+      // Resolve a bounded recent subset through the existing metadata provider so
+      // connected entries can participate in the library shelf without fake dates.
+      const recentWatchlist = watchlist.sort((a,b)=>b.libraryAddedAt-a.libraryAddedAt).slice(0,40)
+      const artworkResolved: DatedLibraryItem[] = []
+      for (let offset = 0; offset < recentWatchlist.length; offset += 4) {
+        const batch = await Promise.all(recentWatchlist.slice(offset, offset + 4).map(async (item) => {
+          if (item.poster || !item.tmdbId) return item
+          try {
+            const details = item.type === 'movie'
+              ? await tmdbProvider.getMovie(`tmdb-${item.tmdbId}`)
+              : await tmdbProvider.getShow(`tmdb-${item.tmdbId}`)
+            return { ...item, poster: details.poster, backdrop: item.backdrop || details.backdrop }
+          } catch { return item }
+        }))
+        artworkResolved.push(...batch)
+      }
       if(cancelled)return
-      setConnectedActivity({items:enriched,ratings:rawRatings,watchlist,rewatches,bingeItems,progress:enriched.map((item,index)=>({id:`connected:${index}`,mediaType:item.type,mediaId:item.id,progressSeconds:1,durationSeconds:1,completed:true,title:item.title,poster:item.poster,backdrop:item.backdrop,tmdbId:item.tmdbId,imdbId:item.imdbId}))})
-    }).catch(()=>undefined)
+      setConnectedActivity({items:enriched,ratings:rawRatings,watchlist:artworkResolved,rewatches,bingeItems,progress:enriched.map((item,index)=>({id:`connected:${index}`,mediaType:item.type,mediaId:item.id,progressSeconds:1,durationSeconds:1,completed:true,title:item.title,poster:item.poster,backdrop:item.backdrop,tmdbId:item.tmdbId,imdbId:item.imdbId}))})
+    }).catch(()=>undefined).finally(()=>{if(!cancelled)setConnectedReadyScope(accountScope)})
     return()=>{cancelled=true}
-  },[traktConnected,simklConnected,stremioAuthKey,anilistConnected,hasDailySnapshot])
+  },[traktConnected,simklConnected,stremioAuthKey,anilistConnected,accountScope,hasDailySnapshot])
 
   const starterTasteItems=useMemo<SearchResult[]>(()=>starterGenres.map((genreId)=>({id:`taste-genre-${genreId}`,title:genreMap[genreId]||`Genre ${genreId}`,type:contentType,provider:'preference',genreIds:[genreId]})),[starterGenres,genreMap,contentType])
   // The signature gates this ref read so time-only updates keep the same ranking input.
@@ -739,14 +862,14 @@ export default function DiscoverPage() {
   const tasteProfile = useMemo(() => buildTasteProfile(activity), [activity])
   const candidates = useMemo<RecommendationCandidate[]>(() => [
     ...forYou.map((item) => recommendationCandidate(item,'tmdb-discover')),
-    ...trending.map((item) => recommendationCandidate(item,'tmdb-trending')),
+    ...trending.map((item) => recommendationCandidate(item,'tmdb-discover')),
+    ...currentTrending.map((item) => recommendationCandidate(item,'tmdb-trending')),
     ...topRated.map((item) => recommendationCandidate(item,'tmdb-discover')),
-    ...moodItems.map((item) => recommendationCandidate(item,'tmdb-discover')),
     ...hiddenGems.map((item) => recommendationCandidate(item,'tmdb-discover')),
     ...quickWatches.map((item) => recommendationCandidate(item,'tmdb-discover',{runtimeMinutes:item.runtime||(contentType==='movie'?95:30)})),
     ...(tab === 'anime' ? [...animeMovies, ...animeMoviesTop].map((item) => recommendationCandidate(item,'tmdb-discover')) : []),
     ...similarCandidates,
-  ], [forYou, trending, topRated, moodItems, hiddenGems, quickWatches, animeMovies, animeMoviesTop, similarCandidates, contentType, tab])
+  ], [forYou, trending, currentTrending, topRated, hiddenGems, quickWatches, animeMovies, animeMoviesTop, similarCandidates, contentType, tab])
   const filteredCandidates = useMemo(() => {
     return candidates.filter((c) => matchesDiscoverTab(c.item, tab) && candidatePassesPrefs(c.item, prefs))
   }, [candidates, prefs, tab])
@@ -780,20 +903,190 @@ export default function DiscoverPage() {
     () => dailySnapshot?.filter((entry) => matchesDiscoverTab(entry.item, tab)),
     [dailySnapshot, tab],
   )
-  const snapshotIsValid = Boolean(dailySnapshot && validRankedSnapshot?.length === dailySnapshot.length && dailySnapshot.length > 0)
-  const ranked = snapshotIsValid
+  const snapshotIsValid = Boolean(dailySnapshot && dailySnapshotMeta[dailySnapshotKey]?.algorithmVersion === DISCOVERY_ALGORITHM_VERSION && validRankedSnapshot?.length === dailySnapshot.length && dailySnapshot.length > 0)
+  const recommendationSourcesReady = discoverySourcesSettled(recommendationRowIds, discoveryRowLoads, [
+    trendingReadyScope === trendingScope,
+    similarReadyScope === similarScope,
+    connectedReadyScope === accountScope,
+  ])
+  const ranked = useMemo(() => snapshotIsValid
     ? applyRecommendationFeedback(validRankedSnapshot!, feedback.filter((entry) => entry.createdAt > (dailySnapshotMeta[dailySnapshotKey]?.generatedAt ?? 0)))
     : fallbackRankedSnapshot?.filter((entry) => matchesDiscoverTab(entry.item, tab))?.length
       ? applyRecommendationFeedback(fallbackRankedSnapshot.filter((entry) => matchesDiscoverTab(entry.item, tab)), feedback)
-      : liveRanked
-  const genreTiles = useMemo(() => moodOptions.map((option, index) => ({
-    option,
-    item: ranked.find((entry) => option.genres.some((genreId) => entry.item.genreIds?.includes(genreId)))?.item || ranked[index]?.item,
-  })), [moodOptions, ranked])
+      : liveRanked,
+  [snapshotIsValid, validRankedSnapshot, feedback, dailySnapshotMeta, dailySnapshotKey, fallbackRankedSnapshot, tab, liveRanked])
+  // Reserve the editorial spotlight from the adjacent OR TRY and ranked
+  // shelves so it feels like an additional pick instead of a repeated card.
+  const heroRecommendation = ranked.find((entry) => Boolean(entry.item.poster)) ?? ranked[0]
+  const heroItem = heroRecommendation?.item
+  const heroMediaKey = heroItem ? mediaIdentity(heroItem) : null
+  const shelfRanked = useMemo(() => heroMediaKey ? ranked.filter((entry) => mediaIdentity(entry.item) !== heroMediaKey) : ranked, [heroMediaKey, ranked])
+  const viewState = discoveryViewState(ranked.length, initialWaitComplete)
+  const loadMoreDiscovery = useCallback(async () => {
+    if (moreToDiscoverLoadingRef.current || moreToDiscoverStatusRef.current === 'done' || moreToDiscoverStatusRef.current === 'error') return
+    const requestScope = `${tab}:${discoveryQueryKey}`
+    if (moreToDiscoverScopeRef.current !== requestScope) return
+
+    const sources: Array<{ type: 'movie' | 'series'; config: DiscoverConfig }> = tab === 'anime'
+      ? [
+        { type: 'series', config: makeConfig('series', 'popularity.desc', preferences, { originalLanguage: 'ja', includeGenres: ['16'], genreMatchMode: 'AND', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS }) },
+        { type: 'movie', config: makeConfig('movie', 'popularity.desc', preferences, { originalLanguage: 'ja', includeGenres: ['16'], genreMatchMode: 'AND', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS }) },
+      ]
+      : [{ type: contentType, config: makeConfig(contentType, 'popularity.desc', preferences, { excludeKeywords: ANIME_EXCLUDE_KEYWORDS }) }]
+    const activeSources = sources.filter(({ type }) => !moreToDiscoverExhaustedRef.current[type])
+    if (!activeSources.length) {
+      moreToDiscoverStatusRef.current = 'done'
+      setMoreToDiscoverStatus('done')
+      return
+    }
+
+    moreToDiscoverLoadingRef.current = true
+    moreToDiscoverStatusRef.current = 'loading'
+    setMoreToDiscoverStatus('loading')
+    try {
+      const pages = await Promise.all(activeSources.map(({ type, config }) => {
+        const page = Math.min(500, moreToDiscoverPagesRef.current[type] + 1)
+        return discoverTmdbPageWithCache(config, `discover-infinite-${tab}-${type}-${discoveryQueryKey}`, page)
+          .then((result) => ({ type, requestedPage: page, result }))
+      }))
+      if (moreToDiscoverScopeRef.current !== requestScope) return
+
+      const existingIds = new Set([
+        ...ranked.map((entry) => mediaIdentity(entry.item)),
+        ...moreToDiscoverItemsRef.current.map(mediaIdentity),
+      ])
+      const appendedCandidates: SearchResult[] = []
+      for (const { type, requestedPage, result } of pages) {
+        moreToDiscoverPagesRef.current[type] = requestedPage
+        if (requestedPage >= result.totalPages || result.items.length === 0) moreToDiscoverExhaustedRef.current[type] = true
+        for (const item of result.items) {
+          if (!matchesDiscoverTab(item, tab) || !candidatePassesPrefs(item, prefs)) continue
+          const key = mediaIdentity(item)
+          if (!item.poster || existingIds.has(key)) continue
+          existingIds.add(key)
+          appendedCandidates.push(applySearchResultArt(item))
+        }
+      }
+
+      const appended = rankCandidates(
+        appendedCandidates.map((item) => recommendationCandidate(item, 'tmdb-discover')),
+        tasteProfile,
+        activity,
+        feedback,
+        mode,
+        rankingNow,
+        impressions,
+        prefsWeights(prefs),
+      ).map((entry) => entry.item)
+
+      if (appended.length) {
+        moreToDiscoverItemsRef.current = [...moreToDiscoverItemsRef.current, ...appended]
+        setMoreToDiscover(moreToDiscoverItemsRef.current)
+      }
+      const hasActiveSources = sources.some(({ type }) => !moreToDiscoverExhaustedRef.current[type])
+      moreToDiscoverStatusRef.current = hasActiveSources ? 'idle' : 'done'
+      setMoreToDiscoverStatus(moreToDiscoverStatusRef.current)
+    } catch {
+      if (moreToDiscoverScopeRef.current === requestScope) {
+        moreToDiscoverStatusRef.current = 'error'
+        setMoreToDiscoverStatus('error')
+      }
+    } finally {
+      if (moreToDiscoverScopeRef.current === requestScope) moreToDiscoverLoadingRef.current = false
+    }
+  }, [activity, contentType, discoveryQueryKey, feedback, impressions, mode, prefs, preferences, ranked, rankingNow, tab, tasteProfile])
+
+  useEffect(() => { loadMoreDiscoveryRef.current = loadMoreDiscovery }, [loadMoreDiscovery])
+  useEffect(() => {
+    const sentinel = moreToDiscoverSentinelRef.current
+    if (!sentinel || viewState !== 'content') return
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting) || moreToDiscoverStatusRef.current !== 'idle') return
+      observer.unobserve(sentinel)
+      void loadMoreDiscoveryRef.current().finally(() => {
+        if (moreToDiscoverStatusRef.current === 'idle') requestAnimationFrame(() => observer.observe(sentinel))
+      })
+    }, { rootMargin: '500px 0px' })
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [continuationScope, viewState])
+  const posterColorCandidates = useMemo(() => {
+    const unique = new Map<string, SearchResult>()
+    ranked
+      .filter((entry) => entry.item.poster)
+      .sort((left, right) => (right.popularity || 0) - (left.popularity || 0) || right.score.total - left.score.total)
+      .forEach((entry) => { if (unique.size < 24 && !unique.has(mediaIdentity(entry.item))) unique.set(mediaIdentity(entry.item), entry.item) })
+    return [...unique.values()]
+  }, [ranked])
+  const posterColorCandidatesRef = useRef(posterColorCandidates)
+  posterColorCandidatesRef.current = posterColorCandidates
+  const posterColorCandidatesKey = posterColorCandidates.map((item) => `${mediaIdentity(item)}:${item.poster}`).join('|')
+  useEffect(() => {
+    const controller = new AbortController()
+    const candidates = posterColorCandidatesRef.current
+    setPosterColorSamples((current) => current.length ? [] : current)
+    let next = 0
+    const samples: Array<{ item: SearchResult; color: PosterColorGroup }> = []
+    const candidateOrder = new Map(candidates.map((item, index) => [mediaIdentity(item), index]))
+    const sampleWorker = async () => {
+      while (!controller.signal.aborted) {
+        const item = candidates[next++]
+        if (!item) return
+        const color = await loadAmbientColor(item.poster!, controller.signal)
+        if (color && !controller.signal.aborted) samples.push({ item, color: classifyPosterColor(color) })
+      }
+    }
+    void Promise.all(Array.from({ length: Math.min(4, candidates.length) }, () => sampleWorker()))
+      .then(() => { if (!controller.signal.aborted && samples.length) setPosterColorSamples(samples.sort((left, right) => (candidateOrder.get(mediaIdentity(left.item)) ?? 0) - (candidateOrder.get(mediaIdentity(right.item)) ?? 0))) })
+    return () => controller.abort()
+  }, [posterColorCandidatesKey])
+  const posterColorItems = useMemo(() => posterColorSamples
+    .filter(({ color }) => selectedPosterColor === 'all' || color === selectedPosterColor)
+    .sort((left, right) => POSTER_COLOR_GROUPS.findIndex((group) => group.id === left.color) - POSTER_COLOR_GROUPS.findIndex((group) => group.id === right.color))
+    .map(({ item }) => item), [posterColorSamples, selectedPosterColor])
+  const availablePosterColors = useMemo(() => new Set(posterColorSamples.map(({ color }) => color)), [posterColorSamples])
+  const moodItems = useMemo(() => {
+    const moodGenreIds = new Set(selectedMood.genres)
+    const candidates = [
+      ...moodRow.map((item) => ({ item, popularity: item.popularity || 0 })),
+      ...ranked.filter((entry) => entry.item.genreIds?.some((genreId) => moodGenreIds.has(genreId))).map((entry) => ({ item: entry.item, popularity: entry.popularity || 0 })),
+    ]
+    const seen = new Set<string>()
+    return candidates
+      .filter(({ item }) => matchesDiscoverTab(item, tab) && candidatePassesPrefs(item, prefs) && item.genreIds?.some((genreId) => moodGenreIds.has(genreId)))
+      .filter(({ item }) => {
+        const key = mediaIdentity(item)
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      .sort((left, right) => right.popularity - left.popularity || (right.item.rating || 0) - (left.item.rating || 0))
+      .slice(0, 20)
+      .map(({ item }) => item)
+  }, [moodRow, ranked, selectedMood, tab, prefs])
+  const genreTiles = useMemo(() => genreOptions.map((genre) => ({
+    option: { title: genre.title, genres: [genre.id] },
+    item: ranked.find((entry) => entry.item.genreIds?.includes(genre.id))?.item,
+  })), [genreOptions, ranked])
+  const genreSelectionItems = useMemo(() => {
+    if (selectedGenreId == null) return []
+    const seen = new Set<string>()
+    // genreItems came from a provider query that already includes this genre.
+    // Some addon/local metadata omits genreIds on returned records, so checking
+    // that field again incorrectly turns a successful genre query into an empty row.
+    return [...genreItems, ...ranked.filter((entry) => entry.item.genreIds?.includes(selectedGenreId)).map((entry) => entry.item)]
+      .filter((item) => {
+        const key = mediaIdentity(item)
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      .slice(0, 20)
+  }, [genreItems, ranked, selectedGenreId])
   useEffect(() => {
     // Today's snapshot is immutable once committed. History, feedback and
     // provider refreshes influence tomorrow instead of reshuffling the page.
-    if (!initialWaitComplete || snapshotIsValid || liveRanked.length === 0) return
+    if (!initialWaitComplete || !recommendationSourcesReady || snapshotIsValid || liveRanked.length === 0) return
     const profileFingerprint = catalogContentFingerprint(activity.recent)
     setRankedSnapshot(dailySnapshotKey, liveRanked, {
       dateKey: berlinDateKey,
@@ -801,14 +1094,40 @@ export default function DiscoverPage() {
       profileFingerprint,
       algorithmVersion: DISCOVERY_ALGORITHM_VERSION,
     })
-  }, [activity.recent, berlinDateKey, dailySnapshotKey, initialWaitComplete, liveRanked, setRankedSnapshot, snapshotIsValid])
-  const personalizedSections = useMemo(() => generateDiscoverySections(ranked.slice(1), tasteProfile, mode), [ranked, tasteProfile, mode])
+  }, [activity.recent, berlinDateKey, dailySnapshotKey, initialWaitComplete, liveRanked, recommendationSourcesReady, setRankedSnapshot, snapshotIsValid])
+  const personalizedSections = useMemo(() => generateDiscoverySections(shelfRanked, tasteProfile, mode, 5, rankingNow), [shelfRanked, tasteProfile, mode, rankingNow])
+  // The public weekly trend feed powers the reference's OR TRY shelf. It is
+  // independent of the user's library and follows the Tonight spotlight.
+  const trendingSection = personalizedSections.find((section) => section.id === 'trending-this-week')
+  const hiddenGemsSection = personalizedSections.find((section) => section.id === 'hidden-gems')
+  const recentlyReleasedSection = personalizedSections.find((section) => section.id === 'new')
+  const bigScreenItems = useMemo(() => tab === 'movies'
+    ? ranked
+      .filter((entry) => entry.item.type === 'movie' && Boolean(entry.item.backdrop))
+      .sort((left, right) => (right.popularity || 0) - (left.popularity || 0) || right.score.total - left.score.total)
+      .slice(0, 12)
+      .map((entry) => entry.item)
+    : [], [ranked, tab])
+  const bigScreenRowId = `discover-big-screen-${tab}-${discoveryQueryKey}`
   const bingeRecommendations = useMemo(() => {
-    const matchesTab = (item: SearchResult) => tab === 'anime'
-      ? Boolean(item.isAnime)
-      : tab === 'series' ? item.type === 'series' && !item.isAnime : false
+    const bingeRanked = tab === 'movies'
+      ? rankCandidates(
+        bingeSeries
+          .filter((item) => item.type === 'series' && !isAnimeLike(item) && candidatePassesPrefs(item, prefs))
+          .map((item) => recommendationCandidate(item, 'tmdb-discover')),
+        tasteProfile,
+        activity,
+        feedback,
+        mode,
+        rankingNow,
+        impressions,
+        prefsWeights(prefs),
+      )
+      : ranked
+    const matchesTab = (item: SearchResult) => item.type === 'series'
+      && (tab === 'anime' ? isAnimeLike(item) : !isAnimeLike(item))
     const seen = new Set<string>()
-    return [...connectedActivity.bingeItems, ...ranked.map((entry) => entry.item)]
+    return bingeRanked.map((entry) => entry.item)
       .filter((item) => matchesTab(item) && Boolean(item.poster))
       .filter((item) => {
         const key = mediaIdentity(item)
@@ -817,74 +1136,85 @@ export default function DiscoverPage() {
         return true
       })
       .slice(0, 5)
-  }, [connectedActivity.bingeItems, ranked, tab])
+  }, [activity, bingeSeries, feedback, impressions, mode, prefs, rankingNow, ranked, tab, tasteProfile])
   const activeBingeItem = bingeRecommendations.length ? bingeRecommendations[bingeIndex % bingeRecommendations.length] : undefined
-  const heroPool = useMemo(() => ranked.slice(0, 6), [ranked])
-  const activeHeroIndex = heroPool.length ? heroIndex % heroPool.length : 0
-  const heroRecommendation = heroPool[activeHeroIndex]
-  const heroItem = heroRecommendation?.item
   const pickerPool = useMemo(() => {
     const seen = new Set<string>()
     return ranked.filter((entry) => {
       const key = mediaIdentity(entry.item)
+      // The roulette owns its own candidate pool. The editorial spotlight is
+      // an extra recommendation and must not affect which titles the picker
+      // can consider (or be replaced by a roulette spin).
       if (!entry.item.poster || seen.has(key)) return false
       seen.add(key)
       return true
     })
   }, [ranked])
-  const tastePickCandidates = useMemo(() => {
+  const pickerRecommendation = (pickerSelectionKey ? pickerPool.find((entry) => mediaIdentity(entry.item) === pickerSelectionKey) : undefined) || pickerPool[0]
+  const pickerItem = pickerRecommendation?.item
+  const tastePickPool = useMemo(() => {
     if (!ranked.length) return []
     const query = tasteQuery.trim().toLocaleLowerCase()
-    const pool = ranked.filter((entry) => entry.item.poster && !pickedIds.includes(mediaIdentity(entry.item)) && (!query || `${entry.item.title} ${entry.item.genres?.join(' ') || ''} ${entry.item.year || ''}`.toLocaleLowerCase().includes(query)))
-    if (!pool.length) return []
-    const start = pickOffset % pool.length
-    return Array.from({ length: Math.min(10, pool.length) }, (_, index) => pool[(start + index) % pool.length]!.item)
-  }, [ranked, pickedIds, pickOffset, tasteQuery])
+    return ranked
+      .filter((entry) => entry.item.poster && !pickedIds.includes(mediaIdentity(entry.item)) && (!query || `${entry.item.title} ${entry.item.genres?.join(' ') || ''} ${entry.item.year || ''}`.toLocaleLowerCase().includes(query)))
+      .map((entry) => entry.item)
+  }, [ranked, pickedIds, tasteQuery])
+  const tastePickCandidates = useMemo(() => tastePickPool.slice(0, 10 + pickOffset), [tastePickPool, pickOffset])
+  useEffect(() => { setPickerSelectionKey(null); setHeroLogoError(false); setPickerLogoError(false) }, [tab, mode, discoveryQueryKey])
+  useEffect(() => { setHeroLogoError(false) }, [heroItem?.id])
+  useEffect(() => { setPickerLogoError(false) }, [pickerItem?.id])
 
-  useEffect(() => { setHeroIndex(0) }, [tab, mode, discoveryQueryKey])
-  useEffect(() => { setHeroLogoError(false) }, [activeHeroIndex])
-
-  // Auto-advance the hero like the Home hero; pause while the trailer is open
-  useEffect(() => {
-    if (heroPool.length <= 1 || trailerOpen) return
-    const id = window.setInterval(() => {
-      if (document.visibilityState !== 'hidden') setHeroIndex((current) => (current + 1) % heroPool.length)
-    }, 8000)
-    return () => window.clearInterval(id)
-  }, [heroPool.length, trailerOpen])
-
-  // Resolve logos/backdrops for the hero pool so the banner can show title logos
+  // Resolve art only for the title currently shown in the in-page Tonight picker.
   useEffect(() => {
     let cancelled = false
-    const visibleHeroIndexes = new Set([
-      activeHeroIndex,
-      (activeHeroIndex - 1 + heroPool.length) % heroPool.length,
-      (activeHeroIndex + 1) % heroPool.length,
-    ])
-    heroPool.forEach((entry, index) => {
-      if (!visibleHeroIndexes.has(index)) return
-      const key = String(entry.item.id)
-      resolveArtFromProviders(entry.item.type === 'series' ? 'series' : 'movie', { tmdbId: entry.item.tmdbId, tvdbId: entry.item.tvdbId, imdbId: entry.item.imdbId }, entry.item.isAnime)
-        .then((art) => { if (!cancelled) setHeroArt((prev) => prev[key] ? prev : { ...prev, [key]: art }) })
-        .catch(() => undefined)
-    })
+    // Roulette titles are transient; resolving provider artwork for each tick
+    // creates needless requests. Resolve once the winning item is settled.
+    if (!heroItem || surpriseSpinning) return
+    const key = String(heroItem.id)
+    resolveArtFromProviders(heroItem.type === 'series' ? 'series' : 'movie', { tmdbId: heroItem.tmdbId, tvdbId: heroItem.tvdbId, imdbId: heroItem.imdbId }, heroItem.isAnime)
+      .then((art) => { if (!cancelled) setHeroArt((prev) => prev[key] ? prev : { ...prev, [key]: art }) })
+      .catch(() => undefined)
     return () => { cancelled = true }
-  }, [heroPool, activeHeroIndex])
+  }, [heroItem, surpriseSpinning])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!pickerOpen || !pickerItem || surpriseSpinning) return
+    const key = String(pickerItem.id)
+    if (heroArt[key]) return
+    resolveArtFromProviders(pickerItem.type === 'series' ? 'series' : 'movie', { tmdbId: pickerItem.tmdbId, tvdbId: pickerItem.tvdbId, imdbId: pickerItem.imdbId }, pickerItem.isAnime)
+      .then((art) => { if (!cancelled) setHeroArt((prev) => prev[key] ? prev : { ...prev, [key]: art }) })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [heroArt, pickerItem, pickerOpen, surpriseSpinning])
 
   // Seed the catalog cache so "Show all" opens a full-screen view of a section like on Home
   useEffect(() => {
-    personalizedSections.forEach((section) => catalogSetCache(`discover-section-${tab}-${section.id}`, { items: section.items.map((entry) => entry.item), page: 0, hasMore: false, scrollTop: 0 }))
+    personalizedSections.forEach((section) => {
+      // Top 10 is a curated editorial list, not a doorway into the entire
+      // recommendation pool. Keep the catalog cache contract aligned with the
+      // ten cards rendered in the Discovery shelf.
+      const catalogEntries = section.id === 'made-for-you'
+        ? section.items.slice(0, 10)
+        : section.catalogItems ?? section.items
+      catalogSetCache(`discover-section-${tab}-${section.id}`, { items: catalogEntries.map((entry) => entry.item), page: 0, hasMore: false, scrollTop: 0 })
+    })
   }, [personalizedSections, tab, catalogSetCache])
-  const viewState = discoveryViewState(ranked.length,initialWaitComplete)
-
   useEffect(() => {
-    const reset=window.setTimeout(()=>{setHeroTrailer(null);setTrailerOpen(false)},0)
-    if(!heroItem)return
-    let cancelled=false
-    getTrailerSource({type:heroItem.type,tmdbId:heroItem.tmdbId,imdbId:heroItem.imdbId,title:heroItem.title,year:heroItem.year}).then((trailer)=>{if(!cancelled)setHeroTrailer(trailer)}).catch(()=>undefined)
-    return()=>{cancelled=true;window.clearTimeout(reset)}
-  },[heroItem])
-
+    catalogSetCache(timeRowId, { items: timeRecommendations, page: 0, hasMore: false, scrollTop: 0 })
+  }, [timeRowId, timeRecommendations, catalogSetCache])
+  useEffect(() => {
+    catalogSetCache(bigScreenRowId, { items: bigScreenItems, page: 0, hasMore: false, scrollTop: 0 })
+  }, [bigScreenItems, bigScreenRowId, catalogSetCache])
+  useEffect(() => {
+    catalogSetCache(moodRowId, { items: moodItems, page: 0, hasMore: false, scrollTop: 0 })
+  }, [catalogSetCache, moodItems, moodRowId])
+  useEffect(() => {
+    catalogSetCache(genreRowId, { items: genreSelectionItems, page: 0, hasMore: false, scrollTop: 0 })
+  }, [catalogSetCache, genreRowId, genreSelectionItems])
+  useEffect(() => {
+    catalogSetCache(posterColorRowId, { items: posterColorItems, page: 0, hasMore: false, scrollTop: 0 })
+  }, [catalogSetCache, posterColorItems, posterColorRowId])
   useEffect(() => {
     const key = `${berlinDateKey}:${tab}:${mode}`
     if (!ranked.length || IMPRESSIONS_RECORDED.has(key)) return
@@ -892,51 +1222,116 @@ export default function DiscoverPage() {
     recordRecommendationImpressions(ranked.slice(0,40).map((entry)=>entry.item))
   }, [ranked, tab, mode, berlinDateKey])
 
-  const changeMode = (next: DiscoveryMode) => { try { localStorage.setItem('aurales_discovery_mode', next) } catch { /* keep live mode */ } setMode(next) }
   const submitFeedback = (item: SearchResult, kind: Parameters<typeof saveRecommendationFeedback>[1]) => {
     setFeedback(saveRecommendationFeedback(item, kind))
   }
 
-  const [randomPickerItem, setRandomPickerItem] = useState<SearchResult | null>(null)
-  const [pickerSpinning, setPickerSpinning] = useState(false)
-  const pickerSpinRunRef = useRef(0)
-  const spinPicker = (currentId = randomPickerItem?.id) => {
-    if (!pickerPool.length) return
-    const runId = pickerSpinRunRef.current + 1
-    pickerSpinRunRef.current = runId
-    const alternatives = pickerPool.filter((entry) => entry.item.id !== currentId)
-    const choices = alternatives.length ? alternatives : pickerPool
-    const winner = choices[Math.floor(Math.random() * choices.length)]
+  useEffect(() => {
+    surpriseRunRef.current += 1
+    if (pickerCloseTimerRef.current != null) window.clearTimeout(pickerCloseTimerRef.current)
+    pickerCloseTimerRef.current = null
+    pickerClosingRef.current = false
+    setSurpriseSpinning(false)
+    setPickerClosing(false)
+    setPickerOpen(false)
+  }, [tab, mode, discoveryQueryKey])
+  const spinPicker = (currentId: string | number | undefined, onSelect: (item: SearchResult) => void) => {
+    if (!pickerPool.length || surpriseSpinning) return
+    const runId = surpriseRunRef.current + 1
+    surpriseRunRef.current = runId
+    const winner = chooseSurpriseRecommendation(pickerPool, currentId)
     if (!winner) return
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      setRandomPickerItem(winner.item)
-      setPickerSpinning(false)
+      onSelect(winner.item)
+      setSurpriseSpinning(false)
       return
     }
 
     const delays = [65, 75, 90, 115, 150, 200, 270, 360]
-    setPickerSpinning(true)
-    const first = choices[Math.floor(Math.random() * choices.length)]
-    if (first) setRandomPickerItem(first.item)
+    setSurpriseSpinning(true)
+    // Keep the winner out of the rolling frames and exclude the previously
+    // displayed title on each tick so the roulette visibly advances.
+    const rollingPool = pickerPool.filter((entry) => mediaIdentity(entry.item) !== mediaIdentity(winner.item))
+    let previousId = currentId
+    if (rollingPool.length > 1) {
+      const first = chooseSurpriseRecommendation(rollingPool, previousId)
+      if (first) {
+        onSelect(first.item)
+        previousId = first.item.id
+      }
+    }
     void (async () => {
       for (const delay of delays) {
         await new Promise<void>((resolve) => window.setTimeout(resolve, delay))
-        if (pickerSpinRunRef.current !== runId) return
-        const interimChoices = pickerPool.filter((entry) => entry.item.id !== winner.item.id)
-        const reel = interimChoices.length ? interimChoices : choices
-        const next = reel[Math.floor(Math.random() * reel.length)]
-        if (next) setRandomPickerItem(next.item)
+        if (surpriseRunRef.current !== runId) return
+        const next = chooseSurpriseRecommendation(rollingPool, previousId)
+        if (next) {
+          onSelect(next.item)
+          previousId = next.item.id
+        }
       }
-      if (pickerSpinRunRef.current !== runId) return
-      setRandomPickerItem(winner.item)
-      setPickerSpinning(false)
+      if (surpriseRunRef.current !== runId) return
+      onSelect(winner.item)
+      // Let the final title/poster entry animation finish while the rolling
+      // state is still active. Without this handoff React batches the winner
+      // and `false` state together, so the selected title appears to jump.
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 320))
+      if (surpriseRunRef.current !== runId) return
+      setSurpriseSpinning(false)
     })()
   }
   const closePicker = useCallback(() => {
-    setPickerOpen(false)
-    setPickerSpinning(false)
-    pickerSpinRunRef.current += 1
+    if (pickerClosingRef.current) return
+    surpriseRunRef.current += 1
+    setSurpriseSpinning(false)
+    const finishClose = () => {
+      pickerCloseTimerRef.current = null
+      pickerClosingRef.current = false
+      setPickerOpen(false)
+      setPickerClosing(false)
+      window.requestAnimationFrame(() => surpriseButtonRef.current?.focus())
+    }
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      finishClose()
+      return
+    }
+    pickerClosingRef.current = true
+    setPickerClosing(true)
+    pickerCloseTimerRef.current = window.setTimeout(finishClose, 190)
   }, [])
+  const closePreferences = useCallback(() => {
+    setPreferencesOpen(false)
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const trigger = preferencesButtonRef.current
+      if (trigger?.isConnected) trigger.focus({ preventScroll: true })
+    }))
+  }, [])
+  useEffect(() => {
+    if (!pickerOpen) return
+    const previousOverflow = document.body.style.overflow
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') closePicker() }
+    document.body.style.overflow = 'hidden'
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [pickerOpen, closePicker])
+  useEffect(() => {
+    if (!preferencesOpen) return
+    const previousOverflow = document.body.style.overflow
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') closePreferences() }
+    document.body.style.overflow = 'hidden'
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [preferencesOpen, closePreferences])
+  const triggerSurprise = () => {
+    setPickerOpen(true)
+    spinPicker(pickerItem?.id, (item) => setPickerSelectionKey(mediaIdentity(item)))
+  }
   const selectTastePick = (item: SearchResult) => {
     const id = mediaIdentity(item)
     if (pickedIds.includes(id) || pickedIds.length >= 3) return
@@ -955,25 +1350,25 @@ export default function DiscoverPage() {
 
   const handleTabChange = (nextTab: DiscoverTab) => {
     setTab(nextTab)
+    setSelectedGenreId(null)
   }
 
   const openItemDetail = (item: SearchResult, autoPlay = false) => navigate(item.type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`, { state: { ...item, autoPlay } })
   const openHeroDetail = (autoPlay = false) => { if (heroRecommendation) openItemDetail(heroRecommendation.item, autoPlay) }
   const heroLogo = heroRecommendation ? (heroArt[String(heroRecommendation.item.id)]?.logo || heroRecommendation.item.logo) : undefined
   const heroPoster = heroRecommendation ? (heroRecommendation.item.poster || heroArt[String(heroRecommendation.item.id)]?.poster || heroRecommendation.item.backdrop || heroArt[String(heroRecommendation.item.id)]?.backdrop) : undefined
-  const heroGlassButton = 'focus-ring cursor-pointer rounded-full border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white/90 transition-colors hover:border-white/25 hover:bg-white/20 hover:text-white active:scale-[0.97]'
-
+  const heroBackdrop = heroRecommendation ? (heroRecommendation.item.backdrop || heroArt[String(heroRecommendation.item.id)]?.backdrop || heroRecommendation.item.poster || heroArt[String(heroRecommendation.item.id)]?.poster) : undefined
+  const pickerLogo = pickerRecommendation ? (heroArt[String(pickerRecommendation.item.id)]?.logo || pickerRecommendation.item.logo) : undefined
+  const pickerPoster = pickerRecommendation ? (pickerRecommendation.item.poster || heroArt[String(pickerRecommendation.item.id)]?.poster || pickerRecommendation.item.backdrop || heroArt[String(pickerRecommendation.item.id)]?.backdrop) : undefined
+  const pickerBackdrop = pickerRecommendation ? (pickerRecommendation.item.backdrop || heroArt[String(pickerRecommendation.item.id)]?.backdrop || pickerRecommendation.item.poster || heroArt[String(pickerRecommendation.item.id)]?.poster) : undefined
   return (
     <div className="discover-page pb-12">
       <div className="discover-page__notice pt-8"><CatalogKeyNotice /></div>
       <div className="discover-page__heading px-6 pt-10 pb-7 md:px-10">
         <div className="flex flex-wrap items-end justify-between gap-5">
           <div className="max-w-2xl">
-            <p className="mb-2 text-[11px] font-bold uppercase tracking-[.2em] text-accent">Picked around your taste</p>
-            <h1 className="text-4xl font-semibold tracking-[-.04em] text-white md:text-5xl">Discover</h1>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-white/55">Find something worth watching tonight.</p>
+            <h1 className="text-3xl font-semibold tracking-[-.04em] text-white md:text-5xl">Settle in, {activeProfile.name}.</h1>
           </div>
-          <span className="rounded-full border border-white/[0.09] bg-white/[0.035] px-4 py-2 text-xs font-medium text-white/50">Daily picks <span className="mx-1.5 text-white/20">·</span> {region} <span className="mx-1.5 text-white/20">·</span> {minRating > 0 ? `${minRating}+ rating` : 'All ratings'}</span>
         </div>
 
         <div className="discover-page__controls">
@@ -992,43 +1387,61 @@ export default function DiscoverPage() {
               </button>
             ))}
           </div>
-          <button className="discover-surprise-trigger" type="button" onClick={() => { setPickerOpen(true); spinPicker() }} disabled={!pickerPool.length}>
-            <Shuffle size={16} aria-hidden="true" /> Surprise Me
-          </button>
         </div>
       </div>
 
       <>
 
-          <div className="discover-page__modes" aria-label="Browse recommendations">
-            <label className="discover-mode-menu"><span>Browse</span><select aria-label="Browse recommendations" value={mode} onChange={(event) => changeMode(event.target.value as DiscoveryMode)}>{DISCOVERY_MODES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><ChevronDown size={16} aria-hidden="true" /></label>
+          <div className="discover-page__modes" aria-label="Discovery controls">
+            <button ref={surpriseButtonRef} className="discover-surprise-trigger" type="button" onClick={triggerSurprise} disabled={pickerPool.length < 2 || surpriseSpinning} aria-busy={surpriseSpinning}><Shuffle size={16} aria-hidden="true" /> <span>{surpriseSpinning ? 'Choosing…' : 'Surprise Me'}</span></button>
+            <button ref={preferencesButtonRef} className="discover-preferences-trigger" type="button" onClick={() => setPreferencesOpen(true)} aria-label="Discovery settings"><Settings size={18} aria-hidden="true" /></button>
           </div>
-          {viewState==='content'&&heroRecommendation ? <section className="discover-spotlight">
-            <div className="discover-spotlight__ambient" aria-hidden="true">{heroRecommendation.item.backdrop && <img src={heroRecommendation.item.backdrop} alt="" draggable={false} decoding="async" />}</div>
-            <div className="discover-spotlight__copy">
-              <p className="discover-spotlight__eyebrow">Your Weekend Plan · Tonight <span>·</span> {heroRecommendation.reasons[0]?.label.replace(/\btaste\b/gi, 'preferences') || 'Picked for you'}</p>
-              {heroLogo && !heroLogoError
-                ? <img src={heroLogo} alt={heroRecommendation.item.title} draggable={false} onError={()=>setHeroLogoError(true)} className="discover-spotlight__logo" />
-                : <h2>{heroRecommendation.item.title}</h2>}
-              <div className="discover-spotlight__meta">
-                {heroRecommendation.item.year && <span>{heroRecommendation.item.year}</span>}
-                <span>{heroRecommendation.runtimeMinutes ? `${heroRecommendation.runtimeMinutes} min` : heroRecommendation.item.type === 'series' ? 'Series' : 'Movie'}</span>
-                {heroRecommendation.item.rating != null && <span>★ {Number(heroRecommendation.item.rating).toFixed(1)}</span>}
-                {heroRecommendation.item.genres?.slice(0, 2).map((genre) => <span key={genre}>{genre}</span>)}
+          {viewState === 'content' && <DiscoveryReveal><DiscoveryLibrariesRow rows={homeRows} /></DiscoveryReveal>}
+          {viewState === 'content' && <DiscoveryReveal><DiscoveryCalendarRow watchProgress={watchProgress} traktConnected={traktConnected} simklConnected={simklConnected} anilistConnected={anilistConnected} mdblistApiKey={mdblistApiKey} /></DiscoveryReveal>}
+          {viewState==='content'&&heroRecommendation && <div className="discover-spotlight-heading row-contain">
+            <p>{tab === 'movies' ? 'A movie for tonight' : tab === 'series' ? 'A series for tonight' : 'An anime for tonight'}</p>
+            <h2>Your Next Obsession</h2>
+            <span className="discover-spotlight-heading__accent" aria-hidden="true" />
+          </div>}
+          {viewState==='content'&&heroRecommendation ? <>
+          <section key={mediaIdentity(heroRecommendation.item)} className="discover-spotlight discover-reveal is-visible">
+            {heroBackdrop && <div key={heroBackdrop} className="discover-spotlight__ambient" aria-hidden="true"><img className={loadedHeroBackdrop === heroBackdrop ? 'is-loaded' : undefined} src={heroBackdrop} alt="" draggable={false} decoding="async" fetchPriority="high" onLoad={() => setLoadedHeroBackdrop(heroBackdrop)} /></div>}
+            <div className="discover-spotlight__copy" data-title={heroRecommendation.item.title}>
+              <div className="discover-spotlight__top">
+                <p className="discover-spotlight__eyebrow">Tonight</p>
+                <p className="discover-spotlight__duration">Usually {formatWatchDuration(tasteProfile.preferredRuntimeMinutes || heroRecommendation.runtimeMinutes || (tab === 'movies' ? 105 : 45))}</p>
               </div>
-              {heroRecommendation.item.overview && <p className="discover-spotlight__overview">{heroRecommendation.item.overview}</p>}
-              <div className="discover-spotlight__actions">
-                <button onClick={() => openHeroDetail(true)} className="discover-spotlight__play">▶ <span>Play</span></button>
-                <button onClick={() => openHeroDetail(false)} className={heroGlassButton}>Details</button>
-                <WatchlistButton className="discover-spotlight__watchlist" item={heroRecommendation.item} mediaRef={{localId:heroRecommendation.item.id,title:heroRecommendation.item.title,year:heroRecommendation.item.year,type:heroRecommendation.item.isAnime?'anime':heroRecommendation.item.type==='series'?'show':'movie',imdbId:heroRecommendation.item.imdbId,tmdbId:heroRecommendation.item.tmdbId?Number(heroRecommendation.item.tmdbId):undefined}} mediaType={heroRecommendation.item.type} isAnime={tab==='anime'||Boolean(heroRecommendation.item.isAnime)} anilistId={heroRecommendation.item.anilistId} malId={heroRecommendation.item.malId} tvdbId={heroRecommendation.item.tvdbId}/>
-                {heroPool.length > 1 && <button onClick={() => setHeroIndex((activeHeroIndex + 1) % heroPool.length)} className={heroGlassButton}>Another option</button>}
-                {heroTrailer && <button onClick={() => setTrailerOpen(true)} className={`${heroGlassButton} discover-spotlight__trailer`}>Trailer</button>}
-                <button onClick={() => submitFeedback(heroRecommendation.item,'not-interested')} className={`${heroGlassButton} discover-spotlight__feedback`}>Not for me</button>
+              <div className="discover-spotlight__bottom">
+                {heroLogo && !heroLogoError
+                  ? <img key={heroRecommendation.item.id} src={heroLogo} alt={heroRecommendation.item.title} draggable={false} onError={()=>setHeroLogoError(true)} className="discover-spotlight__logo" />
+                  : <h2 key={heroRecommendation.item.id} aria-live="polite">{heroRecommendation.item.title}</h2>}
+                <div className="discover-spotlight__meta">
+                  {heroRecommendation.item.year && <span>{heroRecommendation.item.year}</span>}
+                  <span>{heroRecommendation.runtimeMinutes ? formatWatchDuration(heroRecommendation.runtimeMinutes) : heroRecommendation.item.type === 'series' ? 'Series' : 'Movie'}</span>
+                  {heroRecommendation.item.genres?.slice(0, 1).map((genre) => <span key={genre}>{genre}</span>)}
+                  {heroRecommendation.item.rating != null && <span>★ {Number(heroRecommendation.item.rating).toFixed(1)}</span>}
+                </div>
+                {heroRecommendation.reasons[0] && <p className="discover-spotlight__reason">{heroRecommendation.reasons[0].label.replace(/\btaste\b/gi, 'preferences')}</p>}
+                <div className="discover-spotlight__actions">
+                  <button onClick={() => openHeroDetail(true)} className="discover-spotlight__play">▶ <span>Play</span></button>
+                  <button className="discover-spotlight__another discover-spotlight__secondary" type="button" onClick={() => openHeroDetail(false)} aria-label="Details"><Info size={17} aria-hidden="true"/><span>Details</span></button>
+                  <button className="discover-spotlight__another discover-spotlight__secondary" type="button" onClick={() => { if (heroItem) submitFeedback(heroItem, 'not-interested') }} disabled={!heroItem} aria-label="Not for me"><ThumbsDown size={17} aria-hidden="true"/><span>Not for me</span></button>
+                </div>
               </div>
             </div>
-            {heroPoster && <div className="discover-spotlight__poster"><img src={heroPoster} alt={`${heroRecommendation.item.title} poster`} draggable={false} loading="eager" decoding="async" /></div>}
-          </section> : viewState==='error' ? <div className="mx-6 mb-8 grid min-h-72 place-items-center rounded-3xl border border-white/10 bg-white/[.03] p-8 text-center"><div><h2 className="text-xl font-black">Recommendations are unavailable</h2><p className="mt-2 max-w-md text-sm text-white/60">Cached discovery data was not available and recommendation sources could not be loaded. Check your network or TMDB settings.</p><button onClick={()=>window.location.reload()} className="mt-5 rounded-full bg-white px-5 py-2 font-bold text-black">Retry</button></div></div> : <div className="discover-loading mx-6 mb-8 animate-pulse"><div className="h-56 rounded-[1.5rem] bg-white/[.06] sm:h-72"/><div className="mt-5 flex gap-3 overflow-hidden">{Array.from({length:7}).map((_,index)=><div key={index} className="h-[10.5rem] w-28 flex-shrink-0 rounded-2xl bg-white/[.05]"/>)}</div></div>}
-          {ranked.length > 0 && <section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
+            {heroPoster && <div className="discover-spotlight__poster"><img key={heroRecommendation.item.id} src={heroPoster} alt={`${heroRecommendation.item.title} poster`} draggable={false} loading="eager" decoding="async" /></div>}
+          </section></> : viewState==='error' ? <div className="mx-6 mb-8 grid min-h-72 place-items-center rounded-3xl border border-white/10 bg-white/[.03] p-8 text-center"><div><h2 className="text-xl font-black">Recommendations are unavailable</h2><p className="mt-2 max-w-md text-sm text-white/60">Cached discovery data was not available and recommendation sources could not be loaded. Check your network or TMDB settings.</p><button onClick={()=>window.location.reload()} className="mt-5 rounded-full bg-white px-5 py-2 font-bold text-black">Retry</button></div></div> : <div className="discover-loading mx-6 mb-8 animate-pulse"><div className="h-56 rounded-[1.5rem] bg-white/[.06] sm:h-72"/><div className="mt-5 flex gap-3 overflow-hidden">{Array.from({length:7}).map((_,index)=><div key={index} className="h-[10.5rem] w-28 flex-shrink-0 rounded-2xl bg-white/[.05]"/>)}</div></div>}
+          {viewState === 'content' && trendingSection && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--trending"><MediaRow title="OR TRY" items={trendingSection.items.map((entry) => entry.item)} showAllItems={trendingSection.catalogItems?.map((entry) => entry.item)} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-trending-this-week?title=${encodeURIComponent('OR TRY')}`} /></div></DiscoveryReveal>}
+          {personalizedSections.filter((section) => section.id !== 'trending-this-week' && section.id !== 'hidden-gems' && section.id !== 'new').map((section) => {
+            const title = section.id === 'made-for-you' ? (mode === 'for-you' ? 'Top 10 For You' : section.title) : (DISCOVERY_SECTION_TITLES[section.id] ?? section.title.replace(/\s+for you$/i, ''))
+            const isTopTen = section.id === 'made-for-you'
+            const items = section.items.map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
+            // A Top 10 catalog must stay a ten-title collection even when the
+            // recommendation engine exposes a larger backing catalog.
+            const catalogItems = (section.catalogItems ?? section.items).map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
+            return <DiscoveryReveal key={section.id}><div className="row-contain discover-shelf"><MediaRow title={title} items={items} showAllItems={catalogItems} layout={isTopTen ? 'ranked' : 'poster'} disableCinematic forceShowAll showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div></DiscoveryReveal>
+          })}
+          {ranked.length > 0 && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
             <p className="discover-section-eyebrow">Refine your taste</p>
             <div className="discover-refine__heading">
               <h2 id="discover-refine-title">Pick Three You Like</h2>
@@ -1039,7 +1452,7 @@ export default function DiscoverPage() {
             </div>
             <div className="discover-refine__tools">
               <label className="discover-refine__search"><Search size={16} aria-hidden="true"/><input type="search" value={tasteQuery} onChange={(event) => { setTasteQuery(event.target.value); setPickOffset(0) }} placeholder="Search titles" aria-label="Search titles to refine recommendations" /></label>
-              {tastePickCandidates.length > 0 && pickedIds.length < 3 && <button className="discover-refine__more" type="button" onClick={() => setPickOffset((current) => current + 10)}><RefreshCw size={16} aria-hidden="true" /> <span>More choices</span></button>}
+              {tastePickCandidates.length < tastePickPool.length && pickedIds.length < 3 && <button className="discover-refine__more" type="button" onClick={() => setPickOffset((current) => current + 10)}><RefreshCw size={16} aria-hidden="true" /> <span>More choices</span></button>}
               {pickedIds.length > 0 && <button className="discover-refine__reset" type="button" onClick={resetTastePicks}><RotateCcw size={16} aria-hidden="true" /> <span>Start over</span></button>}
             </div>
             <div className="discover-taste-picks">
@@ -1053,30 +1466,137 @@ export default function DiscoverPage() {
               })}
               {tastePickCandidates.length === 0 && <p className="discover-taste-picks__empty">No matching titles. Try another search.</p>}
             </div>
-          </section>}
-          {bingeRecommendations.length > 0 && <section className="discover-binge row-contain" aria-labelledby="discover-binge-title">
+          </section></DiscoveryReveal>}
+          <DiscoveryReveal><section className="discover-genres row-contain" aria-labelledby="discover-genres-title">
+            <div className="discover-genres__heading"><div><p className="discover-section-eyebrow">Browse by category</p><h2 id="discover-genres-title">Your Genres</h2></div></div>
+            <div className="discover-genres__grid" role="group" aria-label="Genres">
+              {genreTiles.map(({ option, item }) => <button type="button" key={option.title} aria-pressed={selectedGenreId === option.genres[0]} aria-controls="discover-genre-picks" className={selectedGenreId === option.genres[0] ? 'is-active' : ''} onClick={() => setSelectedGenreId(option.genres[0]!)} style={item?.backdrop || item?.poster ? { backgroundImage: `linear-gradient(90deg, rgba(9,9,12,.88), rgba(9,9,12,.3)), url("${item.backdrop || item.poster}")` } : undefined}><span>{option.title}</span><small>{option.genres[0] === selectedGenreId && genreSelectionItems.length ? genreSelectionItems.length : filteredCandidates.filter((entry) => entry.item.genreIds?.includes(option.genres[0]!)).length} titles to explore</small></button>)}
+            </div>
+            <div id="discover-genre-picks" ref={genrePicksRef} className="discover-genre-picks" aria-live="polite">
+              {selectedGenreId != null && genreLoading && genreSelectionItems.length === 0 && <p className="discover-genre-picks__loading" role="status">Finding {genreMap[selectedGenreId] || 'genre'} titles…</p>}
+              {selectedGenreId != null && genreSelectionItems.length > 0 && <MediaRow title={`${genreMap[selectedGenreId] || 'Genre'} Picks`} items={genreSelectionItems} showAllItems={genreSelectionItems} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${genreRowId}?title=${encodeURIComponent(`${genreMap[selectedGenreId] || 'Genre'} Picks`)}`} />}
+              {selectedGenreId != null && genreSelectionItems.length === 0 && !genreLoading && <p className="discover-genre-picks__empty">No titles found for {genreMap[selectedGenreId] || 'this genre'} yet. Try another genre.</p>}
+            </div>
+          </section></DiscoveryReveal>
+          {viewState === 'content' && heroRecommendation && <DiscoveryReveal><section className="discover-time row-contain" aria-labelledby="discover-time-title">
+            <div className="discover-time__heading"><div><p className="discover-section-eyebrow">Picked to fit</p><h2 id="discover-time-title">How Much Time Tonight?</h2></div></div>
+            <div className="discover-time__options" role="group" aria-label="Choose a runtime">
+              {timeChoices.map((choice) => <button key={choice.id} type="button" aria-pressed={timeChoice === choice.id} onClick={() => setTimeChoice(choice.id)}>{choice.label}</button>)}
+            </div>
+            {timeRecommendations.length > 0
+              ? <MediaRow title="Picked to fit" items={timeRecommendations} showAllItems={timeRecommendations} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${timeRowId}?title=${encodeURIComponent('Picked to fit')}`} />
+              : <p className="discover-time__status" role={timeRangeAvailable ? 'status' : undefined}>{!timeRangeAvailable ? 'This option does not overlap with your runtime settings.' : discoveryRowLoads[timeRowId] ? 'Finding popular titles for this runtime…' : 'No popular titles found for this runtime. Try another option.'}</p>}
+          </section></DiscoveryReveal>}
+          {viewState === 'content' && tab === 'movies' && bigScreenItems.length >= 3 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--big-screen"><MediaRow title="Made for the Big Screen" items={bigScreenItems.slice(0, 8)} showAllItems={bigScreenItems} forceShowAll layout="landscape" disableCinematic showAllPath={`/catalog/${bigScreenRowId}?title=${encodeURIComponent('Made for the Big Screen')}`} /></div></DiscoveryReveal>}
+          {hiddenGemsSection && hiddenGemsSection.items.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--gems"><MediaRow title="Hidden Gems" items={hiddenGemsSection.items.map((entry) => entry.item)} showAllItems={hiddenGemsSection.catalogItems?.map((entry) => entry.item)} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-hidden-gems?title=${encodeURIComponent('Hidden Gems')}`} /></div></DiscoveryReveal>}
+          {recentlyReleasedSection && recentlyReleasedSection.items.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--recent"><MediaRow title="Recently Released" items={recentlyReleasedSection.items.map((entry) => entry.item)} showAllItems={recentlyReleasedSection.catalogItems?.map((entry) => entry.item)} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-new?title=${encodeURIComponent('Recently Released')}`} /></div></DiscoveryReveal>}
+          {bingeRecommendations.length > 0 && <DiscoveryReveal><section className="discover-binge row-contain" aria-labelledby="discover-binge-title">
             <div className="discover-binge__heading"><div><p className="discover-section-eyebrow">For your next long watch</p><h2 id="discover-binge-title">Your Next Binge</h2></div><span>Based on your taste and watch history</span></div>
             <div className="discover-binge__feature">
-              <div className="discover-binge__art">{activeBingeItem?.backdrop && <img src={activeBingeItem.backdrop} alt="" loading="lazy" decoding="async"/>}{activeBingeItem?.poster && <img className="discover-binge__poster" src={activeBingeItem.poster} alt={`${activeBingeItem.title} poster`} loading="lazy" decoding="async"/>}</div>
-              <div className="discover-binge__copy"><p className="discover-section-eyebrow">{activeBingeItem?.isAnime ? 'Anime series' : 'Series pick'}</p><h3>{activeBingeItem?.title}</h3><p>{activeBingeItem?.overview || 'A series recommendation picked from your current discovery results.'}</p><div><button type="button" onClick={() => activeBingeItem && openItemDetail(activeBingeItem, true)}>▶ Play</button><button type="button" onClick={() => activeBingeItem && openItemDetail(activeBingeItem)}>Details</button><button type="button" onClick={() => setBingeIndex((current) => (current + 1) % bingeRecommendations.length)} disabled={bingeRecommendations.length < 2}>Another option</button></div></div>
+              <div className="discover-binge__art" aria-hidden="true">{activeBingeItem?.backdrop && <img src={activeBingeItem.backdrop} alt="" loading="lazy" decoding="async"/>}</div>
+              <div className="discover-binge__copy">
+                <div><p className="discover-section-eyebrow">{activeBingeItem?.isAnime ? 'Anime to get lost in' : 'Series to get lost in'}</p><h3>{activeBingeItem?.title}</h3><p>{[activeBingeItem?.year, activeBingeItem?.genres?.[0], activeBingeItem?.isAnime ? 'Anime' : 'Series'].filter(Boolean).join(' · ')}</p></div>
+                <div className="discover-binge__actions"><button type="button" onClick={() => activeBingeItem && openItemDetail(activeBingeItem, true)}>▶ Play</button><button type="button" onClick={() => activeBingeItem && openItemDetail(activeBingeItem)}>Details</button><button type="button" onClick={() => setBingeIndex((current) => (current + 1) % bingeRecommendations.length)} disabled={bingeRecommendations.length < 2}>Another option</button></div>
+              </div>
+              {activeBingeItem && <div className="discover-binge__gallery" aria-label="Binge recommendations">
+                <button className="discover-binge__main-poster" type="button" onClick={() => openItemDetail(activeBingeItem)} aria-label={`Details for ${activeBingeItem.title}`}>
+                  <img src={activeBingeItem.poster} alt={`${activeBingeItem.title} poster`} loading="lazy" decoding="async" />
+                  <span>{activeBingeItem.title}</span>
+                  {activeBingeItem.rating != null && <small>★ {Number(activeBingeItem.rating).toFixed(1)}</small>}
+                </button>
+                <div className="discover-binge__alternatives">
+                  {bingeRecommendations.filter((item) => mediaIdentity(item) !== mediaIdentity(activeBingeItem)).slice(0, 4).map((item) => <button key={mediaIdentity(item)} type="button" onClick={() => openItemDetail(item)} aria-label={`Details for ${item.title}`}>
+                    <img src={item.poster} alt={`${item.title} poster`} loading="lazy" decoding="async" />
+                    <span>{item.title}</span>
+                    {item.rating != null && <small>★ {Number(item.rating).toFixed(1)}</small>}
+                  </button>)}
+                </div>
+              </div>}
             </div>
-            {bingeRecommendations.length > 1 && <div className="discover-binge__rail"><MediaRow title="More series to binge" items={bingeRecommendations.slice(1)} layout="poster" /></div>}
-          </section>}
-          <section className="discover-moods row-contain" aria-label="Choose a genre">
-            <div className="discover-moods__heading"><div><p className="discover-section-eyebrow">Picked from this discovery mix</p><h2>Your Genres</h2></div></div>
-            <div className="discover-genres__grid" role="group" aria-label="Genres">
-              {genreTiles.map(({ option, item }, index) => <button type="button" key={option.title} aria-pressed={moodIndex === index} className={moodIndex === index ? 'is-active' : ''} onClick={() => setMoodIndex(index)} style={item?.backdrop || item?.poster ? { backgroundImage: `linear-gradient(90deg, rgba(9,9,12,.88), rgba(9,9,12,.3)), url("${item.backdrop || item.poster}")` } : undefined}><span>{option.title}</span><small>{item?.title || 'Explore this genre'}</small></button>)}
+          </section></DiscoveryReveal>}
+          {viewState === 'content' && <DiscoveryReveal><section className="discover-moods row-contain" aria-labelledby="discover-moods-title">
+            <div className="discover-moods__heading"><div><p className="discover-section-eyebrow">Choose the mood</p><h2 id="discover-moods-title">Sunday Night Moods</h2></div></div>
+            <div className="discover-moods__options" role="group" aria-label="Choose a mood">
+              {moodOptions.map((mood) => <button key={mood.id} type="button" aria-pressed={selectedMood.id === mood.id} onClick={() => setSelectedMoodId(mood.id)}>{mood.label}</button>)}
             </div>
-            {moodItems.length > 0 && <MediaRow title={`${mood.title} Picks`} items={moodItems} layout="poster" />}
-          </section>
-          {pickerOpen && randomPickerItem && <DiscoveryPicker item={randomPickerItem} onClose={closePicker} onSpin={() => spinPicker()} onOpen={() => openItemDetail(randomPickerItem)} isSpinning={pickerSpinning} />}
-          {personalizedSections.map((section) => {
-            const title = DISCOVERY_SECTION_TITLES[section.id] ?? section.title.replace(/\s+for you$/i, '')
-            return <div key={section.id} className="row-contain discover-shelf"><MediaRow title={title} items={section.items.map((entry)=>entry.item)} layout="poster" showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div>
-          })}
-          {serverDiscoverItems.length > 0 && <div className="row-contain"><MediaRow title="From Your Servers" items={serverDiscoverItems} layout="poster" showAllPath={`/catalog/discover-servers-${tab}?title=${encodeURIComponent('From Your Servers')}`} /></div>}
-          {trailerOpen&&heroTrailer&&<div role="dialog" aria-modal="true" aria-label="Trailer" className="fixed inset-0 z-[10000] grid place-items-center bg-black/80 p-6" onClick={()=>setTrailerOpen(false)}><div className="aspect-video w-[min(70rem,92vw)] overflow-hidden rounded-3xl border border-white/15 bg-black" onClick={(event)=>event.stopPropagation()}><TrailerPreview trailer={heroTrailer} title={heroRecommendation?.item.title||'Trailer'} muted={false} eager/></div></div>}
+            {moodItems.length > 0
+              ? <MediaRow title={`${selectedMood.label} Picks`} items={moodItems} showAllItems={moodItems} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${moodRowId}?title=${encodeURIComponent(`${selectedMood.label} Picks`)}`} />
+              : <p className="discover-moods__status" role="status">{discoveryRowLoads[moodRowId] ? `Finding popular ${selectedMood.label.toLowerCase()} titles…` : `No popular ${selectedMood.label.toLowerCase()} titles found yet. Try another mood.`}</p>}
+          </section></DiscoveryReveal>}
+          {viewState === 'content' && <DiscoveryReveal><section className="discover-color row-contain" aria-labelledby="discover-color-title">
+            <div className="discover-color__heading"><div><p className="discover-section-eyebrow">Browse by poster colour</p><h2 id="discover-color-title">Pick by Colour</h2></div></div>
+            <div className="discover-color__filters" role="group" aria-label="Filter posters by dominant colour">
+              <button type="button" aria-pressed={selectedPosterColor === 'all'} onClick={() => setSelectedPosterColor('all')}>All</button>
+              {POSTER_COLOR_GROUPS.filter((group) => availablePosterColors.has(group.id)).map((group) => <button type="button" key={group.id} aria-pressed={selectedPosterColor === group.id} onClick={() => setSelectedPosterColor(group.id)}><span aria-hidden="true" style={{ backgroundColor: group.color }} />{group.label}</button>)}
+            </div>
+            {posterColorItems.length > 0
+              ? <MediaRow title={selectedPosterColor === 'all' ? 'Popular Posters' : `${POSTER_COLOR_GROUPS.find((group) => group.id === selectedPosterColor)?.label} Posters`} items={posterColorItems} showAllItems={posterColorItems} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${posterColorRowId}?title=${encodeURIComponent(selectedPosterColor === 'all' ? 'Popular Posters' : `${POSTER_COLOR_GROUPS.find((group) => group.id === selectedPosterColor)?.label} Posters`)}`} />
+              : <p className="discover-color__status" role="status">{ranked.some((entry) => entry.item.poster) ? 'Sampling artwork colours…' : 'Popular artwork will appear here when discovery results load.'}</p>}
+          </section></DiscoveryReveal>}
+          {viewState === 'content' && <DiscoveryReveal><section className="discover-more row-contain" aria-labelledby="discover-more-title">
+            <div className="discover-more__heading"><div><p className="discover-section-eyebrow">More popular picks</p><h2 id="discover-more-title">Keep Exploring</h2></div><span>{moreToDiscover.length ? `${moreToDiscover.length} titles loaded` : 'Fresh titles load as you scroll'}</span></div>
+            {moreToDiscover.length > 0 && <div className="media-grid discover-more__grid">
+              {moreToDiscover.map((item) => <MediaCard key={mediaIdentity(item)} item={item} layout="poster" disableTrailerPreview />)}
+            </div>}
+            <div ref={moreToDiscoverSentinelRef} className="discover-more__sentinel" aria-live="polite" role="status">
+              {moreToDiscoverStatus === 'loading' && <><span className="discover-more__spinner" aria-hidden="true" />Loading more popular titles…</>}
+              {moreToDiscoverStatus === 'idle' && <span>Keep scrolling for more titles</span>}
+              {moreToDiscoverStatus === 'error' && <button type="button" onClick={() => { moreToDiscoverStatusRef.current = 'idle'; setMoreToDiscoverStatus('idle'); void loadMoreDiscovery() }}>Retry loading titles</button>}
+              {moreToDiscoverStatus === 'done' && <span>You’re all caught up for now</span>}
+            </div>
+          </section></DiscoveryReveal>}
       </>
+      {pickerOpen && pickerRecommendation && <div className={`discover-picker-backdrop${pickerClosing ? ' is-closing' : ''}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closePicker() }}>
+        <section className={`discover-picker${surpriseSpinning ? ' is-spinning' : ''}${pickerClosing ? ' is-closing' : ''}`} role="dialog" aria-modal="true" aria-labelledby="discover-picker-title" aria-busy={surpriseSpinning} onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => {
+          if (event.key !== 'Tab') return
+          const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), [tabindex]:not([tabindex="-1"])'))
+          const first = focusable[0]
+          const last = focusable[focusable.length - 1]
+          if (!first || !last) return
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+          else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+        }}>
+          <div className="discover-picker__ambient" aria-hidden="true">{pickerBackdrop && <img key={pickerBackdrop} src={pickerBackdrop} alt="" draggable={false} />}</div>
+          <button type="button" autoFocus className="discover-picker__close" onClick={closePicker} aria-label="Close picker"><X size={19} aria-hidden="true" /></button>
+          <div className="discover-picker__body">
+            <div className="discover-picker__poster">
+              {pickerPoster && <img key={pickerRecommendation.item.id} className={surpriseSpinning ? 'is-spinning' : ''} src={pickerPoster} alt={`${pickerRecommendation.item.title} poster`} draggable={false} />}
+              {pickerRecommendation.item.rating != null && <span className="discover-picker__rating">★ {Number(pickerRecommendation.item.rating).toFixed(1)}</span>}
+            </div>
+            <div className="discover-picker__copy" data-title={pickerRecommendation.item.title}>
+              <p className="discover-section-eyebrow">Tonight, try</p>
+              {pickerLogo && !pickerLogoError
+                ? <img key={pickerRecommendation.item.id} className={`discover-picker__logo${surpriseSpinning ? ' is-spinning' : ''}`} src={pickerLogo} alt={pickerRecommendation.item.title} onError={() => setPickerLogoError(true)} />
+                : <h2 id="discover-picker-title" className={surpriseSpinning ? 'is-spinning' : ''}>{pickerRecommendation.item.title}</h2>}
+              {pickerLogo && !pickerLogoError && <h2 id="discover-picker-title" className="sr-only">{pickerRecommendation.item.title}</h2>}
+              <p className="discover-picker__meta">{[pickerRecommendation.item.genres?.[0], pickerRecommendation.item.year, pickerRecommendation.item.type === 'movie' ? 'Movie' : 'Series', pickerRecommendation.item.rating != null ? `★ ${Number(pickerRecommendation.item.rating).toFixed(1)}` : undefined].filter(Boolean).join(' · ')}</p>
+              {pickerRecommendation.reasons[0] && <p className="discover-picker__reason">{pickerRecommendation.reasons[0].label}</p>}
+              <div className="discover-picker__actions">
+                <button type="button" className="discover-picker__open" onClick={() => { const item = pickerRecommendation.item; closePicker(); openItemDetail(item) }}>Open</button>
+                <button type="button" className="discover-picker__dismiss" onClick={() => { const item = pickerRecommendation.item; closePicker(); submitFeedback(item, 'not-interested') }}>Not for me</button>
+                <button type="button" className="discover-picker__spin" onClick={() => spinPicker(pickerItem?.id, (item) => setPickerSelectionKey(mediaIdentity(item)))} disabled={surpriseSpinning || pickerPool.length < 2} aria-label={surpriseSpinning ? 'Picking a title' : 'Spin again'}><Shuffle size={16} aria-hidden="true" />{surpriseSpinning ? 'Picking…' : 'Spin Again'}</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>}
+      {preferencesOpen && <div className="discover-preferences-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closePreferences() }}>
+        <section className="discover-preferences" role="dialog" aria-modal="true" aria-labelledby="discover-preferences-title" onKeyDown={(event) => {
+          if (event.key !== 'Tab') return
+          const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])'))
+          const first = focusable[0]
+          const last = focusable[focusable.length - 1]
+          if (!first || !last) return
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+          else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+        }}>
+          <header className="discover-preferences__header">
+            <div><p className="discover-section-eyebrow">Tune your recommendations</p><h2 id="discover-preferences-title">Discovery settings</h2></div>
+            <button type="button" autoFocus onClick={closePreferences} aria-label="Close Discovery settings"><X size={19} aria-hidden="true" /></button>
+          </header>
+          <div className="discover-preferences__body"><DiscoverPrefsPanel localPrefs={prefs} onChange={setDiscoverPrefs} onReset={resetDiscoverPrefs} /></div>
+        </section>
+      </div>}
     </div>
   )
 }

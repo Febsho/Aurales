@@ -1,4 +1,5 @@
 import { isHlsUrl } from '../../platform/capabilities'
+import type { MediaConversionMode } from '../mediaWorker'
 
 export const AUTOPLAY_GESTURE_MESSAGE = 'Tap Play to start this stream. Your browser requires a user action before it can play audio.'
 
@@ -14,6 +15,13 @@ export function isPlaybackInterruptedError(error: unknown): boolean {
 /** Worker session expiries are Unix seconds; use this to renew only expired sessions. */
 export function isMediaSessionExpired(expiresAt: number, nowSeconds = Date.now() / 1000): boolean {
   return Number.isFinite(expiresAt) && nowSeconds >= expiresAt
+}
+
+/** Escalate only after the browser rejects the last worker output. */
+export function nextPlaybackConversionAfterDecodeFailure(mode: Exclude<MediaConversionMode, 'auto'>): Exclude<MediaConversionMode, 'auto'> | null {
+  if (mode === 'remux') return 'audioAac'
+  if (mode === 'audioAac') return 'h264Aac'
+  return null
 }
 
 const MIME_BY_EXTENSION: Record<string, string> = {

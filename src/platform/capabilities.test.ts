@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { isHlsUrl, shouldReloadAfterVaultRestore, supportsPictureInPicture, togglePictureInPicture } from './capabilities'
+import { getPlatformCapabilities, isHlsUrl, shouldReloadAfterVaultRestore, supportsPictureInPicture, togglePictureInPicture } from './capabilities'
 
 afterEach(() => vi.unstubAllGlobals())
 
 describe('browser stream detection', () => {
   it('recognizes HLS paths with signed query parameters', () => {
     expect(isHlsUrl('https://cdn.example.test/playlist.m3u8?token=abc')).toBe(true)
+    expect(isHlsUrl('https://worker.example/v1/media/0123456789abcdef0123456789abcdef?expires=123&signature=opaque&format=hls')).toBe(true)
   })
 
   it('does not classify ordinary media files as HLS', () => {
@@ -42,5 +43,15 @@ describe('Safari picture-in-picture capability', () => {
     expect(setMode).toHaveBeenCalledWith('picture-in-picture')
     await togglePictureInPicture(video)
     expect(setMode).toHaveBeenLastCalledWith('inline')
+  })
+})
+
+describe('Safari native HLS capability', () => {
+  it('prefers native HLS when the browser video element reports support', () => {
+    vi.stubGlobal('window', {})
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1' })
+    const video = { canPlayType: vi.fn((mime: string) => mime === 'application/vnd.apple.mpegurl' ? 'probably' : '') } as unknown as HTMLVideoElement
+    expect(getPlatformCapabilities(video)).toMatchObject({ platform: 'web', nativeHls: true })
+    expect(video.canPlayType).toHaveBeenCalledWith('application/vnd.apple.mpegurl')
   })
 })

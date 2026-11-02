@@ -1,6 +1,7 @@
 import type { RankedRecommendation } from './types'
 
-export const DISCOVERY_ALGORITHM_VERSION = 1
+// Version 11 keeps weekly trends ordered by their public popularity signal.
+export const DISCOVERY_ALGORITHM_VERSION = 11
 
 export interface DailySnapshotMeta {
   dateKey: string
@@ -11,6 +12,15 @@ export interface DailySnapshotMeta {
 
 export function makeDailySnapshotKey(dateKey: string, scope: string): string {
   return `${dateKey}|${scope}`
+}
+
+/** A ranking is ready only after each active row and auxiliary source settled. */
+export function discoverySourcesSettled(
+  rowIds: readonly string[],
+  rowLoads: Record<string, boolean>,
+  auxiliarySourcesReady: readonly boolean[],
+): boolean {
+  return rowIds.every((rowId) => rowLoads[rowId] !== true) && auxiliarySourcesReady.every(Boolean)
 }
 
 /** Keep yesterday visible while today's snapshot is assembled in the background. */

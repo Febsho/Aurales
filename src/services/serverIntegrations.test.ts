@@ -25,22 +25,23 @@ describe('native server integration adapter', () => {
     expect(parseServerCatalogListId(value)).toEqual({ connectionId: 'server:one', catalogId: 'library/all:movies' })
   })
 
-  it('does not expose server connection writes while the feature is disabled', async () => {
-    await expect(saveServerConnection({ kind: 'jellyfin', name: 'Home', serverUrl: 'https://media.test', username: 'me', secret: 'private', authMode: 'password', enabled: true }))
-      .rejects.toThrow('currently disabled')
-    expect(invokeMock).not.toHaveBeenCalled()
+  it('saves native server connections through the protected command', async () => {
+    const input = { kind: 'jellyfin' as const, name: 'Home', serverUrl: 'https://media.test', username: 'me', secret: 'private', authMode: 'password' as const, enabled: true }
+    invokeMock.mockResolvedValue({ id: 'server-one', ...input })
+    await expect(saveServerConnection(input)).resolves.toMatchObject({ id: 'server-one' })
+    expect(invokeMock).toHaveBeenCalledWith('save_server_connection', { request: input })
   })
 
-  it('does not resolve server streams while the feature is disabled', async () => {
-    invokeMock.mockResolvedValue([])
-    await expect(getServerStreams({ mediaType: 'series', mediaId: 'tvdb-42', tvdbId: 42, season: 1, episode: 2, sourceConnectionId: 'one', sourceItemId: 'episode' })).resolves.toEqual([])
-    expect(invokeMock).not.toHaveBeenCalled()
+  it('resolves native server streams', async () => {
+    invokeMock.mockResolvedValue([{ provider: 'jellyfin' }])
+    await expect(getServerStreams({ mediaType: 'series', mediaId: 'tvdb-42', tvdbId: 42, season: 1, episode: 2, sourceConnectionId: 'one', sourceItemId: 'episode' })).resolves.toEqual([{ provider: 'jellyfin' }])
+    expect(invokeMock).toHaveBeenCalledWith('get_server_streams', { request: { mediaType: 'series', mediaId: 'tvdb-42', tvdbId: 42, season: 1, episode: 2, sourceConnectionId: 'one', sourceItemId: 'episode' } })
   })
 
-  it('does not expose native server catalogs while the feature is disabled', async () => {
-    invokeMock.mockResolvedValue([])
-    await expect(getServerCatalogItems('server-one', 'library:Movies', 40)).resolves.toEqual([])
-    expect(invokeMock).not.toHaveBeenCalled()
+  it('loads native server catalog items', async () => {
+    invokeMock.mockResolvedValue([{ title: 'Film' }])
+    await expect(getServerCatalogItems('server-one', 'library:Movies', 40)).resolves.toEqual([{ title: 'Film' }])
+    expect(invokeMock).toHaveBeenCalledWith('get_server_catalog_items', { connectionId: 'server-one', catalogId: 'library:Movies', maxItems: 40 })
   })
 
   it('does not invoke native search for a blank query', async () => {
@@ -48,7 +49,7 @@ describe('native server integration adapter', () => {
     expect(invokeMock).not.toHaveBeenCalled()
   })
 
-  it('does not refresh saved connections while the feature is disabled', async () => {
+  it('refreshes only stale enabled connections', async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === 'list_server_connections') return Promise.resolve([
         { id: 'stale', enabled: true, lastCatalogRefreshAt: '2020-01-01T00:00:00Z' },
@@ -59,10 +60,10 @@ describe('native server integration adapter', () => {
       return Promise.resolve(undefined)
     })
     await expect(refreshStaleServerCatalogs()).resolves.toBeUndefined()
-    expect(invokeMock).not.toHaveBeenCalled()
+    expect(invokeMock).toHaveBeenCalledWith('refresh_server_catalog', { connectionId: 'stale' })
   })
 
-  it('disconnects enabled servers without removing their saved configuration', async () => {
+  it('does not disconnect active server integrations during app startup', async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === 'list_server_connections') return Promise.resolve([
         { id: 'enabled-server', enabled: true },
@@ -72,11 +73,6 @@ describe('native server integration adapter', () => {
     })
 
     await disconnectDisabledServerIntegrations()
-
-    expect(invokeMock).toHaveBeenCalledWith('set_server_connection_enabled', {
-      connectionId: 'enabled-server',
-      enabled: false,
-    })
-    expect(invokeMock).not.toHaveBeenCalledWith('remove_server_connection', expect.anything())
+    expect(invokeMock).not.toHaveBeenCalled()
   })
 })

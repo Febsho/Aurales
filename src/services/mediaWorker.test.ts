@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createMediaSession, getMediaConversionStatus, getMediaWorkerConfig, getMediaWorkerCapabilities, proxyAuralesSyncRequest, proxyMdblistRequest, proxyPmdbRequest, proxyTorboxRequest, proxyTraktRequest, rankStreamsWithWorker, saveMediaWorkerConfig, startMediaConversion } from './mediaWorker'
+import { cancelMediaConversion, createMediaSession, getMediaConversionStatus, getMediaWorkerConfig, getMediaWorkerCapabilities, proxyAuralesSyncRequest, proxyMdblistRequest, proxyPmdbRequest, proxyTorboxRequest, proxyTraktRequest, rankStreamsWithWorker, saveMediaWorkerConfig, startMediaConversion } from './mediaWorker'
 import type { SmartScoreContext } from './streams/smartScoring'
 
 const context: SmartScoreContext = { title: 'Example', preferredAudio: [], preferredSubtitles: [], subtitles: [], mode: 'best', player: 'web', history: {}, playbackMemories: [] }
@@ -31,7 +31,7 @@ describe('optional Aurales media worker adapter', () => {
     saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'x'.repeat(32) })
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ url: '/v1/media/0123456789abcdef0123456789abcdef?expires=123&signature=opaque', expiresAt: 123 }), { status: 200 }))
     await expect(createMediaSession('https://cdn.example/video.mp4?token=private')).resolves.toEqual({ url: 'https://worker.example/v1/media/0123456789abcdef0123456789abcdef?expires=123&signature=opaque', expiresAt: 123 })
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({ url: 'https://cdn.example/video.mp4?token=private' })
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({ url: 'https://cdn.example/video.mp4?token=private', headers: {} })
     expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toMatchObject({ Authorization: `Bearer ${'x'.repeat(32)}` })
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ url: 'https://attacker.example/v1/media/0123456789abcdef0123456789abcdef?expires=123&signature=x', expiresAt: 123 }), { status: 200 }))
     await expect(createMediaSession('https://cdn.example/video.mp4')).rejects.toThrow('unsafe playback session URL')
@@ -41,18 +41,43 @@ describe('optional Aurales media worker adapter', () => {
     saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'x'.repeat(32) })
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ url: '/v1/media/0123456789abcdef0123456789abcdef?expires=123&signature=opaque', expiresAt: 123 }), { status: 200 }))
     await expect(createMediaSession('https://cdn.example/video.m3u8?sig=x')).resolves.toMatchObject({ expiresAt: 123 })
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({ url: 'https://cdn.example/video.m3u8?sig=x' })
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({ url: 'https://cdn.example/video.m3u8?sig=x', headers: {} })
   })
 
   it('starts an authenticated conversion job without returning the source URL', async () => {
     saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'x'.repeat(32) })
     const jobId = '0123456789abcdef0123456789abcdef'
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ jobId, status: 'processing' }), { status: 202 }))
-    await expect(startMediaConversion('https://cdn.example/video.mkv?token=private', 'audioAac')).resolves.toBe(jobId)
+    await expect(startMediaConversion('https://cdn.example/video.mkv?token=private', 'audioAac', undefined, {}, 'hls')).resolves.toBe(jobId)
     const [endpoint, options] = vi.mocked(fetch).mock.calls[0]
     expect(endpoint).toBe('https://worker.example/v1/media/conversions')
     expect(options?.headers).toMatchObject({ Authorization: `Bearer ${'x'.repeat(32)}` })
-    expect(JSON.parse(String(options?.body))).toEqual({ url: 'https://cdn.example/video.mkv?token=private', mode: 'audioAac' })
+    expect(JSON.parse(String(options?.body))).toEqual({ url: 'https://cdn.example/video.mkv?token=private', mode: 'audioAac', outputFormat: 'hls', headers: {} })
+  })
+
+  it('requests the server-owned playback fallback strategy', async () => {
+    saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'x'.repeat(32) })
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ jobId: '0123456789abcdef0123456789abcdef', status: 'processing' }), { status: 202 }))
+    await startMediaConversion('https://cdn.example/movie.mkv?sig=private', 'auto')
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({ url: 'https://cdn.example/movie.mkv?sig=private', mode: 'auto', outputFormat: 'mp4', headers: {} })
+  })
+
+  it('sends Stremio request headers only inside an authenticated worker request', async () => {
+    saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'x'.repeat(32) })
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ url: '/v1/media/0123456789abcdef0123456789abcdef?expires=123&signature=opaque', expiresAt: 123 }), { status: 200 }))
+    const session = await createMediaSession('https://cdn.example/video.mp4?sig=short-lived', undefined, { authorization: 'Bearer provider-secret', referer: 'https://addon.example/' })
+    const [endpoint, options] = vi.mocked(fetch).mock.calls[0]
+    expect(endpoint).toBe('https://worker.example/v1/media/sessions')
+    expect(options?.headers).toMatchObject({ Authorization: `Bearer ${'x'.repeat(32)}` })
+    expect(JSON.parse(String(options?.body))).toMatchObject({ headers: { authorization: 'Bearer provider-secret', referer: 'https://addon.example/' } })
+    expect(session.url).not.toContain('provider-secret')
+  })
+
+  it('rejects unsafe provider request headers before sending them to the worker', async () => {
+    saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'x'.repeat(32) })
+    await expect(createMediaSession('https://cdn.example/video.mp4', undefined, { 'x-forwarded-host': '127.0.0.1' })).rejects.toThrow('unsupported playback request header')
+    expect(fetch).not.toHaveBeenCalled()
+    await expect(createMediaSession('https://cdn.example/video.mp4', undefined, { Authorization: 'Bearer value\r\nX-Evil: true' })).rejects.toThrow('invalid playback request header value')
   })
 
   it('polls conversion status and accepts only a signed same-worker media session', async () => {
@@ -66,6 +91,7 @@ describe('optional Aurales media worker adapter', () => {
       mode: 'audioAac',
       bytes: 4096,
       url: '/v1/media/abcdef0123456789abcdef0123456789?expires=123&signature=opaque',
+      sourceInfo: { container: 'matroska,webm', streams: [{ codec_type: 'video', codec_name: 'h264' }, { codec_type: 'audio', codec_name: 'opus' }] },
     }), { status: 200 }))
     await expect(getMediaConversionStatus(jobId)).resolves.toMatchObject({
       jobId,
@@ -73,6 +99,7 @@ describe('optional Aurales media worker adapter', () => {
       mode: 'audioAac',
       bytes: 4096,
       url: 'https://worker.example/v1/media/abcdef0123456789abcdef0123456789?expires=123&signature=opaque',
+      sourceInfo: { container: 'matroska,webm', streams: [{ codec_type: 'video', codec_name: 'h264' }, { codec_type: 'audio', codec_name: 'opus' }] },
     })
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({
       jobId,
@@ -82,6 +109,16 @@ describe('optional Aurales media worker adapter', () => {
       url: 'https://attacker.example/v1/media/abcdef0123456789abcdef0123456789?expires=123&signature=x',
     }), { status: 200 }))
     await expect(getMediaConversionStatus(jobId)).rejects.toThrow('unsafe playback session URL')
+  })
+
+  it('cancels the worker conversion with the authenticated job endpoint', async () => {
+    saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'w'.repeat(32) })
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 204 }))
+    await cancelMediaConversion('0123456789abcdef0123456789abcdef')
+    const [endpoint, options] = vi.mocked(fetch).mock.calls[0]
+    expect(endpoint).toBe('https://worker.example/v1/media/conversions/0123456789abcdef0123456789abcdef')
+    expect(options?.method).toBe('DELETE')
+    expect(options?.headers).toMatchObject({ Authorization: `Bearer ${'w'.repeat(32)}` })
   })
 
   it('relays MDBList calls only to the configured worker with provider credentials in the authenticated body', async () => {

@@ -7,8 +7,77 @@ import { getWatchlist as getTraktWatchlist, getPlaybackProgress as getTraktPlayb
 import { getAniListContinueWatching } from './anilist'
 import type { UpcomingPreferences } from './upcoming'
 import { mediaIdentity } from './mediaPresentation'
+import { getServerCatalogItems, listServerCatalogs } from './serverIntegrations'
+import type { ReleaseEvent } from './upcoming'
 
 export interface UpcomingSeeds { watchlist: SearchResult[]; progress: WatchProgress[] }
+
+/** Read the Jellyfin/aiometadata Upcoming feed and normalize it for Home,
+ * Upcoming, and the release calendar. The server owns this feed's tracker rules. */
+export async function loadServerUpcomingEvents(): Promise<ReleaseEvent[]> {
+  const catalogs = (await listServerCatalogs()).filter((catalog) => catalog.kind === 'upcoming')
+  const pages = await Promise.allSettled(catalogs.map((catalog) => getServerCatalogItems(catalog.connectionId, catalog.catalogId, 500)))
+  const now = new Date()
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  const events: ReleaseEvent[] = []
+  pages.forEach((page, index) => {
+    if (page.status !== 'fulfilled') return
+    for (const item of page.value) {
+      const raw = item.raw as Record<string, unknown>
+      const releaseDate = typeof raw.PremiereDate === 'string' ? raw.PremiereDate.slice(0, 10) : undefined
+      if (!releaseDate || !/^\d{4}-\d{2}-\d{2}$/.test(releaseDate)) continue
+      const isMovie = item.mediaType === 'movie'
+      const isEpisode = item.mediaType === 'episode'
+      const seriesId = typeof raw.SeriesId === 'string' ? raw.SeriesId : undefined
+      const title = isEpisode && typeof raw.SeriesName === 'string' ? raw.SeriesName : item.title
+      const media: SearchResult = {
+        ...item,
+        id: String(item.tmdbId || item.tvdbId || item.imdbId || (isEpisode ? seriesId || item.id : item.id)),
+        title,
+        type: isMovie ? 'movie' : 'series',
+        sourceConnectionId: item.sourceConnectionId,
+        sourceItemId: isEpisode ? seriesId || item.sourceItemId : item.sourceItemId,
+        poster: item.poster,
+        backdrop: item.backdrop || item.poster,
+      }
+      const userData = raw.UserData && typeof raw.UserData === 'object' ? raw.UserData as Record<string, unknown> : {}
+      events.push({
+        id: `jellyfin:${catalogs[index].connectionId}:${item.sourceItemId}:${releaseDate}`,
+        media,
+        type: isMovie ? 'movie' : 'episode',
+        seasonNumber: item.season,
+        episodeNumber: item.episode,
+        episodeTitle: isEpisode ? item.title : undefined,
+        releaseDate,
+        artwork: item.backdrop || item.poster,
+        relevanceScore: 110,
+        relevanceReasons: ['From Jellyfin Upcoming'],
+        source: 'jellyfin',
+        status: releaseDate < today ? 'available' : 'upcoming',
+        watched: userData.Played === true,
+      })
+    }
+  })
+  const unique = new Map(events.map((event) => [event.id, event]))
+  return [...unique.values()].sort((a, b) => String(a.releaseDate).localeCompare(String(b.releaseDate)))
+}
+
+export function mergeUpcomingEvents(local: ReleaseEvent[], server: ReleaseEvent[]): ReleaseEvent[] {
+  const key = (event: ReleaseEvent) => [
+    event.type === 'movie' ? 'movie' : 'series',
+    String(event.media.tmdbId || event.media.tvdbId || event.media.imdbId || event.media.id),
+    event.type,
+    event.seasonNumber ?? '',
+    event.episodeNumber ?? '',
+    event.releaseDate?.slice(0, 10) || '',
+  ].join(':')
+  const merged = new Map<string, ReleaseEvent>()
+  for (const event of local) merged.set(key(event), event)
+  // Prefer server entries where both sources describe the same release; their
+  // artwork, episode identity, and watched state come from the active server.
+  for (const event of server) merged.set(key(event), event)
+  return [...merged.values()].sort((a, b) => String(a.releaseDate || '9999').localeCompare(String(b.releaseDate || '9999')) || b.relevanceScore - a.relevanceScore)
+}
 
 /** Stable key for the subset of watch progress that changes Upcoming seeds.
  * Playback checkpoints update seconds and timestamps frequently; those values

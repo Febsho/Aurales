@@ -210,7 +210,7 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
         vote_average: 8.2,
         vote_count: 4200,
         popularity: 220 - index,
-        genre_ids: [18],
+        genre_ids: [18, 35, 53, 27, 80, 9648, 878, 10765, 10759, 10751, 10762, 14],
         original_language: 'en',
       }))
       await route.fulfill({ json: { page: 1, total_pages: 1, total_results: results.length, results } })
@@ -256,10 +256,10 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
     () => rankedArt.evaluate((art) => art.getBoundingClientRect().width),
     { message: 'the ranked poster artwork should finish applying its responsive width' },
   ).toBeGreaterThanOrEqual(100)
-  const showAllCard = page.locator('[data-home-shelves] .show-all-card').first()
-  await expect(showAllCard).toBeVisible()
-  const showAllHeight = await showAllCard.evaluate((element) => element.getBoundingClientRect().height)
-  expect(showAllHeight, 'the desktop-sized Show all action must not stretch a mobile catalog row').toBeLessThanOrEqual(190)
+  await expect(page.locator('[data-home-shelves] .show-all-card')).toHaveCount(0)
+  const firstShelfHeading = page.locator('[data-home-shelves] .media-row h2').first()
+  await expect(firstShelfHeading).toBeVisible()
+  await expect(firstShelfHeading.locator('xpath=..')).toHaveJSProperty('tagName', 'BUTTON')
   const continueEmpty = page.locator('[data-home-shelves] [data-home-row="continue-empty"]')
   const upcomingRow = page.locator('[data-home-shelves] [data-home-row="upcoming"]')
   await expect(continueEmpty.locator('.cw-empty-state')).toBeVisible()
@@ -296,8 +296,8 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
   })
   expect(measurements).not.toBeNull()
   expect(measurements!.heroHeight).toBeGreaterThan(0)
-  expect(measurements!.heroHeight).toBeGreaterThanOrEqual(520)
-  expect(measurements!.heroHeight).toBeLessThanOrEqual(580)
+  expect(measurements!.heroHeight).toBeGreaterThanOrEqual(640)
+  expect(measurements!.heroHeight).toBeLessThanOrEqual(900)
   expect(measurements!.compactHero).toBe(true)
   expect(measurements!.hasCastRow).toBe(false)
   expect(measurements!.gap).toBeLessThanOrEqual(8)
@@ -321,7 +321,10 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
 })
 
 test('mobile Discover and movie details keep text, hero and controls within the viewport', async ({ page }) => {
+  const pageErrors: string[] = []
+  page.on('pageerror', (error) => pageErrors.push(error.message))
   await page.setViewportSize({ width: 390, height: 844 })
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
   await page.addInitScript(() => {
     localStorage.setItem('aurales_app_managed_metadata', 'false')
     localStorage.setItem('tmdb_api_key', 'playwright-public-test-key')
@@ -340,25 +343,60 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       }, '', location.href)
     }
   })
+  const tmdbRequestPaths = new Set<string>()
+  const discoveryRuntimeQueries = new Set<string>()
+  const continuationPages = new Set<number>()
+  await page.route('https://api.ids.moe/**', (route) => route.fulfill({ json: {} }))
   await page.route('https://api.themoviedb.org/**', async (route) => {
-    const results = Array.from({ length: 24 }, (_, index) => ({
+    const requestUrl = new URL(route.request().url())
+    tmdbRequestPaths.add(requestUrl.pathname)
+    if (requestUrl.searchParams.has('with_runtime.gte') || requestUrl.searchParams.has('with_runtime.lte')) {
+      discoveryRuntimeQueries.add(`${requestUrl.searchParams.get('with_runtime.gte') || ''}:${requestUrl.searchParams.get('with_runtime.lte') || ''}`)
+    }
+    if (requestUrl.searchParams.get('with_genres') === '28') {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      await route.fulfill({ json: { page: 1, total_pages: 1, total_results: 0, results: [] } })
+      return
+    }
+    const requestedPage = Number(requestUrl.searchParams.get('page') || 1)
+    const isUnfilteredMoviePage = requestUrl.pathname.endsWith('/discover/movie')
+      && !requestUrl.searchParams.has('with_genres')
+      && !requestUrl.searchParams.has('with_runtime.gte')
+      && !requestUrl.searchParams.has('with_runtime.lte')
+    if (isUnfilteredMoviePage) continuationPages.add(requestedPage)
+    const results = requestedPage === 4 && isUnfilteredMoviePage
+      ? Array.from({ length: 20 }, (_, index) => ({
+        id: 83000 + index,
+        title: `More discovery fixture ${index + 1}`,
+        name: `More discovery fixture ${index + 1}`,
+        poster_path: '/more-discovery-fixture-poster.jpg',
+        backdrop_path: '/more-discovery-fixture-backdrop.jpg',
+        overview: 'An additional popular title loaded by Discovery pagination.',
+        release_date: '2026-05-01',
+        vote_average: 7.8,
+        vote_count: 900,
+        popularity: 240 - index,
+        genre_ids: [18, 35, 53, 27, 80, 9648, 878, 10765, 10759, 10751, 10762, 14],
+        original_language: 'en',
+      }))
+      : requestedPage > 4 && isUnfilteredMoviePage ? [] : Array.from({ length: 40 }, (_, index) => ({
       id: 81000 + index,
       title: `Discovery fixture ${index + 1}`,
       name: `Discovery fixture ${index + 1}`,
       poster_path: '/discovery-fixture-poster.jpg',
       backdrop_path: '/discovery-fixture-backdrop.jpg',
       overview: 'A mocked recommendation used to check the Discovery spotlight and responsive shelves.',
-      release_date: '2025-05-01',
-      first_air_date: '2025-05-01',
+      release_date: new Date().toISOString().slice(0, 10),
+      first_air_date: new Date().toISOString().slice(0, 10),
       vote_average: 8.2,
       vote_count: 1200,
       popularity: 160 - index,
-      genre_ids: [18],
+      genre_ids: [18, 35, 53, 27, 80, 9648, 878, 10765, 10759, 10751, 10762, 14],
       original_language: 'en',
     }))
-    await route.fulfill({ json: { page: 1, total_pages: 1, total_results: results.length, results } })
+    await route.fulfill({ json: { page: requestedPage, total_pages: isUnfilteredMoviePage ? 4 : 1, total_results: results.length, results } })
   })
-  await page.route('https://image.tmdb.org/**', (route) => route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 3"><rect width="2" height="3" fill="#222"/></svg>' }))
+  await page.route('https://image.tmdb.org/**', (route) => route.fulfill({ headers: { 'Access-Control-Allow-Origin': '*' }, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 3"><rect width="2" height="3" fill="#777"/></svg>' }))
 
   await page.goto('/movie/mobile-layout-fixture')
   await page.getByRole('button', { name: /select profile/i }).click()
@@ -409,22 +447,263 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(detailLayout!.actionLayout).toBe('flex')
   expect(detailLayout!.episodeCardWidth).toBeLessThanOrEqual(390 * .5)
 
+  await page.evaluate(() => {
+    const profileId = localStorage.getItem('aurales_active_profile_v1') || 'default'
+    const key = `aurales_local_watchlist_v1:profile:${profileId}`
+    const value = JSON.stringify([{ id: 'library-fixture-1', title: 'Recently Added Library Fixture', type: 'movie', provider: 'local', addedAt: Date.now(), poster: 'https://image.tmdb.org/t/p/w500/library-fixture-poster.jpg', tmdbId: 81999, year: 2026 }])
+    localStorage.setItem(key, value)
+    window.dispatchEvent(new StorageEvent('storage', { key, newValue: value }))
+  })
+
   await page.getByRole('link', { name: 'Discover' }).click()
   await expect(page.locator('.discover-page')).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Discover', exact: true })).toBeVisible()
+  await expect.poll(() => tmdbRequestPaths.has('/3/trending/movie/week')).toBe(true)
+  await expect(page.getByRole('heading', { name: /Settle in,/ })).toBeVisible()
+  const heroSpotlight = page.locator('.discover-spotlight').first()
+  await expect(heroSpotlight.locator('.discover-spotlight__eyebrow')).toContainText('Tonight')
+  await expect(heroSpotlight.locator('.discover-spotlight__ambient img')).toHaveAttribute('src', /discovery-fixture-backdrop/)
+  const librariesShelf = page.locator('.discover-libraries')
+  await expect(librariesShelf.getByRole('heading', { name: 'Libraries', exact: true })).toBeVisible()
+  await expect(librariesShelf.getByRole('button', { name: /library/ }).first()).toBeVisible()
+  await expect(page.locator('.discover-shelf--favorites, .discover-shelf--new-library')).toHaveCount(0)
+  const calendar = page.locator('.discover-calendar')
+  await expect(calendar.getByRole('heading', { name: 'Calendar', exact: true })).toBeVisible()
+  await expect(calendar.getByRole('button', { name: 'Today' })).toHaveAttribute('aria-pressed', 'false')
+  await expect(calendar.getByRole('button', { name: 'Next 30 days' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('heading', { name: 'Continue Watching', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
+  await expect(page.locator('.discover-weekend-plan')).toHaveCount(0)
+  const librariesTop = (await librariesShelf.boundingBox())!.y
+  const calendarTop = (await calendar.boundingBox())!.y
+  const obsessionTop = (await page.getByRole('heading', { name: 'Your Next Obsession' }).boundingBox())!.y
+  const trendingTop = (await page.getByRole('heading', { name: 'OR TRY', exact: true }).boundingBox())!.y
+  const topTenTop = (await page.getByRole('heading', { name: 'Top 10 For You', exact: true }).boundingBox())!.y
+  expect(librariesTop).toBeLessThan(calendarTop)
+  expect(calendarTop).toBeLessThan(obsessionTop)
+  expect(obsessionTop).toBeLessThan(trendingTop)
+  expect(trendingTop).toBeLessThan(topTenTop)
+  await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toHaveCount(0)
+  await expect(heroSpotlight.getByRole('button', { name: 'Details' })).toBeVisible()
+  const firstSpotlightTitle = await heroSpotlight.locator('.discover-spotlight__copy').getAttribute('data-title')
+  expect(firstSpotlightTitle).not.toBeNull()
+  const editorialTopTenShelf = page.locator('.discover-shelf').filter({ has: page.getByRole('heading', { name: 'Top 10 For You', exact: true }) })
+  await expect(page.locator('.discover-shelf--trending').getByText(firstSpotlightTitle!, { exact: true })).toHaveCount(0)
+  await expect(editorialTopTenShelf.getByText(firstSpotlightTitle!, { exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Not for me' }).click()
+  await expect(page.locator('.discover-picker')).toHaveCount(0)
+  const discoverySettings = page.getByRole('button', { name: 'Discovery settings' })
+  await discoverySettings.click()
+  await expect(page.getByRole('dialog', { name: 'Discovery settings' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog', { name: 'Discovery settings' })).toHaveCount(0)
+  await expect(discoverySettings).toBeFocused()
+  await expect(page.locator('.discover-spotlight-heading').getByText('A movie for tonight').first()).toBeVisible()
+  const profileWelcomeHeading = await page.getByRole('heading', { name: /Settle in,/ }).boundingBox()
+  const obsessionHeading = await page.getByRole('heading', { name: 'Your Next Obsession' }).boundingBox()
+  const obsessionCard = await heroSpotlight.boundingBox()
+  const browseControls = await page.locator('.discover-page__tabs').boundingBox()
+  expect(profileWelcomeHeading).not.toBeNull()
+  expect(obsessionHeading).not.toBeNull()
+  expect(obsessionCard).not.toBeNull()
+  expect(browseControls).not.toBeNull()
+  expect(profileWelcomeHeading!.y + profileWelcomeHeading!.height).toBeLessThan(browseControls!.y)
+  expect(obsessionHeading!.y).toBeGreaterThan(browseControls!.y)
+  expect(obsessionHeading!.y + obsessionHeading!.height).toBeLessThan(obsessionCard!.y)
+  await expect(page.getByRole('heading', { name: 'Trending Now', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Top 10 For You', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Drama Picks', exact: true })).toHaveCount(0)
+  await expect(page.locator('.discover-shelf--top-rated, .discover-shelf--personal-genre')).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Recently Released', exact: true })).toBeVisible()
+  await expect.poll(() => page.locator('.discover-shelf--recent .media-row-card-slot').count()).toBeGreaterThanOrEqual(5)
+  await expect(page.locator('.discover-shelf--recent').getByRole('button', { name: 'Open Recently Released catalog' })).toBeVisible()
+  await expect(page.locator('.discover-shelf--recent').locator('.show-all-card')).toHaveCount(0)
+  await expect.poll(() => tmdbRequestPaths.has('/3/discover/tv')).toBe(true)
+  await expect(page.getByRole('heading', { name: 'Your Next Binge', exact: true })).toBeVisible()
+  await expect(page.locator('.discover-binge__gallery .discover-binge__main-poster')).toBeVisible()
+  const topTenRow = page.locator('.discover-page .media-row--ranked').filter({ has: page.getByRole('heading', { name: 'Top 10 For You', exact: true }) })
+  await expect(topTenRow.locator('.media-rank__value').first()).toHaveText('1')
+  await expect(topTenRow.locator('.media-rank__value').nth(1)).toHaveText('2')
+  await expect(page.getByRole('heading', { name: 'OR TRY', exact: true })).toBeVisible()
+  const trendingShelf = page.locator('.discover-shelf--trending')
+  await trendingShelf.scrollIntoViewIfNeeded()
+  await expect.poll(() => trendingShelf.evaluate((element) => element.parentElement?.getAttribute('data-revealed'))).toBe('true')
+  await expect.poll(() => trendingShelf.locator('.media-row-card-slot').first().evaluate((card) => getComputedStyle(card).animationName)).toBe('discover-card-arrive')
+  const trendingRail = trendingShelf.locator('.media-row > div.overflow-x-auto')
+  const rightArrow = trendingShelf.getByRole('button', { name: 'Scroll right' })
+  for (let pageIndex = 0; pageIndex < 8 && await rightArrow.isEnabled(); pageIndex += 1) {
+    await rightArrow.click()
+    await page.waitForTimeout(500)
+    const bounds = await trendingRail.evaluate((rail) => ({ left: rail.scrollLeft, max: rail.scrollWidth - rail.clientWidth }))
+    expect(bounds.left).toBeLessThanOrEqual(bounds.max + 1)
+  }
+  await expect(rightArrow).toBeDisabled()
+  const finalRailBounds = await trendingRail.evaluate((rail) => ({ left: rail.scrollLeft, max: rail.scrollWidth - rail.clientWidth }))
+  expect(finalRailBounds.max - finalRailBounds.left).toBeLessThanOrEqual(2)
+  const mobileCardMotion = await trendingShelf.locator('.media-row-card-slot > button').first().evaluate((card) => ({
+    transform: getComputedStyle(card).transform,
+    transitionDuration: getComputedStyle(card).transitionDuration,
+  }))
+  expect(mobileCardMotion.transform).toBe('none')
+  expect(parseFloat(mobileCardMotion.transitionDuration)).toBeGreaterThan(0)
+  await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toBeVisible()
+  const twoHourChoice = page.getByRole('button', { name: 'About 2 Hours', exact: true })
+  await twoHourChoice.click()
+  await expect(twoHourChoice).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => discoveryRuntimeQueries.has('91:150')).toBe(true)
+  await expect(page.locator('.discover-time .media-row-card-slot').first()).toBeVisible()
+  const timeChoicesLayout = await page.locator('.discover-time__options button').evaluateAll((buttons) => {
+    const parent = buttons[0]?.parentElement?.getBoundingClientRect()
+    return buttons.map((button) => {
+      const rect = button.getBoundingClientRect()
+      return { left: rect.left, right: rect.right, height: rect.height, parentLeft: parent?.left, parentRight: parent?.right }
+    })
+  })
+  expect(timeChoicesLayout).toHaveLength(3)
+  for (const [index, choice] of timeChoicesLayout.entries()) {
+    expect(choice.height).toBeGreaterThanOrEqual(43.5)
+    expect(choice.left).toBeGreaterThanOrEqual(choice.parentLeft! - 1)
+    expect(choice.right).toBeLessThanOrEqual(choice.parentRight! + 1)
+    if (index > 0) expect(choice.left).toBeGreaterThanOrEqual(timeChoicesLayout[index - 1]!.right - 1)
+  }
+  const recommendedShelf = page.locator('.discover-shelf').filter({ has: page.getByRole('heading', { name: 'Top 10 For You', exact: true }) })
+  await recommendedShelf.getByRole('button', { name: 'Open Top 10 For You catalog' }).click()
+  const recommendedCatalog = page.locator('.catalog-page')
+  await expect(recommendedCatalog.getByRole('heading', { name: 'Top 10 For You', exact: true })).toBeVisible()
+  const loadedCountText = await recommendedCatalog.getByText(/^\d+ titles loaded$/).textContent()
+  const loadedCount = Number.parseInt(loadedCountText || '', 10)
+  expect(loadedCount, 'the full Top 10 For You catalog should contain public candidates').toBeGreaterThan(0)
+  const catalogCards = recommendedCatalog.locator('button:has(img)')
+  await expect(catalogCards).toHaveCount(loadedCount)
+  const dismissedTitlePresent = await catalogCards.evaluateAll((cards, title) => cards.some((card) => card.querySelector('img')?.alt === title), firstSpotlightTitle)
+  expect(dismissedTitlePresent, 'Not for me should remove the dismissed title from the complete catalog').toBe(false)
+  await page.goBack()
+  await expect(page.locator('.discover-page')).toBeVisible()
+  await expect(page.getByRole('heading', { name: /Settle in,/ })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
+  const trendingRailOrder = await page.evaluate(() => {
+    const trend = Array.from(document.querySelectorAll<HTMLElement>('.discover-shelf h2')).find((heading) => heading.textContent?.trim() === 'OR TRY')
+    const spotlight = document.querySelector<HTMLElement>('.discover-spotlight')
+    const topTen = Array.from(document.querySelectorAll<HTMLElement>('.discover-shelf h2')).find((heading) => heading.textContent?.trim() === 'Top 10 For You')
+    return Boolean(trend && spotlight && topTen
+      && (spotlight.compareDocumentPosition(trend) & Node.DOCUMENT_POSITION_FOLLOWING)
+      && (trend.compareDocumentPosition(topTen) & Node.DOCUMENT_POSITION_FOLLOWING))
+  })
+  expect(trendingRailOrder, 'the Tonight spotlight should lead into OR TRY and Top 10 For You').toBe(true)
+  const pickerBeforeShelves = await page.evaluate(() => {
+    const picker = document.querySelector('#discover-refine-title')
+    const topTen = Array.from(document.querySelectorAll('.discover-shelf h2')).find((heading) => heading.textContent?.trim() === 'Top 10 For You')
+    return Boolean(picker && topTen && (topTen.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING))
+  })
+  expect(pickerBeforeShelves, 'the broad public recommendations should lead into the taste picker').toBe(true)
   await expect(page.getByRole('heading', { name: 'Your Genres' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Moods for Tonight' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Pick by Colour' })).toBeVisible()
+  const monoPosters = page.getByRole('button', { name: 'Mono', exact: true })
+  await expect(monoPosters).toBeVisible()
+  await monoPosters.click()
+  await expect(monoPosters).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toBeVisible()
+  const discoveryFlow = await page.locator('.discover-page').evaluate((root) => {
+    const headings = Array.from(root.querySelectorAll<HTMLElement>('h2, h3')).map((heading) => heading.textContent?.trim() || '')
+    const referenceOrder = ['Your Genres', 'How Much Time Tonight?', 'Made for the Big Screen', 'Hidden Gems', 'Recently Released', 'Your Next Binge', 'Sunday Night Moods', 'Pick by Colour']
+    return referenceOrder.filter((title) => headings.includes(title)).map((title) => headings.indexOf(title))
+  })
+  expect(discoveryFlow.every((position, index) => index === 0 || position > discoveryFlow[index - 1]!), 'Discovery sections should follow the reference flow from genres through mood and colour picks').toBe(true)
   await expect(page.locator('.discover-taste-pick')).toHaveCount(10)
+  await expect(page.getByText(/Daily picks\s*·\s*US\s*·\s*6\+ rating/i)).toHaveCount(0)
+  const mobileTabLayout = await page.locator('.discover-page__tabs button').evaluateAll((buttons) => buttons.map((button) => {
+    const element = button as HTMLElement
+    const bounds = element.getBoundingClientRect()
+    return { left: bounds.left, right: bounds.right, width: bounds.width, textWidth: element.scrollWidth }
+  }))
+  expect(mobileTabLayout).toHaveLength(3)
+  for (const [index, button] of mobileTabLayout.entries()) {
+    expect(button.width).toBeGreaterThan(48)
+    expect(button.textWidth).toBeLessThanOrEqual(button.width + 1)
+    if (index > 0) expect(button.left).toBeGreaterThanOrEqual(mobileTabLayout[index - 1]!.right - 1)
+  }
+  const mobilePosterSpacing = await page.locator('.discover-shelf--trending .media-row--poster').evaluate((row) => {
+    const cards = Array.from(row.querySelectorAll<HTMLElement>('.media-row-card-slot'))
+    if (cards.length < 2) return null
+    const first = cards[0]!.getBoundingClientRect()
+    const second = cards[1]!.getBoundingClientRect()
+    return { firstRight: first.right, secondLeft: second.left }
+  })
+  expect(mobilePosterSpacing).not.toBeNull()
+  expect(mobilePosterSpacing!.secondLeft).toBeGreaterThanOrEqual(mobilePosterSpacing!.firstRight)
+  const mobileTasteGrid = await page.locator('.discover-taste-picks').evaluate((grid) => {
+    const cards = Array.from(grid.querySelectorAll<HTMLElement>('.discover-taste-pick'))
+    const first = cards[0]!.getBoundingClientRect()
+    const second = cards[1]!.getBoundingClientRect()
+    const poster = cards[0]!.querySelector<HTMLElement>('.discover-taste-pick__poster')!.getBoundingClientRect()
+    return {
+      rows: getComputedStyle(grid).gridTemplateRows.split(' ').length,
+      clientWidth: grid.clientWidth,
+      scrollWidth: grid.scrollWidth,
+      cardWidth: first.width,
+      firstColumnMatches: Math.abs(first.left - second.left) < 1,
+      secondBelowFirst: second.top > first.top,
+      posterWidth: poster.width,
+    }
+  })
+  expect(mobileTasteGrid.rows).toBe(2)
+  expect(mobileTasteGrid.firstColumnMatches).toBe(true)
+  expect(mobileTasteGrid.secondBelowFirst).toBe(true)
+  expect(mobileTasteGrid.scrollWidth).toBeGreaterThan(mobileTasteGrid.clientWidth)
+  expect(mobileTasteGrid.cardWidth).toBeLessThanOrEqual(90)
+  expect(mobileTasteGrid.posterWidth).toBeGreaterThan(0)
+  await page.locator('.discover-taste-picks').evaluate((grid) => { grid.scrollLeft = 100 })
+  await expect.poll(() => page.locator('.discover-taste-picks').evaluate((grid) => grid.scrollLeft)).toBeGreaterThan(0)
+
+  await page.locator('.discover-genres__grid button').filter({ hasText: 'Drama' }).first().click()
+  await expect(page.locator('#discover-genre-picks').getByRole('button', { name: 'Open Drama Picks catalog' })).toBeVisible()
+  await expect.poll(() => page.locator('#discover-genre-picks .media-row-card-slot').count()).toBeGreaterThan(0)
+  await page.locator('.discover-genres__grid button').filter({ hasText: 'Action' }).first().click()
+  await expect(page.locator('#discover-genre-picks [role="status"]')).toContainText('Finding Action titles')
+  await expect(page.getByText(/no titles found for action yet/i)).toBeVisible()
+  await expect(page.locator('#discover-genre-picks .media-row-card-slot')).toHaveCount(0)
+
   const surpriseButton = page.getByRole('button', { name: /surprise me/i })
   await expect(surpriseButton).toBeEnabled()
-  await surpriseButton.click()
-  const picker = page.getByRole('dialog')
-  await expect(picker).toBeVisible()
-  await expect(picker.getByRole('status')).toBeHidden()
-  const firstPickerTitle = await picker.locator('h2').textContent()
-  await picker.getByRole('button', { name: /another option/i }).click()
-  await expect(picker.getByRole('status')).toBeHidden()
-  await expect(picker.locator('h2')).not.toHaveText(firstPickerTitle || '')
-  await picker.getByRole('button', { name: 'Open' }).click()
+  const startingTitle = await heroSpotlight.locator('.discover-spotlight__copy').getAttribute('data-title')
+  // Trigger in-page because a real Playwright click waits for smooth-scroll completion,
+  // which is longer than the roulette and can miss the transient busy state.
+  await surpriseButton.evaluate((button: HTMLButtonElement) => button.click())
+  expect(await page.evaluate(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches), 'roulette test should run with motion enabled').toBe(false)
+  const pickerDialog = page.locator('.discover-picker[role="dialog"]')
+  await expect(pickerDialog).toBeVisible()
+  await expect(pickerDialog.getByRole('button', { name: 'Open', exact: true })).toBeVisible()
+  await expect(pickerDialog.getByRole('button', { name: 'Spin again', exact: true })).toBeVisible()
+  await expect(surpriseButton).toHaveAttribute('aria-busy', 'false', { timeout: 5000 })
+  const firstPickerTitle = await pickerDialog.locator('.discover-picker__copy').getAttribute('data-title')
+  expect(firstPickerTitle).not.toBe(startingTitle)
+  await expect(heroSpotlight.locator('.discover-spotlight__copy')).toHaveAttribute('data-title', startingTitle!)
+  await expect(surpriseButton).toBeEnabled()
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  const reducedMotionTitle = await pickerDialog.locator('.discover-picker__copy').getAttribute('data-title')
+  await surpriseButton.evaluate((button: HTMLButtonElement) => button.click())
+  await expect.poll(() => pickerDialog.locator('.discover-picker__copy').getAttribute('data-title')).not.toBe(reducedMotionTitle)
+  const modalPickerTitle = await pickerDialog.locator('.discover-picker__copy').getAttribute('data-title')
+  await pickerDialog.getByRole('button', { name: 'Spin again', exact: true }).click()
+  await expect.poll(() => pickerDialog.locator('.discover-picker__copy').getAttribute('data-title')).not.toBe(modalPickerTitle)
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.discover-picker-backdrop')).toHaveClass(/is-closing/)
+  await expect(pickerDialog).toHaveCount(0)
+  await expect(surpriseButton).toBeFocused()
+  await surpriseButton.evaluate((button: HTMLButtonElement) => button.click())
+  await expect(pickerDialog).toBeVisible()
+  const dismissedTitle = await pickerDialog.locator('.discover-picker__copy').getAttribute('data-title')
+  await pickerDialog.getByRole('button', { name: /Not for me/i }).click()
+  expect(dismissedTitle).not.toBe(startingTitle)
+  await expect(pickerDialog).toHaveCount(0)
+  await surpriseButton.evaluate((button: HTMLButtonElement) => button.click())
+  await expect(pickerDialog).toBeVisible()
+  await pickerDialog.getByRole('button', { name: 'Open', exact: true }).click()
+  await expect(page.locator('.detail-page')).toBeVisible()
+  await page.goBack()
+  await expect(page.locator('.discover-page')).toBeVisible()
+  await page.getByRole('button', { name: 'Play', exact: false }).first().click()
   await expect(page.locator('.detail-page')).toBeVisible()
   await page.goBack()
   await expect(page.locator('.discover-page')).toBeVisible()
@@ -445,24 +724,48 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.locator('.discover-taste-pick')).toHaveCount(10)
   await page.getByRole('button', { name: 'Series', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Your Next Binge' })).toBeVisible()
-  await page.getByRole('button', { name: 'Movies', exact: true }).click()
-  const showAllLayout = await page.evaluate(() => {
-    const showAll = document.querySelector<HTMLElement>('.discover-page .show-all-card[data-show-all-layout="poster"]')
-    const poster = document.querySelector<HTMLElement>('.discover-page .media-row--poster .media-row-card-slot')
-    if (!showAll || !poster) return null
-    return { showAll: showAll.getBoundingClientRect().width, poster: poster.getBoundingClientRect().width }
+  const moods = page.locator('.discover-moods')
+  await expect(moods.getByRole('heading', { name: 'Sunday Night Moods' })).toBeVisible()
+  await expect(moods.locator('.discover-moods__options button')).toHaveCount(3)
+  await expect(moods.locator('.discover-moods__options button').first()).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => moods.locator('.media-row-card-slot').count()).toBeGreaterThan(0)
+  await moods.getByRole('button', { name: 'Edge of Your Seat' }).click()
+  await expect(moods.getByRole('button', { name: 'Edge of Your Seat', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => moods.locator('.media-row-card-slot').count()).toBeGreaterThan(0)
+  await expect(page.locator('.discover-binge__main-poster')).toBeVisible()
+  await expect(page.locator('.discover-binge__alternatives button')).toHaveCount(4)
+  await page.locator('.discover-binge').scrollIntoViewIfNeeded()
+  await expect.poll(() => page.locator('.discover-binge').evaluate((element) => element.parentElement?.getAttribute('data-revealed'))).toBe('true')
+  const bingeGalleryLayout = await page.locator('.discover-binge__gallery').evaluate((gallery) => {
+    const main = gallery.querySelector<HTMLElement>('.discover-binge__main-poster')!.getBoundingClientRect()
+    const alternatives = gallery.querySelector<HTMLElement>('.discover-binge__alternatives')!.getBoundingClientRect()
+    return { mainLeft: main.left, mainRight: main.right, alternativesLeft: alternatives.left, alternativesRight: alternatives.right, galleryRight: gallery.getBoundingClientRect().right }
   })
-  expect(showAllLayout).not.toBeNull()
-  expect(Math.abs(showAllLayout!.showAll - showAllLayout!.poster)).toBeLessThanOrEqual(1)
+  expect(bingeGalleryLayout.mainLeft).toBeGreaterThanOrEqual(0)
+  expect(bingeGalleryLayout.mainRight).toBeLessThanOrEqual(bingeGalleryLayout.alternativesLeft + 1)
+  expect(bingeGalleryLayout.alternativesRight).toBeLessThanOrEqual(bingeGalleryLayout.galleryRight + 1)
+  await page.getByRole('button', { name: 'Movies', exact: true }).click()
+  const bigScreenShelf = page.locator('.discover-shelf--big-screen')
+  await expect(bigScreenShelf.getByRole('heading', { name: 'Made for the Big Screen', exact: true })).toBeVisible()
+  const wideCard = bigScreenShelf.locator('.media-row-card-slot').first()
+  await expect(wideCard).toBeVisible()
+  const wideCardRatio = await wideCard.evaluate((card) => card.getBoundingClientRect().width / card.getBoundingClientRect().height)
+  expect(wideCardRatio, 'the Big Screen shelf should use landscape cards').toBeGreaterThan(1.35)
+  await expect(page.locator('.discover-page .show-all-card')).toHaveCount(0)
+  await expect(page.locator('.discover-page').getByRole('button', { name: 'Made for the Big Screen' })).toBeVisible()
+  await page.locator('.discover-spotlight').first().scrollIntoViewIfNeeded()
   const discoveryLayout = await page.evaluate(() => {
     const viewport = document.documentElement.clientWidth
     const heading = document.querySelector<HTMLElement>('.discover-page__heading')
     const tabs = document.querySelector<HTMLElement>('.discover-page__tabs')
     const modes = document.querySelector<HTMLElement>('.discover-page__modes')
-    const modeSelect = modes?.querySelector<HTMLSelectElement>('select')
+    const surprise = modes?.querySelector<HTMLElement>('.discover-surprise-trigger')
     const hero = document.querySelector<HTMLElement>('.discover-spotlight')
     const poster = document.querySelector<HTMLElement>('.discover-spotlight__poster')
-    if (!heading || !tabs || !modes || !modeSelect) return null
+    const copy = document.querySelector<HTMLElement>('.discover-spotlight__copy')
+    const heroActions = hero ? Array.from(hero.querySelectorAll<HTMLElement>('.discover-spotlight__actions > button')) : []
+    const bottomNav = document.querySelector<HTMLElement>('.mobile-web-nav')
+    if (!heading || !tabs || !modes || !surprise || !bottomNav) return null
     const contained = (element: HTMLElement) => {
       const bounds = element.getBoundingClientRect()
       return bounds.left >= -1 && bounds.right <= viewport + 1
@@ -473,15 +776,28 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       headingFits: contained(heading),
       tabsFit: contained(tabs),
       modesFit: contained(modes),
-      modeMenu: { height: modeSelect.closest('label')!.getBoundingClientRect().height, options: modeSelect.options.length, value: modeSelect.value },
+      surpriseHeight: surprise.getBoundingClientRect().height,
       hero: hero ? {
         width: hero.getBoundingClientRect().width,
         height: hero.getBoundingClientRect().height,
         left: hero.getBoundingClientRect().left,
         right: hero.getBoundingClientRect().right,
+        bottom: hero.getBoundingClientRect().bottom,
+        bottomNavTop: bottomNav.getBoundingClientRect().top,
+        ambientArtwork: Boolean(hero.querySelector('.discover-spotlight__ambient img')),
+        backgroundColor: getComputedStyle(hero).backgroundColor,
+        tonightFontSize: Number.parseFloat(getComputedStyle(hero.querySelector<HTMLElement>('.discover-spotlight__eyebrow')!).fontSize),
       } : null,
       posterVisible: Boolean(poster && poster.getBoundingClientRect().width > 0),
-      actionsFit: hero ? hero.getBoundingClientRect().right <= viewport + 1 : false,
+      posterRightAligned: Boolean(poster && hero && poster.getBoundingClientRect().left > hero.getBoundingClientRect().left + hero.getBoundingClientRect().width * .55 && poster.getBoundingClientRect().right <= hero.getBoundingClientRect().right + 1),
+      actionsFit: Boolean(hero && copy && heroActions.length >= 2 && heroActions.filter((button) => getComputedStyle(button).display !== 'none').every((button) => {
+        const bounds = button.getBoundingClientRect()
+        return bounds.left >= copy.getBoundingClientRect().left - 1 && bounds.right <= hero.getBoundingClientRect().right + 1 && bounds.bottom <= hero.getBoundingClientRect().bottom + 1
+      })),
+      actionsOnOneLine: (() => {
+        const visible = heroActions.filter((button) => getComputedStyle(button).display !== 'none')
+        return visible.length >= 2 && visible.every((button) => Math.abs(button.getBoundingClientRect().top - visible[0]!.getBoundingClientRect().top) <= 2)
+      })(),
     }
   })
   expect(discoveryLayout).not.toBeNull()
@@ -489,24 +805,48 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(discoveryLayout!.headingFits).toBe(true)
   expect(discoveryLayout!.tabsFit).toBe(true)
   expect(discoveryLayout!.modesFit).toBe(true)
-  expect(discoveryLayout!.modeMenu.options).toBe(6)
-  expect(discoveryLayout!.modeMenu.height).toBeGreaterThanOrEqual(44)
-  await expect(page.getByRole('combobox', { name: 'Browse recommendations' })).toHaveValue('for-you')
+  expect(discoveryLayout!.surpriseHeight).toBeGreaterThanOrEqual(44)
+  await expect(page.getByRole('combobox', { name: 'Browse recommendations' })).toHaveCount(0)
   if (discoveryLayout!.hero) {
     expect(discoveryLayout!.hero.left).toBeGreaterThanOrEqual(0)
     expect(discoveryLayout!.hero.right).toBeLessThanOrEqual(discoveryLayout!.viewport)
-    expect(discoveryLayout!.hero.height).toBeLessThanOrEqual(400)
+    expect(discoveryLayout!.hero.height).toBeGreaterThanOrEqual(280)
+    expect(discoveryLayout!.hero.height).toBeLessThanOrEqual(420)
+    expect(discoveryLayout!.hero.bottom).toBeLessThanOrEqual(discoveryLayout!.hero.bottomNavTop)
+    expect(discoveryLayout!.hero.ambientArtwork).toBe(true)
+    expect(discoveryLayout!.hero.backgroundColor).toBe('rgb(39, 39, 43)')
+    expect(discoveryLayout!.hero.tonightFontSize).toBeGreaterThan(18)
     expect(discoveryLayout!.posterVisible).toBe(true)
+    expect(discoveryLayout!.posterRightAligned).toBe(true)
     expect(discoveryLayout!.actionsFit).toBe(true)
+    expect(discoveryLayout!.actionsOnOneLine).toBe(true)
   }
 
   await page.setViewportSize({ width: 1440, height: 900 })
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
+  await expect(page.locator('.discover-spotlight').getByRole('button', { name: 'Another option' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Surprise Me' })).toBeVisible()
+  const desktopCardMotion = await page.locator('.discover-shelf--trending .media-row-card-slot > button').first().evaluate((card) => ({
+    transitionDuration: getComputedStyle(card).transitionDuration,
+    transitionProperty: getComputedStyle(card).transitionProperty,
+  }))
+  expect(parseFloat(desktopCardMotion.transitionDuration)).toBeGreaterThan(0)
+  expect(desktopCardMotion.transitionProperty).toContain('transform')
+  await expect(page.locator('.discover-spotlight__ambient img')).toHaveClass(/is-loaded/)
+  await expect.poll(() => page.locator('.discover-spotlight__ambient img').evaluate((image) => getComputedStyle(image).animationName)).toBe('discover-art-enter')
+  const desktopControlWidths = await page.evaluate(() => ({
+    tabs: document.querySelector<HTMLElement>('.discover-page__tabs')?.getBoundingClientRect().width ?? 0,
+  }))
+  expect(desktopControlWidths.tabs, 'desktop media tabs should hug their options instead of leaving a blank control rail').toBeLessThanOrEqual(420)
+  const desktopTasteCardWidth = await page.locator('.discover-taste-pick').first().evaluate((card) => card.getBoundingClientRect().width)
+  expect(desktopTasteCardWidth).toBeLessThanOrEqual(125)
   const desktopDiscovery = await page.evaluate(() => {
     const spotlight = document.querySelector<HTMLElement>('.discover-spotlight')
     const page = document.querySelector<HTMLElement>('.discover-page')
     if (!spotlight || !page) return null
     const bounds = spotlight.getBoundingClientRect()
-    return { width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth, left: bounds.left, right: bounds.right, poster: Boolean(spotlight.querySelector('.discover-spotlight__poster img')) }
+    return { width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth, left: bounds.left, right: bounds.right, height: bounds.height, poster: Boolean(spotlight.querySelector('.discover-spotlight__poster img')) }
   })
   const desktopPageLayout = await page.evaluate(() => ({ width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth, heading: Boolean(document.querySelector('.discover-page__heading h1')) }))
   expect(desktopPageLayout.scrollWidth).toBeLessThanOrEqual(desktopPageLayout.width + 1)
@@ -515,10 +855,63 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopDiscovery.scrollWidth).toBeLessThanOrEqual(desktopDiscovery.width + 1)
     expect(desktopDiscovery.left).toBeGreaterThanOrEqual(0)
     expect(desktopDiscovery.right).toBeLessThanOrEqual(desktopDiscovery.width)
+    expect(desktopDiscovery.height).toBeLessThanOrEqual(500)
     expect(desktopDiscovery.poster).toBe(true)
   }
+  await surpriseButton.click()
+  await expect(pickerDialog).toBeVisible()
+  const desktopPickerLayout = await pickerDialog.evaluate((dialog) => {
+    const bounds = dialog.getBoundingClientRect()
+    const poster = dialog.querySelector<HTMLElement>('.discover-picker__poster')!.getBoundingClientRect()
+    const copy = dialog.querySelector<HTMLElement>('.discover-picker__copy')!.getBoundingClientRect()
+    return { left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom, viewport: document.documentElement.clientWidth, posterRight: poster.right, copyLeft: copy.left, columns: getComputedStyle(dialog.querySelector<HTMLElement>('.discover-picker__body')!).gridTemplateColumns }
+  })
+  expect(desktopPickerLayout.left).toBeGreaterThanOrEqual(0)
+  expect(desktopPickerLayout.right).toBeLessThanOrEqual(desktopPickerLayout.viewport)
+  expect(desktopPickerLayout.top).toBeGreaterThan(0)
+  expect(desktopPickerLayout.bottom).toBeLessThan(900)
+  expect(desktopPickerLayout.copyLeft).toBeGreaterThanOrEqual(desktopPickerLayout.posterRight)
+  expect(desktopPickerLayout.columns.split(' ').length).toBe(2)
+  await pickerDialog.getByRole('button', { name: 'Close picker' }).click()
+  await expect(pickerDialog).toHaveCount(0)
+
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  const reducedMotionStyle = await page.locator('.discover-spotlight').first().evaluate((hero) => ({
+    animation: getComputedStyle(hero).animationName,
+    artworkAnimation: getComputedStyle(hero.querySelector('.discover-spotlight__ambient img')!).animationName,
+    transitionDuration: getComputedStyle(hero.querySelector('.discover-spotlight__poster img')!).transitionDuration,
+  }))
+  expect(reducedMotionStyle.animation).toBe('none')
+  expect(reducedMotionStyle.artworkAnimation).toBe('none')
+  expect(parseFloat(reducedMotionStyle.transitionDuration)).toBeLessThanOrEqual(.00001)
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+
+  const moreToDiscover = page.getByRole('heading', { name: 'Keep Exploring', exact: true })
+  await moreToDiscover.scrollIntoViewIfNeeded()
+  await expect(moreToDiscover).toBeVisible()
+  await page.locator('.discover-more__sentinel').scrollIntoViewIfNeeded()
+  const continuedGrid = page.locator('.discover-more__grid')
+  await expect(continuedGrid.getByRole('button', { name: 'More discovery fixture 1 More discovery fixture 1 2026', exact: true })).toBeVisible()
+  await expect(continuedGrid.getByRole('button').first()).toHaveAccessibleName('More discovery fixture 1 More discovery fixture 1 2026')
+  expect(continuationPages).toContain(4)
 
   await page.setViewportSize({ width: 390, height: 844 })
+  const topTenShelf = page.locator('.discover-shelf').filter({ has: page.getByRole('heading', { name: 'Top 10 For You', exact: true }) })
+  await topTenShelf.getByRole('button', { name: 'Open Top 10 For You catalog' }).click()
+  await expect(page.locator('.catalog-page h1')).toHaveText('Top 10 For You')
+  await expect(page.locator('.catalog-page').getByText('10 titles loaded', { exact: true })).toBeVisible()
+  await expect(page.locator('.catalog-page__items > button')).toHaveCount(10)
+  const catalogGridColumns = await page.locator('.catalog-page__items').evaluate((grid) => new Set(Array.from(grid.children).map((card) => Math.round(card.getBoundingClientRect().left))).size)
+  expect(catalogGridColumns).toBe(3)
+  await page.goBack()
+  await expect(page.locator('.discover-page')).toBeVisible()
+  const recentShelf = page.locator('.discover-shelf--recent')
+  await recentShelf.getByRole('button', { name: 'Open Recently Released catalog' }).click()
+  await expect(page.locator('.catalog-page h1')).toHaveText('Recently Released')
+  await expect.poll(() => page.locator('.catalog-page__items > button').count()).toBeGreaterThanOrEqual(5)
+  const recentCatalogColumns = await page.locator('.catalog-page__items').evaluate((grid) => new Set(Array.from(grid.children).map((card) => Math.round(card.getBoundingClientRect().left))).size)
+  expect(recentCatalogColumns).toBe(3)
+
   const episodeCardWidth = await page.evaluate(() => {
     const fixture = document.createElement('div')
     fixture.className = 'detail-page'
@@ -530,6 +923,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     return width
   })
   expect(episodeCardWidth, 'phone episode cards should stay compact and horizontally browsable').toBeLessThanOrEqual(280)
+  expect(pageErrors).toEqual([])
 })
 
 test('mobile series detail uses compact system typography and contained episode cards', async ({ page }) => {

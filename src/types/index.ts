@@ -2,6 +2,8 @@ export interface SearchResult {
   id: string
   title: string
   type: 'movie' | 'series'
+  /** Jellyfin BoxSet items are navigable collection folders, not detail pages. */
+  mediaType?: 'movie' | 'series' | 'season' | 'episode' | 'collection'
   year?: number
   poster?: string
   backdrop?: string
@@ -9,6 +11,12 @@ export interface SearchResult {
   logo?: string
   overview?: string
   rating?: number
+  criticRating?: number
+  originalTitle?: string
+  certification?: string
+  tagline?: string
+  studios?: string[]
+  people?: Record<string, unknown>[]
   provider: string
   /** Original catalog namespace retained after adding an item to the local watchlist. */
   watchlistIdentityProvider?: string
@@ -51,13 +59,16 @@ export interface MovieDetails {
   tagline?: string
   runtime?: number
   rating?: number
+  criticRating?: number
   voteCount?: number
   genres: string[]
+  studios?: string[]
   poster?: string
   backdrop?: string
   logo?: string
   certification?: string
   originalLanguage?: string
+  originCountry?: string[]
   cast: CastMember[]
   crew: CrewMember[]
   recommendations: SearchResult[]
@@ -80,8 +91,10 @@ export interface ShowDetails {
   overview?: string
   tagline?: string
   rating?: number
+  criticRating?: number
   voteCount?: number
   genres: string[]
+  studios?: string[]
   poster?: string
   backdrop?: string
   logo?: string
@@ -91,6 +104,7 @@ export interface ShowDetails {
   numberOfSeasons?: number
   numberOfEpisodes?: number
   originalLanguage?: string
+  originCountry?: string[]
   seasons: SeasonSummary[]
   cast: CastMember[]
   crew: CrewMember[]
@@ -173,6 +187,8 @@ export interface Video {
   site: string
   type: string
   thumbnail?: string
+  /** Optional source URL for provider-owned trailers that are not YouTube videos. */
+  url?: string
 }
 
 export interface MetadataProvider {
@@ -233,8 +249,16 @@ export interface StreamResult {
   ytId?: string
   infoHash?: string
   fileIdx?: number
-  behaviorHints?: Record<string, unknown>
+  behaviorHints?: {
+    notWebReady?: boolean
+    filename?: string
+    proxyHeaders?: { request?: Record<string, string>; response?: Record<string, string> }
+    [key: string]: unknown
+  }
   /** Native media-server source details. Addons may omit these fields. */
+  provider?: string
+  connectionId?: string
+  sourceItemId?: string
   directPlay?: boolean
   directStream?: boolean
   transcode?: boolean
@@ -245,6 +269,7 @@ export interface StreamResult {
   bitrate?: number
   hdr?: string
   mediaSourceId?: string
+  playSessionId?: string
   audioTracks?: Record<string, unknown>[]
   subtitleTracks?: Record<string, unknown>[]
   chapters?: Record<string, unknown>[]
@@ -322,6 +347,8 @@ export interface HomeRowConfig {
   sourceType?: 'addon' | 'simkl' | 'trakt' | 'local' | 'discover' | 'pmdb' | 'pmdb-picks' | 'mdblist' | 'anilist' | 'jellyfin' | 'webdav'
   /** Provider-specific list key, for example Simkl/Trakt/PMDB/MDBList/AniList status or list id */
   providerListId?: string
+  /** Render Jellyfin BoxSet catalogs as wide collection shelves. */
+  jellyfinCollection?: boolean
   sortBy?: 'default' | 'alphabetical'
   showRank?: boolean
   discoverConfig?: DiscoverConfig

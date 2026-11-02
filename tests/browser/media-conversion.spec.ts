@@ -1,10 +1,13 @@
 import { expect, test } from '@playwright/test'
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 
 test('decode failures automatically try worker conversion and load a signed seekable result', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name.includes('webkit'), 'WebKit does not reliably expose a synthetic decoder failure.')
   const jobId = '0123456789abcdef0123456789abcdef'
   const mediaId = 'abcdef0123456789abcdef0123456789'
-  const sessionUrl = `/v1/media/${mediaId}?expires=1893456000&signature=test-signature`
+  const sessionUrl = `/v1/media/${mediaId}?expires=1893456000&signature=test-signature&format=hls`
+  const hlsSegment = await readFile(resolve(process.cwd(), 'tests/browser/fixtures/hls-segment-000.m2ts'))
   await page.addInitScript(() => {
     localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
   })
@@ -14,6 +17,7 @@ test('decode failures automatically try worker conversion and load a signed seek
     body: JSON.stringify({ streamRanking: true, mediaDirectProxy: true, pmdbProxy: true, mediaRemux: true, audioTranscode: true, videoTranscode: true }),
   }))
   let requestedMode = ''
+  let workerManifestRequested = ''
   await page.route('**/v1/media/conversions', async (route) => {
     requestedMode = JSON.parse(route.request().postData() || '{}').mode
     await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId, status: 'processing' }) })
@@ -23,7 +27,13 @@ test('decode failures automatically try worker conversion and load a signed seek
     contentType: 'application/json',
     body: JSON.stringify({ jobId, status: 'ready', mode: 'remux', bytes: 1024, url: sessionUrl }),
   }))
-  await page.route(`**/v1/media/${mediaId}?*`, (route) => route.fulfill({ status: 503, body: 'test fixture ends after the signed URL is attached' }))
+  await page.route(`**/v1/media/${mediaId}?*`, (route) => {
+    workerManifestRequested = route.request().url()
+    const segmentUrl = `/v1/media/${mediaId}/segment.ts?expires=1893456000&signature=test-signature`
+    const manifest = `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:12\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:12.000000,\n${segmentUrl}\n#EXT-X-ENDLIST\n`
+    return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: manifest })
+  })
+  await page.route(`**/v1/media/${mediaId}/segment.ts?*`, (route) => route.fulfill({ status: 200, contentType: 'video/mp2t', body: hlsSegment }))
 
   await page.goto('/tests/browser/player-harness.html?source=' + encodeURIComponent('/tests/browser/fixtures/vp8-opus.webm'))
   const video = page.locator('video')
@@ -32,9 +42,10 @@ test('decode failures automatically try worker conversion and load a signed seek
     Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 3 }) })
     element.dispatchEvent(new Event('error'))
   })
-  await expect.poll(() => requestedMode).toBe('remux')
-  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => new URL(element.querySelector('source')?.src || element.currentSrc).pathname)).toBe(`/v1/media/${mediaId}`)
-  expect(requestedMode).toBe('remux')
+  await expect.poll(() => requestedMode).toBe('auto')
+  await expect.poll(() => workerManifestRequested).toContain(`/v1/media/${mediaId}?`)
+  expect(workerManifestRequested).toContain('format=hls')
+  expect(requestedMode).toBe('auto')
 })
 
 test('unsupported media tries remux, AAC audio copy, then H.264/AAC automatically', async ({ page }, testInfo) => {
@@ -48,28 +59,29 @@ test('unsupported media tries remux, AAC audio copy, then H.264/AAC automaticall
     body: JSON.stringify({ streamRanking: true, mediaDirectProxy: true, pmdbProxy: true, mediaRemux: true, audioTranscode: true, videoTranscode: true }),
   }))
   const modes: string[] = []
-  const jobIds: Record<string, string> = {
-    remux: '11111111111111111111111111111111',
-    audioAac: '22222222222222222222222222222222',
-    h264Aac: '33333333333333333333333333333333',
-  }
+  const workerManifests: string[] = []
+  const jobId = '11111111111111111111111111111111'
+  const workerMediaId = 'abcdef0123456789abcdef0123456789'
+  const hlsSegment = await readFile(resolve(process.cwd(), 'tests/browser/fixtures/hls-segment-000.m2ts'))
   await page.route('**/v1/media/conversions', async (route) => {
     const mode = JSON.parse(route.request().postData() || '{}').mode as string
     modes.push(mode)
-    await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId: jobIds[mode], status: 'processing' }) })
+    await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId, status: 'processing' }) })
   })
   await page.route('**/v1/media/conversions/*', (route) => {
-    const jobId = route.request().url().split('/').pop()
-    const mode = Object.keys(jobIds).find((candidate) => jobIds[candidate] === jobId)
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify(mode === 'h264Aac'
-        ? { jobId, status: 'ready', mode, bytes: 1024, url: new URL('/v1/media/abcdef0123456789abcdef0123456789?expires=1893456000&signature=test', route.request().url()).toString() }
-        : { jobId, status: 'failed', error: 'unsupported codec' }),
+      body: JSON.stringify({ jobId, status: 'ready', mode: 'h264Aac', bytes: 1024, url: new URL('/v1/media/abcdef0123456789abcdef0123456789?expires=1893456000&signature=test&format=hls', route.request().url()).toString() }),
     })
   })
-  await page.route('**/v1/media/abcdef0123456789abcdef0123456789?*', (route) => route.fulfill({ status: 503, body: 'test fixture ends after the signed URL is attached' }))
+  await page.route('**/v1/media/abcdef0123456789abcdef0123456789?*', (route) => {
+    workerManifests.push(route.request().url())
+    const segmentUrl = `/v1/media/${workerMediaId}/segment.ts?expires=1893456000&signature=test`
+    const manifest = `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:12\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:12.000000,\n${segmentUrl}\n#EXT-X-ENDLIST\n`
+    return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: manifest })
+  })
+  await page.route(`**/v1/media/${workerMediaId}/segment.ts?*`, (route) => route.fulfill({ status: 200, contentType: 'video/mp2t', body: hlsSegment }))
   await page.goto('/tests/browser/player-harness.html?source=' + encodeURIComponent('/tests/browser/fixtures/vp8-opus.webm'))
   const video = page.locator('video')
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc.endsWith('/vp8-opus.webm'))).toBe(true)
@@ -77,9 +89,10 @@ test('unsupported media tries remux, AAC audio copy, then H.264/AAC automaticall
     Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 4 }) })
     element.dispatchEvent(new Event('error'))
   })
-  await expect.poll(() => modes.length).toBe(3)
-  expect(modes).toEqual(['remux', 'audioAac', 'h264Aac'])
-  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc.includes('/v1/media/abcdef0123456789abcdef0123456789'))).toBe(true)
+  await expect.poll(() => modes.length).toBe(1)
+  expect(modes).toEqual(['auto'])
+  await expect.poll(() => workerManifests.length).toBeGreaterThan(0)
+  expect(workerManifests[0]).toContain('format=hls')
 })
 
 test('expired media-worker sessions renew while preserving playback position', async ({ page }) => {

@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useContext, useState, useEffect, useRef, useCallback } from 'react'
+import { lazy, memo, Suspense, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import ErrorBoundary from '../components/ui/ErrorBoundary'
@@ -38,7 +38,7 @@ import { catalogContentFingerprint, getContinueWatchingAccountScope, readContinu
 import { readHomeShelfStartupSnapshot, writeHomeShelfStartupSnapshots } from '../services/cache/homeShelfStartupSnapshot'
 import { markContinueWatchingSettled, markHeroImageSettled } from '../services/cache/homeStartupCoordinator'
 import { markPerformance, measurePerformance } from '../services/performanceMetrics'
-import { SERVER_INTEGRATIONS_ENABLED } from '../services/serverIntegrations'
+import { SERVER_INTEGRATIONS_ENABLED, getServerItem, listServerCatalogs, parseServerCatalogListId, serverCatalogListId, type ServerCatalogDescriptor, type ServerCatalogItem } from '../services/serverIntegrations'
 import { getActiveProfileId } from '../services/profiles'
 import { getHomeShelfId, rememberHomeShelfId } from '../services/sessionViewState'
 import { HomeEditRowContext } from '../components/home/HomeEditRowContext'
@@ -281,6 +281,7 @@ function SimklRow({ row, headerLeftControls, headerRightControls }: { row: HomeR
 
 function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
   const cacheKey = providerRowCacheKey(row)
+  const updateHomeRow = useAppStore((state) => state.updateHomeRow)
   const memCacheGet = useHomeCatalogCache((state) => state.get)
   const memCacheSet = useHomeCatalogCache((state) => state.set)
   const cached = memCacheGet(cacheKey) || readHomeShelfStartupSnapshot(cacheKey)
@@ -337,8 +338,15 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cacheKey, row.providerListId, row.sourceType, row.sortBy, retryNonce, memCacheGet, memCacheSet])
 
-  const layout = row.layout === 'landscape' ? 'landscape' : 'poster'
   const currentItems = itemsCacheKey === cacheKey ? items : cached
+  const serverCatalog = row.sourceType === 'jellyfin' ? parseServerCatalogListId(row.providerListId) : null
+  const isBoxSetCatalog = Boolean(serverCatalog?.catalogId.startsWith('boxset:'))
+  const detectedCollection = row.sourceType === 'jellyfin' && (isBoxSetCatalog || Boolean(currentItems?.length && currentItems.every((item) => item.mediaType === 'collection')))
+  const isCollectionShelf = row.jellyfinCollection === true || detectedCollection
+  useEffect(() => {
+    if (detectedCollection && !row.jellyfinCollection) updateHomeRow(row.id, { jellyfinCollection: true, layout: 'landscape' })
+  }, [detectedCollection, row.id, row.jellyfinCollection, updateHomeRow])
+  const layout = row.layout === 'landscape' || isCollectionShelf ? 'landscape' : 'poster'
   if ((loading || itemsCacheKey !== cacheKey) && !currentItems) return <MediaRowSkeleton title={getRowDisplayTitle(row)} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
   if (itemsCacheKey === cacheKey && error) return <MediaRowError title={getRowDisplayTitle(row)} message={error} layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} onRetry={() => { setError(null); setLoading(true); setRetryNonce((value) => value + 1) }} />
   if (!currentItems || currentItems.length === 0) return <MediaRowError title={getRowDisplayTitle(row)} message="No items found in this list." layout={layout} headerLeftControls={headerLeftControls} headerRightControls={headerRightControls} />
@@ -347,7 +355,7 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
     <MediaRow
       title={getRowDisplayTitle(row)}
       items={currentItems}
-      layout={row.layout === 'landscape' || row.layout === 'ranked' || row.layout === 'feature' || row.layout === 'list' ? row.layout : 'poster'}
+      layout={isCollectionShelf ? 'landscape' : row.layout === 'landscape' || row.layout === 'ranked' || row.layout === 'feature' || row.layout === 'list' ? row.layout : 'poster'}
       disableArtOverride={false}
       showRank={row.layout === 'ranked'}
       headerLeftControls={headerLeftControls}
@@ -356,6 +364,58 @@ function ProviderListRow({ row, headerLeftControls, headerRightControls }: { row
       forceShowAll={currentItems.length >= 20}
     />
   )
+}
+
+function JellyfinCollectionsHomeRow({ rows }: { rows: HomeRowConfig[] }) {
+  const navigate = useNavigate()
+  const [catalogs, setCatalogs] = useState<ServerCatalogDescriptor[]>([])
+  const [artwork, setArtwork] = useState<Record<string, ServerCatalogItem>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    void listServerCatalogs().then(async (available) => {
+      const selected = rows.flatMap((row) => {
+        const parsed = parseServerCatalogListId(row.providerListId)
+        if (!parsed) return []
+        const catalog = available.find((entry) => entry.connectionId === parsed.connectionId && entry.catalogId === parsed.catalogId && entry.provider === 'jellyfin')
+        return catalog ? [{ row, catalog }] : []
+      })
+      if (cancelled) return
+      setCatalogs(selected.map(({ catalog }) => catalog))
+      const images = await Promise.all(selected.map(async ({ catalog }) => {
+        if (!catalog.sourceItemId) return null
+        try { return { key: serverCatalogListId(catalog.connectionId, catalog.catalogId), item: await getServerItem(catalog.connectionId, catalog.sourceItemId) } }
+        catch { return null }
+      }))
+      if (!cancelled) setArtwork(Object.fromEntries(images.flatMap((entry) => entry?.item ? [[entry.key, entry.item] as const] : [])))
+    }).catch(() => { if (!cancelled) setCatalogs([]) })
+    return () => { cancelled = true }
+  }, [rows])
+
+  if (!rows.length) return null
+  return <section className="jellyfin-collections-home-row mb-8" aria-label="Jellyfin Collections">
+    <div className="mb-3 flex items-center justify-between px-6">
+      <h2 className="text-lg font-bold tracking-tight text-white/90">Jellyfin Collections</h2>
+      <button type="button" onClick={() => navigate('/library?tab=jellyfin-collections')} aria-label="View all Jellyfin collections" className="grid h-9 w-9 place-items-center rounded-full bg-white/[0.09] text-white/80 transition-colors hover:bg-white/[0.16]">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      </button>
+    </div>
+    <div className="jellyfin-collections-grid grid grid-cols-2 gap-3 px-6 md:grid-cols-3 xl:grid-cols-4">
+      {catalogs.map((catalog) => {
+        const item = artwork[serverCatalogListId(catalog.connectionId, catalog.catalogId)]
+        const row = rows.find((candidate) => parseServerCatalogListId(candidate.providerListId)?.catalogId === catalog.catalogId && parseServerCatalogListId(candidate.providerListId)?.connectionId === catalog.connectionId)
+        if (!row || !catalog.sourceItemId) return null
+        const open = () => navigate(`/catalog/${row.id}?${new URLSearchParams({ title: catalog.title, connection: catalog.connectionId, item: catalog.sourceItemId! })}`, {
+          state: { catalogRow: row, collectionItem: item },
+        })
+        return <button key={`${catalog.connectionId}:${catalog.catalogId}`} type="button" onClick={open} className="jellyfin-collection-tile group relative aspect-video min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-[#17191d] text-left shadow-lg transition-transform hover:-translate-y-0.5 hover:border-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+          {item?.backdrop ? <img src={item.backdrop} alt="" className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]" loading="lazy" /> : item?.poster ? <img src={item.poster} alt="" className="absolute inset-0 h-full w-full object-cover blur-[1px] opacity-65" loading="lazy" /> : <div className="absolute inset-0 bg-gradient-to-br from-indigo-950 via-slate-900 to-emerald-950" />}
+          <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-black/20" />
+          <span className="absolute inset-3 flex items-center justify-center text-center text-base font-bold leading-tight text-white drop-shadow-lg sm:text-xl">{catalog.title}</span>
+        </button>
+      })}
+    </div>
+  </section>
 }
 
 function AddonCatalogRow({ row, headerLeftControls, headerRightControls }: { row: HomeRowConfig; headerLeftControls?: React.ReactNode; headerRightControls?: React.ReactNode }) {
@@ -624,6 +684,13 @@ function HeroCatalogSection({ row, heroMode, onBackdropChange, focusedItem, comp
   const manualItem = useAppStore((s) => s.fixedHeroManualItem)
   const recentlyWatched = useAppStore((s) => s.recentlyWatched)
   const isMockCatalog = row.catalogId?.startsWith('mock-')
+  const [serverCatalogRevision, setServerCatalogRevision] = useState(0)
+  useEffect(() => {
+    if (row.sourceType !== 'jellyfin' && row.sourceType !== 'webdav') return
+    const refresh = () => setServerCatalogRevision((revision) => revision + 1)
+    window.addEventListener('aurales:server-catalogs-changed', refresh)
+    return () => window.removeEventListener('aurales:server-catalogs-changed', refresh)
+  }, [row.sourceType])
   useEffect(() => {
     const snapshotProfileId = getActiveProfileId()
     let cancelled = false
@@ -664,23 +731,25 @@ function HeroCatalogSection({ row, heroMode, onBackdropChange, focusedItem, comp
           return []
         }
 
-        const results = await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
-          category: CACHE_CATEGORIES.ADDON_CATALOG,
-          ttlSeconds: null,
-          queue: 'startup',
-          revalidate: 'once-per-session',
-          priority: 'high',
-          onStaleRefreshed: (fresh) => {
-            if (!cancelled) {
-              staleRefreshApplied = true
-              const sorted = row.sortBy === 'alphabetical' ? [...fresh].sort((a, b) => a.title.localeCompare(b.title)) : fresh
-              writeHeroStartupSnapshot(row, sorted, snapshotProfileId, addonUrl)
-              memCacheSet(cacheKey, sorted)
-              setItemsCacheKey(cacheKey)
-              setItems((current) => catalogContentFingerprint(sorted) !== catalogContentFingerprint(current) ? sorted : current)
-            }
-          },
-        })
+        const results = row.sourceType === 'jellyfin' || row.sourceType === 'webdav'
+          ? await fetcher()
+          : await cachedFetch<SearchResult[]>(cacheKey, fetcher, {
+            category: CACHE_CATEGORIES.ADDON_CATALOG,
+            ttlSeconds: null,
+            queue: 'startup',
+            revalidate: 'once-per-session',
+            priority: 'high',
+            onStaleRefreshed: (fresh) => {
+              if (!cancelled) {
+                staleRefreshApplied = true
+                const sorted = row.sortBy === 'alphabetical' ? [...fresh].sort((a, b) => a.title.localeCompare(b.title)) : fresh
+                writeHeroStartupSnapshot(row, sorted, snapshotProfileId, addonUrl)
+                memCacheSet(cacheKey, sorted)
+                setItemsCacheKey(cacheKey)
+                setItems((current) => catalogContentFingerprint(sorted) !== catalogContentFingerprint(current) ? sorted : current)
+              }
+            },
+          })
 
         if (!cancelled && !staleRefreshApplied) {
           const sorted = row.sortBy === 'alphabetical' ? [...results].sort((a, b) => a.title.localeCompare(b.title)) : results
@@ -714,7 +783,8 @@ function HeroCatalogSection({ row, heroMode, onBackdropChange, focusedItem, comp
     addonUrl,
     row.id,
     memCacheGet,
-    memCacheSet
+    memCacheSet,
+    serverCatalogRevision
   ])
 
   if (heroMode === 'disabled') return null
@@ -1126,33 +1196,38 @@ export default function HomePage() {
   };
 
   const serverRowEnabled = (row: HomeRowConfig) => SERVER_INTEGRATIONS_ENABLED || (row.sourceType !== 'jellyfin' && row.sourceType !== 'webdav')
-  const enabledRows = homeRows.filter((row) => row.enabled && serverRowEnabled(row));
-  const heroRow = homeRows.find((row) => row.layout === 'hero' && row.enabled && serverRowEnabled(row));
+  const enabledRows = useMemo(() => homeRows.filter((row) => row.enabled && serverRowEnabled(row)), [homeRows]);
+  const heroRow = useMemo(() => homeRows.find((row) => row.layout === 'hero' && row.enabled && serverRowEnabled(row)), [homeRows]);
 
   // Only allow reordering visible content shelves
-  const activeRows = enabledRows
+  const activeRows = useMemo(() => enabledRows
     .filter((row) => row.layout !== 'hero')
-    .sort((a, b) => a.order - b.order);
+    .sort((a, b) => a.order - b.order), [enabledRows]);
+  const jellyfinCollectionRows = useMemo(() => activeRows.filter((row) => row.sourceType === 'jellyfin' && row.jellyfinCollection), [activeRows])
+  const regularActiveRows = useMemo(() => activeRows.filter((row) => !(row.sourceType === 'jellyfin' && row.jellyfinCollection)), [activeRows])
 
   const handleReorder = (activeId: string, overId: string) => {
-    const oldIndex = activeRows.findIndex((row) => row.id === activeId)
-    const newIndex = activeRows.findIndex((row) => row.id === overId)
+    const oldIndex = regularActiveRows.findIndex((row) => row.id === activeId)
+    const newIndex = regularActiveRows.findIndex((row) => row.id === overId)
     if (oldIndex < 0 || newIndex < 0) return
-    const reorderedActive = [...activeRows]
+    const reorderedActive = [...regularActiveRows]
     const [moved] = reorderedActive.splice(oldIndex, 1)
     reorderedActive.splice(newIndex, 0, moved)
 
     // Reconstruct the full list preserving hero and disabled shelves.
     const hero = homeRows.find((row) => row.layout === 'hero')
     const disabled = homeRows.filter((row) => !row.enabled)
-    reorderHomeRows([...(hero ? [hero] : []), ...reorderedActive, ...disabled])
+    reorderHomeRows([...(hero ? [hero] : []), ...reorderedActive, ...jellyfinCollectionRows, ...disabled])
   }
 
   const shelvesContent = cachePreloaded ? (
-    <StaggeredRows rows={activeRows} isEditing={isEditing} onRemove={removeHomeRow} fixed={presentationHeroMode === 'fixed' && !isEditing} activeIndex={activeShelfIndex} previousIndex={previousShelfIndex} direction={shelfDirection} />
+    <>
+      <StaggeredRows rows={regularActiveRows} isEditing={isEditing} onRemove={removeHomeRow} fixed={presentationHeroMode === 'fixed' && !isEditing} activeIndex={activeShelfIndex} previousIndex={previousShelfIndex} direction={shelfDirection} />
+      {jellyfinCollectionRows.length > 0 && <JellyfinCollectionsHomeRow rows={jellyfinCollectionRows} />}
+    </>
   ) : (
     <div className="home-shelf-skeleton-list space-y-8">
-      {activeRows.slice(0, 3).map((row) => (
+      {regularActiveRows.slice(0, 3).map((row) => (
         <MediaRowSkeleton key={row.id} title={getRowDisplayTitle(row)} layout={row.layout === 'landscape' ? 'landscape' : 'poster'} />
       ))}
     </div>
@@ -1190,7 +1265,7 @@ export default function HomePage() {
           <div data-home-shelves className="relative z-10" style={{ marginTop: heroRow && presentationHeroMode !== 'disabled' ? (cinematic ? '24px' : '-40px') : undefined }}>
             {isEditing ? (
               <Suspense fallback={shelvesContent}>
-                <HomeEditList rows={activeRows} onReorder={handleReorder}>{shelvesContent}</HomeEditList>
+                <HomeEditList rows={regularActiveRows} onReorder={handleReorder}>{shelvesContent}</HomeEditList>
               </Suspense>
             ) : shelvesContent}
           </div>

@@ -9,6 +9,7 @@ import { getLocalWatchedStatus, searchResultToLookup, isWatchedFromProviders, is
 import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { hasMdblistOAuth, markMdblistWatched, removeMdblistWatched } from '../services/mdblist'
+import { getServerEpisodes, getServerItem, listServerConnections, searchServerCatalogs, setJellyfinItemWatched } from '../services/serverIntegrations'
 
 /** Run bulk provider mutations without opening one request per episode at once.
  * Stop adding work after the first failure, but wait for already-started writes. */
@@ -44,6 +45,7 @@ const PROVIDER_META: Record<ProviderKey, { label: string; color: string }> = {
   pmdb: { label: 'PMDB', color: '#a855f7' },
   mdblist: { label: 'MDBList', color: '#10b981' },
   anilist: { label: 'AniList', color: '#3b82f6' },
+  jellyfin: { label: 'Jellyfin', color: '#a855f7' },
 }
 
 export default function ContextMenu() {
@@ -216,6 +218,14 @@ export default function ContextMenu() {
     if (anilistConnected && isAnimeItem(item)) {
       states.push({ provider: 'anilist', connected: true, watched: false, loading: true })
     }
+    let jellyfinAvailable = Boolean(item.sourceConnectionId && item.sourceItemId)
+    if (!jellyfinAvailable) {
+      try { jellyfinAvailable = (await listServerConnections()).some((connection) => connection.enabled && connection.kind === 'jellyfin') }
+      catch { jellyfinAvailable = false }
+    }
+    if (jellyfinAvailable) {
+      states.push({ provider: 'jellyfin', connected: true, watched: false, loading: true })
+    }
 
     setProviderStates([...states])
 
@@ -248,6 +258,9 @@ export default function ContextMenu() {
       checkAniListWatched(item, target).then((watched) => {
         applyResult('anilist', watched)
       })
+    }
+    if (jellyfinAvailable) {
+      checkJellyfinWatched(item, target).then((watched) => applyResult('jellyfin', watched)).catch(() => applyResult('jellyfin', false))
     }
   }, [target, traktConnected, simklConnected, pmdbConnected, mdblistConnected, anilistConnected])
 
@@ -289,6 +302,9 @@ export default function ContextMenu() {
         await toggleMdblistWatched(enrichedTarget, newWatched)
       } else if (provider === 'anilist') {
         await toggleAniListWatched(enrichedTarget, newWatched)
+      } else if (provider === 'jellyfin') {
+        await toggleJellyfinWatched(enrichedTarget, newWatched)
+        await toggleLocalWatched(enrichedTarget, newWatched, setWatchProgress, setWatchProgressBatch, removeWatchProgress)
       }
       await cacheClearCategory(CACHE_CATEGORIES.WATCHED_STATUS)
       setProviderStates((prev) => prev.map((s) => s.provider === provider ? { ...s, watched: newWatched, loading: false } : s))
@@ -322,6 +338,9 @@ export default function ContextMenu() {
           await toggleMdblistWatched(enrichedTarget, watched)
         } else if (s.provider === 'anilist') {
           await toggleAniListWatched(enrichedTarget, watched)
+        } else if (s.provider === 'jellyfin') {
+          await toggleJellyfinWatched(enrichedTarget, watched)
+          await toggleLocalWatched(enrichedTarget, watched, setWatchProgress, setWatchProgressBatch, removeWatchProgress)
         }
       })
     )
@@ -743,6 +762,78 @@ function checkLocalWatched(
     return getLocalWatchedStatus(lookup, watchProgress)
   }
   return getLocalWatchedStatus(searchResultToLookup(item), watchProgress)
+}
+
+async function checkJellyfinWatched(
+  item: SearchResult,
+  target: NonNullable<ReturnType<typeof useContextMenu.getState>['target']>,
+): Promise<boolean> {
+  const linkedItem = await resolveJellyfinItem(item)
+  const connectionId = linkedItem.sourceConnectionId
+  const itemId = linkedItem.sourceItemId
+  if (!connectionId || !itemId) return false
+  const isPlayed = (candidate?: { raw?: Record<string, unknown> } | null) => {
+    const userData = candidate?.raw?.UserData
+    return Boolean(userData && typeof userData === 'object' && (userData as Record<string, unknown>).Played === true)
+  }
+  if (target.kind === 'episode') {
+    const episodes = await getServerEpisodes(connectionId, itemId)
+    return isPlayed(episodes.find((episode) => episode.season === target.seasonNumber && episode.episode === target.episode.episodeNumber))
+  }
+  if (target.kind === 'season') {
+    const episodes = (await getServerEpisodes(connectionId, itemId)).filter((episode) => episode.season === target.seasonNumber)
+    return episodes.length > 0 && episodes.every(isPlayed)
+  }
+  return isPlayed(await getServerItem(connectionId, itemId))
+}
+
+async function toggleJellyfinWatched(
+  target: NonNullable<ReturnType<typeof useContextMenu.getState>['target']>,
+  watched: boolean,
+): Promise<void> {
+  const linkedItem = await resolveJellyfinItem(target.item)
+  const { sourceConnectionId: connectionId, sourceItemId: itemId } = linkedItem
+  if (!connectionId || !itemId) throw new Error('No Jellyfin item is connected to this title.')
+  if (target.kind === 'episode') {
+    await setJellyfinItemWatched(connectionId, itemId, watched, {
+      season: target.seasonNumber,
+      episode: target.episode.episodeNumber,
+    })
+    return
+  }
+  if (target.kind === 'season') {
+    const episodes = (await getServerEpisodes(connectionId, itemId)).filter((episode) => episode.season === target.seasonNumber)
+    if (!episodes.length) throw new Error(`No Jellyfin episodes found for season ${target.seasonNumber}.`)
+    await runEpisodeActionsWithConcurrency(episodes, (episode) => setJellyfinItemWatched(connectionId, itemId, watched, {
+      season: target.seasonNumber,
+      episode: episode.episode || 0,
+    }), 1)
+    return
+  }
+  await setJellyfinItemWatched(connectionId, itemId, watched)
+}
+
+/** Resolve metadata-only detail items to the matching item in a connected
+ * Jellyfin library, so watch status works even when the page was opened from
+ * TMDB/an addon instead of a Jellyfin shelf. */
+async function resolveJellyfinItem(item: SearchResult): Promise<SearchResult> {
+  if (item.sourceConnectionId && item.sourceItemId) return item
+  const candidates = await searchServerCatalogs(item.title)
+  const sameType = candidates.filter((candidate) => candidate.type === item.type && candidate.sourceConnectionId && candidate.sourceItemId)
+  const match = (key: 'imdbId' | 'tmdbId' | 'tvdbId') => {
+    const value = item[key]
+    if (value == null || value === '') return undefined
+    const normalized = String(value).replace(/^tt/i, '').toLowerCase()
+    return sameType.find((candidate) => {
+      const candidateValue = candidate[key]
+      return candidateValue != null && String(candidateValue).replace(/^tt/i, '').toLowerCase() === normalized
+    })
+  }
+  const normalizedTitle = item.title.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+  const resolved = match('imdbId') || match('tmdbId') || match('tvdbId') || sameType.find((candidate) =>
+    candidate.title.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '') === normalizedTitle
+  )
+  return resolved ? { ...item, sourceConnectionId: resolved.sourceConnectionId, sourceItemId: resolved.sourceItemId } : item
 }
 
 async function checkTraktWatched(

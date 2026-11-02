@@ -40,7 +40,7 @@ export interface RecommendationFeedback {
 }
 
 export interface RecommendationReason {
-  code: 'genre-affinity' | 'keyword-affinity' | 'recent-interest' | 'person-affinity' | 'runtime-affinity' | 'quality' | 'new-release' | 'hidden-gem' | 'quick-watch' | 'exploration' | 'rewatch'
+  code: 'genre-affinity' | 'keyword-affinity' | 'recent-interest' | 'person-affinity' | 'runtime-affinity' | 'quality' | 'trend' | 'popularity' | 'new-release' | 'hidden-gem' | 'quick-watch' | 'exploration' | 'rewatch'
   label: string
   strength: number
 }
@@ -51,6 +51,8 @@ export interface RecommendationScore {
   preference: number
   recency: number
   quality: number
+  /** Normalized popularity boost from the provider's trending/popularity signal. */
+  trend: number
   popularityConfidence: number
   availability: number
   novelty: number
@@ -65,9 +67,12 @@ export interface RecommendationCandidate {
   runtimeMinutes?: number
   voteCount?: number
   popularity?: number
+  /** True when the provider returned this candidate in its current trending feed. */
+  trendSignal?: boolean
   releaseDate?: string
   fetchedAt?: number
   seedTitle?: string
+  seedKind?: 'watched' | 'favorited'
   /** Optional enrichment from title details; catalog-only candidates can omit it. */
   cast?: string[]
   directors?: string[]
@@ -95,6 +100,8 @@ export interface DiscoverySection {
   title: string
   reason?: string
   items: RankedRecommendation[]
+  /** Full matching set for the section's Show all view; the shelf stays compact. */
+  catalogItems?: RankedRecommendation[]
 }
 
 export interface RecommendationCacheEntry {

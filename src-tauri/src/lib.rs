@@ -371,6 +371,8 @@ pub fn run() {
             commands::get_server_catalog_items,
             commands::search_server_catalogs,
             commands::get_server_streams,
+            commands::report_server_playback,
+            commands::set_server_item_watched,
             image_cache::image_cache_configure,
             image_cache::image_cache_stats,
             image_cache::image_cache_clear,

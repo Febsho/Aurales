@@ -25,6 +25,7 @@ import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { useAppStore } from '../stores/appStore'
 import type { MediaRef } from '../services/simkl/mappings'
 import { batchIsWatchedFromProviders, isWatchedFromProviderFresh, type WatchedLookupItem } from '../services/watchedStatus'
+import { setJellyfinItemWatched } from '../services/serverIntegrations'
 
 interface MarkWatchedButtonProps {
   mediaRef: MediaRef
@@ -34,6 +35,8 @@ interface MarkWatchedButtonProps {
   imdbId?: string
   anilistId?: number | string
   malId?: number | string
+  sourceConnectionId?: string
+  sourceItemId?: string
   isAnime?: boolean
   compact?: boolean
   watched?: boolean
@@ -43,7 +46,7 @@ interface MarkWatchedButtonProps {
   className?: string
 }
 
-type Service = 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist'
+type Service = 'trakt' | 'simkl' | 'pmdb' | 'mdblist' | 'anilist' | 'jellyfin'
 
 interface ServiceState {
   loading: boolean
@@ -58,6 +61,7 @@ const SERVICE_LABELS: Record<Service, string> = {
   pmdb: 'PMDB',
   mdblist: 'MDBList',
   anilist: 'AniList',
+  jellyfin: 'Jellyfin',
 }
 
 async function mapEpisodesWithConcurrency(
@@ -84,7 +88,7 @@ async function mapEpisodesWithConcurrency(
   if (failed) throw firstError
 }
 
-export default function MarkWatchedButton({ mediaRef, mediaType, episode, episodes = [], imdbId, anilistId, malId, isAnime = false, compact, watched = false, onMarked, onUnmarked, appSeasonCounts, className = '' }: MarkWatchedButtonProps) {
+export default function MarkWatchedButton({ mediaRef, mediaType, episode, episodes = [], imdbId, anilistId, malId, sourceConnectionId, sourceItemId, isAnime = false, compact, watched = false, onMarked, onUnmarked, appSeasonCounts, className = '' }: MarkWatchedButtonProps) {
   const [open, setOpen] = useState(false)
   const [allDone, setAllDone] = useState(watched)
   const [states, setStates] = useState<Record<Service, ServiceState>>({
@@ -93,6 +97,7 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
     pmdb: { loading: false, done: false, error: false },
     mdblist: { loading: false, done: false, error: false },
     anilist: { loading: false, done: false, error: false },
+    jellyfin: { loading: false, done: false, error: false },
   })
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -118,6 +123,7 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
   if (pmdbConnected && Number.isFinite(tmdbId)) connectedServices.push('pmdb')
   if (mdblistConnected && (Number.isFinite(tmdbId) || imdbId)) connectedServices.push('mdblist')
   if (anilistConnected && isAnime && (anilistId || malId)) connectedServices.push('anilist')
+  if (sourceConnectionId && sourceItemId) connectedServices.push('jellyfin')
   const connectedServicesKey = connectedServices.join(',')
   const episodesSnapshot = JSON.stringify(episodes)
 
@@ -151,6 +157,10 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
         : episodeItems.map((item) => ({ ...baseLookup, season: item.season, episode: item.episode, absoluteEpisode: item.absoluteEpisode }))
 
     services.forEach((service) => {
+      if (service === 'jellyfin') {
+        setStates((previous) => ({ ...previous, jellyfin: { loading: false, done: watched, error: false, checking: false } }))
+        return
+      }
       setStates((previous) => ({
         ...previous,
         [service]: { ...previous[service], checking: true, error: false },
@@ -177,7 +187,7 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
     })
 
     return () => { cancelled = true }
-  }, [anilistId, appSeasonCounts, compact, connectedServicesKey, episode, episodesSnapshot, imdbId, isAnime, malId, mediaRef, mediaType, open])
+  }, [anilistId, appSeasonCounts, compact, connectedServicesKey, episode, episodesSnapshot, imdbId, isAnime, malId, mediaRef, mediaType, open, watched])
 
   useEffect(() => {
     if (!open) return
@@ -194,7 +204,15 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
       if (mediaType === 'series' && !episode && episodes.length === 0) {
         throw new Error('Cannot mark the series without loaded episode data.')
       }
-      if (service === 'trakt') {
+      if (service === 'jellyfin' && sourceConnectionId && sourceItemId) {
+        if (episode) {
+          await setJellyfinItemWatched(sourceConnectionId, sourceItemId, true, episode)
+        } else if (mediaType === 'series' && episodes.length > 0) {
+          await mapEpisodesWithConcurrency(episodes, (item) => setJellyfinItemWatched(sourceConnectionId, sourceItemId, true, item))
+        } else {
+          await setJellyfinItemWatched(sourceConnectionId, sourceItemId, true)
+        }
+      } else if (service === 'trakt') {
         if (mediaType === 'movie' && traktImdbId) {
           await traktMarkMovie(traktImdbId)
         } else if (episode && traktImdbId) {
@@ -313,7 +331,15 @@ export default function MarkWatchedButton({ mediaRef, mediaType, episode, episod
       if (mediaType === 'series' && !episode && episodes.length === 0 && !(service === 'trakt' && traktImdbId)) {
         throw new Error('Cannot remove series episode history without loaded episode data.')
       }
-      if (service === 'trakt') {
+      if (service === 'jellyfin' && sourceConnectionId && sourceItemId) {
+        if (episode) {
+          await setJellyfinItemWatched(sourceConnectionId, sourceItemId, false, episode)
+        } else if (mediaType === 'series' && episodes.length > 0) {
+          await mapEpisodesWithConcurrency(episodes, (item) => setJellyfinItemWatched(sourceConnectionId, sourceItemId, false, item))
+        } else {
+          await setJellyfinItemWatched(sourceConnectionId, sourceItemId, false)
+        }
+      } else if (service === 'trakt') {
         if (mediaType === 'movie' && traktImdbId) await traktUnmarkMovie(traktImdbId)
         else if (episode && traktImdbId) {
           const mapped = isAnime ? await resolveAnimeProviders(mediaRef, episode) : null

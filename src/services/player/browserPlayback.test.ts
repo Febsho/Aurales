@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AUTOPLAY_GESTURE_MESSAGE, browserPlaybackFailureMessage, isAutoplayGestureError, isMediaSessionExpired } from './browserPlayback'
+import { AUTOPLAY_GESTURE_MESSAGE, browserPlaybackFailureMessage, isAutoplayGestureError, isMediaSessionExpired, nextPlaybackConversionAfterDecodeFailure } from './browserPlayback'
+
+describe('browser decode fallback order', () => {
+  it('escalates from stream copy to audio-only and video only as the final step', () => {
+    expect(nextPlaybackConversionAfterDecodeFailure('remux')).toBe('audioAac')
+    expect(nextPlaybackConversionAfterDecodeFailure('audioAac')).toBe('h264Aac')
+    expect(nextPlaybackConversionAfterDecodeFailure('h264Aac')).toBeNull()
+  })
+})
 
 describe('browser playback failure diagnostics', () => {
   it('recognizes an expired media-worker session using Unix seconds', () => {

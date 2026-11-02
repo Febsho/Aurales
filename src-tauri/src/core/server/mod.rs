@@ -10,7 +10,7 @@ use crate::db::Database;
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -112,6 +112,17 @@ pub struct ServerCatalogItem {
     pub media_type: String,
     pub title: String,
     pub year: Option<i64>,
+    pub overview: Option<String>,
+    pub rating: Option<f64>,
+    pub critic_rating: Option<f64>,
+    pub runtime: Option<i64>,
+    pub release_date: Option<String>,
+    pub original_title: Option<String>,
+    pub certification: Option<String>,
+    pub tagline: Option<String>,
+    pub genres: Vec<String>,
+    pub studios: Vec<String>,
+    pub people: Vec<Value>,
     pub season: Option<i64>,
     pub episode: Option<i64>,
     pub parent_source_item_id: Option<String>,
@@ -130,6 +141,7 @@ pub struct ServerCatalogItem {
 pub struct ServerStreamRequest {
     pub media_type: String,
     pub media_id: String,
+    pub imdb_id: Option<String>,
     pub tmdb_id: Option<Value>,
     pub tvdb_id: Option<Value>,
     pub mal_id: Option<Value>,
@@ -138,6 +150,30 @@ pub struct ServerStreamRequest {
     pub episode: Option<i64>,
     pub source_connection_id: Option<String>,
     pub source_item_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportPlaybackRequest {
+    pub connection_id: String,
+    pub item_id: String,
+    pub media_source_id: Option<String>,
+    pub play_session_id: String,
+    pub position_ticks: i64,
+    pub runtime_ticks: Option<i64>,
+    pub event: String,
+    pub is_paused: bool,
+    pub play_method: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetWatchedRequest {
+    pub connection_id: String,
+    pub item_id: String,
+    pub watched: bool,
+    pub season: Option<i64>,
+    pub episode: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -164,6 +200,7 @@ pub struct ServerStream {
     pub bitrate: Option<i64>,
     pub hdr: Option<String>,
     pub media_source_id: Option<String>,
+    pub play_session_id: Option<String>,
     pub audio_tracks: Vec<Value>,
     pub subtitle_tracks: Vec<Value>,
     pub subtitles: Vec<Value>,
@@ -303,16 +340,19 @@ pub fn test_connection(
     };
     match outcome {
         Ok(identity) => {
-            if let Some(token) = identity.access_token.as_ref() {
-                let credential = secret.unwrap_or_default();
-                let _ = store_secret(
-                    &id,
-                    &StoredSecret {
-                        credential,
-                        access_token: Some(token.clone()),
-                        user_id: identity.user_id.clone(),
-                    },
-                );
+            let credential = secret.unwrap_or_default();
+            if let Err(error) = store_secret(
+                &id,
+                &StoredSecret {
+                    credential,
+                    access_token: identity.access_token.clone(),
+                    user_id: identity.user_id.clone(),
+                },
+            ) {
+                if let Some(db) = db {
+                    let _ = update_status(db, &id, "error", Some(&error), None, None, true);
+                }
+                return failed(format!("Connection succeeded, but secure credentials could not be saved: {error}"));
             }
             if let Some(db) = db {
                 let _ = update_status(
@@ -370,6 +410,16 @@ pub fn refresh_catalog(db: &Database, id: &str) -> Result<RefreshResult, String>
     };
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let previous_collection_ids = scan.collection_updates.iter().map(|update| {
+        let previous_raw = tx.query_row(
+            "SELECT raw_json FROM server_catalog_items WHERE connection_id=?1 AND source_item_id=?2",
+            params![id, update.source_item_id],
+            |row| row.get::<_, String>(0),
+        ).optional().ok().flatten();
+        let previous_name = previous_raw.and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .and_then(|raw| raw.get("Name").and_then(Value::as_str).map(str::to_string));
+        (update.catalog_id.clone(), previous_name.map(|name| format!("collection:{name}")))
+    }).collect::<Vec<_>>();
     let mut touched = 0u64;
     for item in &scan.items {
         let catalogs = serde_json::to_string(&item.catalog_ids).map_err(|e| e.to_string())?;
@@ -377,6 +427,32 @@ pub fn refresh_catalog(db: &Database, id: &str) -> Result<RefreshResult, String>
         tx.execute("INSERT INTO server_catalog_items (connection_id,source_item_id,catalog_ids_json,media_type,title,year,season,episode,parent_source_item_id,tmdb_id,tvdb_id,imdb_id,anilist_id,mal_id,poster,backdrop,updated_marker,raw_json,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,datetime('now')) ON CONFLICT(connection_id,source_item_id) DO UPDATE SET catalog_ids_json=excluded.catalog_ids_json,media_type=excluded.media_type,title=excluded.title,year=excluded.year,season=excluded.season,episode=excluded.episode,parent_source_item_id=excluded.parent_source_item_id,tmdb_id=excluded.tmdb_id,tvdb_id=excluded.tvdb_id,imdb_id=excluded.imdb_id,anilist_id=excluded.anilist_id,mal_id=excluded.mal_id,poster=excluded.poster,backdrop=excluded.backdrop,updated_marker=excluded.updated_marker,raw_json=excluded.raw_json,updated_at=datetime('now')",
             params![id,item.source_item_id,catalogs,item.media_type,item.title,item.year,item.season,item.episode,item.parent_source_item_id,item.tmdb_id,item.tvdb_id,item.imdb_id,item.anilist_id,item.mal_id,item.poster,item.backdrop,item.raw.get("updatedMarker").and_then(Value::as_str),raw]).map_err(|e| e.to_string())?;
         touched += 1;
+    }
+    // Replace membership for each BoxSet returned by this scan. This also
+    // handles incremental refreshes and renamed collections without leaving
+    // removed titles in stale shelves.
+    for (update, (new_catalog_id, previous_catalog_id)) in scan.collection_updates.iter().zip(previous_collection_ids) {
+        for catalog_id in [Some(new_catalog_id.as_str()), previous_catalog_id.as_deref()].into_iter().flatten() {
+            tx.execute(
+                "UPDATE server_catalog_items SET catalog_ids_json=COALESCE((SELECT json_group_array(value) FROM json_each(server_catalog_items.catalog_ids_json) WHERE value<>?2),'[]') WHERE connection_id=?1",
+                params![id, catalog_id],
+            ).map_err(|e| e.to_string())?;
+        }
+        for member_id in &update.member_item_ids {
+            let mut catalogs: Vec<String> = tx.query_row(
+                "SELECT catalog_ids_json FROM server_catalog_items WHERE connection_id=?1 AND source_item_id=?2",
+                params![id, member_id],
+                |row| row.get::<_, String>(0),
+            ).optional().map_err(|e| e.to_string())?
+                .and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default();
+            if !catalogs.iter().any(|catalog| catalog == &update.catalog_id) {
+                catalogs.push(update.catalog_id.clone());
+                tx.execute(
+                    "UPDATE server_catalog_items SET catalog_ids_json=?3 WHERE connection_id=?1 AND source_item_id=?2",
+                    params![id, member_id, serde_json::to_string(&catalogs).map_err(|e| e.to_string())?],
+                ).map_err(|e| e.to_string())?;
+            }
+        }
     }
     let removed = if scan.complete {
         let ids: HashSet<&str> = scan
@@ -495,7 +571,10 @@ pub fn catalog_items(
             )
             .map_err(|e| e.to_string())?;
         rows.filter_map(Result::ok)
-            .filter(|item| item.catalog_ids.iter().any(|id| id == catalog_id))
+            .filter(|item| {
+                item.catalog_ids.iter().any(|id| id == catalog_id)
+                    && (!catalog_id.starts_with("collection:") || matches!(item.media_type.as_str(), "movie" | "series"))
+            })
             .collect::<Vec<_>>()
     };
     let mut items = items
@@ -534,7 +613,7 @@ pub fn search_catalogs(db: &Database, query: &str) -> Result<Vec<ServerCatalogIt
     for connection in connections.into_iter().filter(|v| v.enabled) {
         let secret = load_secret(&connection.id)?.unwrap_or_default();
         let conn = db.conn.lock().map_err(|e| e.to_string())?;
-        let mut stmt=conn.prepare("SELECT connection_id,source_item_id,catalog_ids_json,media_type,title,year,season,episode,parent_source_item_id,tmdb_id,tvdb_id,imdb_id,anilist_id,mal_id,poster,backdrop,raw_json FROM server_catalog_items WHERE connection_id=?1 AND lower(title) LIKE ?2 ORDER BY title COLLATE NOCASE LIMIT 100").map_err(|e|e.to_string())?;
+        let mut stmt=conn.prepare("SELECT connection_id,source_item_id,catalog_ids_json,media_type,title,year,season,episode,parent_source_item_id,tmdb_id,tvdb_id,imdb_id,anilist_id,mal_id,poster,backdrop,raw_json FROM server_catalog_items WHERE connection_id=?1 AND media_type IN ('movie','series') AND (lower(title) LIKE ?2 OR lower(coalesce(json_extract(raw_json,'$.OriginalTitle'),'')) LIKE ?2 OR EXISTS (SELECT 1 FROM json_each(raw_json,'$.Genres') AS genre WHERE lower(CAST(genre.value AS TEXT)) LIKE ?2) OR EXISTS (SELECT 1 FROM json_each(raw_json,'$.Tags') AS tag WHERE lower(CAST(tag.value AS TEXT)) LIKE ?2) OR EXISTS (SELECT 1 FROM json_each(raw_json,'$.People') AS person WHERE lower(coalesce(json_extract(person.value,'$.Name'),'')) LIKE ?2 OR lower(coalesce(json_extract(person.value,'$.Role'),'')) LIKE ?2)) ORDER BY title COLLATE NOCASE LIMIT 100").map_err(|e|e.to_string())?;
         let pattern = format!("%{needle}%");
         let rows = stmt
             .query_map(params![connection.id, pattern], catalog_item_from_row)
@@ -573,6 +652,139 @@ pub fn streams(db: &Database, request: ServerStreamRequest) -> Result<Vec<Server
     Ok(result)
 }
 
+pub fn report_playback(db: &Database, request: ReportPlaybackRequest) -> Result<(), String> {
+    let connection = get_connection(db, &request.connection_id)?
+        .ok_or_else(|| "Server connection not found".to_string())?;
+    if !connection.enabled || connection.kind != "jellyfin" {
+        return Err("Playback reporting requires an enabled Jellyfin connection".into());
+    }
+    if request.item_id.trim().is_empty() || request.play_session_id.trim().is_empty() {
+        return Err("Jellyfin playback item and session IDs are required".into());
+    }
+    if request.position_ticks < 0 {
+        return Err("Jellyfin playback position cannot be negative".into());
+    }
+    if request.runtime_ticks.is_some_and(|ticks| ticks < 0) {
+        return Err("Jellyfin runtime cannot be negative".into());
+    }
+    let secret = load_secret(&request.connection_id)?
+        .ok_or_else(|| "Jellyfin credentials are missing".to_string())?;
+    jellyfin::report_playback(
+        &connection,
+        secret.access_token.as_deref().unwrap_or(&secret.credential),
+        &request,
+    )?;
+    let completed = request.event == "stop"
+        && request.runtime_ticks.is_some_and(|runtime| {
+            runtime > 0 && request.position_ticks as f64 / runtime as f64 >= 0.80
+        });
+    // Jellyfin sessions do not always flip Played for virtual/AIOMetadata
+    // items when the player stops. Persist the completed episode explicitly.
+    if completed {
+        if let Some(user_id) = secret.user_id.as_deref() {
+            jellyfin::set_item_watched(
+                &connection,
+                secret.access_token.as_deref().unwrap_or(&secret.credential),
+                user_id,
+                &request.item_id,
+                true,
+            )?;
+        }
+    }
+    update_cached_user_data(
+        db,
+        &request.connection_id,
+        &request.item_id,
+        Some(request.position_ticks),
+        completed.then_some(true),
+    )
+}
+
+pub fn set_item_watched(db: &Database, request: SetWatchedRequest) -> Result<(), String> {
+    let connection = get_connection(db, &request.connection_id)?
+        .ok_or_else(|| "Server connection not found".to_string())?;
+    if !connection.enabled || connection.kind != "jellyfin" {
+        return Err("Watched status updates require an enabled Jellyfin connection".into());
+    }
+    let secret = load_secret(&request.connection_id)?
+        .ok_or_else(|| "Jellyfin credentials are missing".to_string())?;
+    let user_id = secret.user_id.ok_or_else(|| "Jellyfin user identity is missing; reconnect this account".to_string())?;
+    let item_ids = if let (Some(season), Some(episode)) = (request.season, request.episode) {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT source_item_id FROM server_catalog_items WHERE connection_id=?1 AND media_type='episode' AND season=?3 AND episode=?4 AND (source_item_id=?2 OR parent_source_item_id=?2 OR json_extract(raw_json,'$.SeriesId')=?2)")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![request.connection_id, request.item_id, season, episode], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        let found = rows.filter_map(Result::ok).collect::<Vec<_>>();
+        if found.is_empty() {
+            return Err(format!("Jellyfin episode S{season:02}E{episode:02} was not found in the cached catalog"));
+        }
+        found
+    } else {
+        vec![request.item_id]
+    };
+    for item_id in item_ids {
+        jellyfin::set_item_watched(
+            &connection,
+            secret.access_token.as_deref().unwrap_or(&secret.credential),
+            &user_id,
+            &item_id,
+            request.watched,
+        )?;
+        update_cached_user_data(
+            db,
+            &request.connection_id,
+            &item_id,
+            Some(0),
+            Some(request.watched),
+        )?;
+    }
+    Ok(())
+}
+
+fn update_cached_user_data(
+    db: &Database,
+    connection_id: &str,
+    item_id: &str,
+    position_ticks: Option<i64>,
+    played: Option<bool>,
+) -> Result<(), String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let row = conn.query_row(
+        "SELECT catalog_ids_json,raw_json FROM server_catalog_items WHERE connection_id=?1 AND source_item_id=?2",
+        params![connection_id, item_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    ).optional().map_err(|e| e.to_string())?;
+    let Some((catalogs_json, raw_json)) = row else { return Ok(()) };
+    let mut catalogs: Vec<String> = serde_json::from_str(&catalogs_json).unwrap_or_default();
+    let mut raw: Value = serde_json::from_str(&raw_json).unwrap_or_else(|_| json!({}));
+    let user_data = raw
+        .as_object_mut()
+        .ok_or_else(|| "Cached Jellyfin item metadata is invalid".to_string())?
+        .entry("UserData")
+        .or_insert_with(|| json!({}));
+    if !user_data.is_object() { *user_data = json!({}); }
+    if let Some(position) = position_ticks {
+        user_data["PlaybackPositionTicks"] = json!(position.max(0));
+    }
+    if let Some(played) = played {
+        user_data["Played"] = json!(played);
+        if played {
+            user_data["PlaybackPositionTicks"] = json!(0);
+        }
+    }
+    user_data["LastPlayedDate"] = json!(Utc::now().to_rfc3339());
+    let position = user_data["PlaybackPositionTicks"].as_i64().unwrap_or(0);
+    let is_played = user_data["Played"].as_bool().unwrap_or(false);
+    catalogs.retain(|catalog| catalog != "continue-watching");
+    if position > 0 && !is_played { catalogs.push("continue-watching".into()); }
+    conn.execute(
+        "UPDATE server_catalog_items SET catalog_ids_json=?3,raw_json=?4,updated_at=datetime('now') WHERE connection_id=?1 AND source_item_id=?2",
+        params![connection_id, item_id, serde_json::to_string(&catalogs).map_err(|e| e.to_string())?, serde_json::to_string(&raw).map_err(|e| e.to_string())?],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn find_stream_items(
     db: &Database,
     request: &ServerStreamRequest,
@@ -588,7 +800,7 @@ fn find_stream_items(
                 .unwrap_or(true)
     }) {
         let conn = db.conn.lock().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare("SELECT connection_id,source_item_id,catalog_ids_json,media_type,title,year,season,episode,parent_source_item_id,tmdb_id,tvdb_id,imdb_id,anilist_id,mal_id,poster,backdrop,raw_json FROM server_catalog_items WHERE connection_id=?1 AND (source_item_id=?2 OR source_item_id=?3 OR parent_source_item_id=?3 OR tmdb_id=?2 OR tvdb_id=?2 OR anilist_id=?2 OR tmdb_id=?4 OR tvdb_id=?5 OR anilist_id=?6 OR mal_id=?7)").map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT connection_id,source_item_id,catalog_ids_json,media_type,title,year,season,episode,parent_source_item_id,tmdb_id,tvdb_id,imdb_id,anilist_id,mal_id,poster,backdrop,raw_json FROM server_catalog_items WHERE connection_id=?1 AND (source_item_id=?2 OR source_item_id=?3 OR parent_source_item_id=?3 OR json_extract(raw_json,'$.SeriesId')=?3 OR tmdb_id=?2 OR tvdb_id=?2 OR anilist_id=?2 OR tmdb_id=?4 OR tvdb_id=?5 OR anilist_id=?6 OR mal_id=?7 OR imdb_id=?8)").map_err(|e| e.to_string())?;
         let tmdb_id = requested_id(&request.tmdb_id);
         let tvdb_id = requested_id(&request.tvdb_id);
         let anilist_id = requested_id(&request.anilist_id);
@@ -603,6 +815,7 @@ fn find_stream_items(
                     tvdb_id,
                     anilist_id,
                     mal_id,
+                    request.imdb_id.as_deref(),
                 ],
                 catalog_item_from_row,
             )
@@ -612,10 +825,16 @@ fn find_stream_items(
                 .source_item_id
                 .as_ref()
                 .map(|v| {
-                    v == &item.source_item_id
-                        || (item.parent_source_item_id.as_ref() == Some(v)
-                            && item.season == request.season
-                            && item.episode == request.episode)
+                    if let (Some(season), Some(episode)) = (request.season, request.episode) {
+                        item.media_type == "episode"
+                            && (v == &item.source_item_id
+                                || item.parent_source_item_id.as_ref() == Some(v)
+                                || item.raw.get("SeriesId").and_then(Value::as_str) == Some(v))
+                            && item.season == Some(season)
+                            && item.episode == Some(episode)
+                    } else {
+                        v == &item.source_item_id
+                    }
                 })
                 .unwrap_or(false);
             let canonical = (request.media_id == item.id
@@ -625,7 +844,11 @@ fn find_stream_items(
             let external = same_value_id(&request.tmdb_id, &item.tmdb_id)
                 || same_value_id(&request.tvdb_id, &item.tvdb_id)
                 || same_value_id(&request.anilist_id, &item.anilist_id)
-                || same_value_id(&request.mal_id, &item.mal_id);
+                || same_value_id(&request.mal_id, &item.mal_id)
+                || request
+                    .imdb_id
+                    .as_deref()
+                    .is_some_and(|id| item.imdb_id.as_deref() == Some(id));
             let episode = item.season == request.season && item.episode == request.episode;
             if exact
                 || (canonical && (request.season.is_none() || episode))
@@ -690,6 +913,8 @@ fn catalog_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerCata
     let tmdb_id: Option<String> = row.get(9)?;
     let tvdb_id: Option<String> = row.get(10)?;
     let anilist_id: Option<String> = row.get(12)?;
+    let raw_value: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+    let raw_runtime = raw_value.get("RunTimeTicks").and_then(Value::as_i64).map(|ticks| ticks / 10_000_000);
     Ok(ServerCatalogItem {
         source_addon_id: format!("server:{connection_id}"),
         source_addon_item_id: source_item_id.clone(),
@@ -698,6 +923,7 @@ fn catalog_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerCata
             .clone()
             .or(tvdb_id.clone())
             .or(anilist_id.clone())
+            .or_else(|| row.get::<_, Option<String>>(11).ok().flatten())
             .unwrap_or_else(|| source_item_id.clone()),
         item_type: if media_type == "episode" {
             "series".into()
@@ -712,6 +938,17 @@ fn catalog_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerCata
         media_type,
         title: row.get(4)?,
         year: row.get(5)?,
+        overview: raw_value.get("Overview").and_then(Value::as_str).map(str::to_string),
+        rating: raw_value.get("CommunityRating").and_then(Value::as_f64),
+        critic_rating: raw_value.get("CriticRating").and_then(Value::as_f64),
+        runtime: raw_runtime,
+        release_date: raw_value.get("PremiereDate").and_then(Value::as_str).map(str::to_string),
+        original_title: raw_value.get("OriginalTitle").and_then(Value::as_str).map(str::to_string),
+        certification: raw_value.get("OfficialRating").and_then(Value::as_str).map(str::to_string),
+        tagline: raw_value.get("Taglines").and_then(Value::as_array).and_then(|values| values.iter().find_map(Value::as_str)).map(str::to_string),
+        genres: json_string_array(&raw_value, "Genres"),
+        studios: raw_value.get("Studios").and_then(Value::as_array).map(|values| values.iter().filter_map(|value| value.get("Name").and_then(Value::as_str).map(str::to_string)).collect()).unwrap_or_default(),
+        people: raw_value.get("People").and_then(Value::as_array).cloned().unwrap_or_default(),
         season: row.get(6)?,
         episode: row.get(7)?,
         parent_source_item_id: row.get(8)?,
@@ -722,8 +959,14 @@ fn catalog_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerCata
         mal_id: row.get(13)?,
         poster: row.get(14)?,
         backdrop: row.get(15)?,
-        raw: serde_json::from_str(&raw).unwrap_or(Value::Null),
+        raw: raw_value,
     })
+}
+
+fn json_string_array(value: &Value, key: &str) -> Vec<String> {
+    value.get(key).and_then(Value::as_array)
+        .map(|values| values.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default()
 }
 
 fn normalize_request(request: &mut SaveServerConnectionRequest) -> Result<(), String> {
@@ -899,6 +1142,12 @@ pub(super) struct ScanResult {
     pub items: Vec<ServerCatalogItem>,
     pub cursor: Option<String>,
     pub complete: bool,
+    pub collection_updates: Vec<CollectionMembershipUpdate>,
+}
+pub(super) struct CollectionMembershipUpdate {
+    pub source_item_id: String,
+    pub catalog_id: String,
+    pub member_item_ids: Vec<String>,
 }
 pub(super) fn now_cursor() -> String {
     Utc::now().to_rfc3339()
