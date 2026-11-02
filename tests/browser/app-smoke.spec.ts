@@ -464,8 +464,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(contentTypeControls.getByRole('button', { name: 'Anime' })).toHaveAttribute('aria-pressed', 'false')
   await expect.poll(() => tmdbRequestPaths.has('/3/trending/movie/week')).toBe(true)
   await expect(page.getByRole('heading', { name: /Settle in,/ })).toBeVisible()
-  const heroSpotlight = page.locator('.discover-weekend-plan')
-  const obsessionCard = page.locator('.discover-next__card')
+  const heroSpotlight = page.locator('.discover-next-hero')
+  const obsessionCard = heroSpotlight
   await expect(heroSpotlight.locator('.discover-spotlight__eyebrow')).toContainText('Tonight')
   await expect(heroSpotlight.locator('.discover-spotlight__ambient img')).toHaveAttribute('src', /discovery-fixture-backdrop/)
   const librariesShelf = page.locator('.discover-libraries')
@@ -478,20 +478,16 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(calendar.getByRole('button', { name: 'Next 30 days' })).toHaveAttribute('aria-pressed', 'true')
   await expect(page.getByRole('heading', { name: 'Continue Watching', exact: true })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Your Weekend Plan', exact: true })).toBeVisible()
-  const obsessionLayout = await obsessionCard.evaluate((card) => {
-    const poster = card.querySelector<HTMLElement>('.discover-next__poster')!.getBoundingClientRect()
-    const copy = card.querySelector<HTMLElement>('.discover-next__copy')!.getBoundingClientRect()
+  const obsessionLayout = await heroSpotlight.evaluate((card) => {
+    const poster = card.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
+    const copy = card.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
     return { viewport: document.documentElement.clientWidth, card: card.getBoundingClientRect().toJSON(), poster: poster.toJSON(), copy: copy.toJSON() }
   })
   expect(obsessionLayout.card.left, 'the editorial pick should align with the mobile page gutter').toBeGreaterThanOrEqual(12)
-  expect(obsessionLayout.poster.width, 'the editorial poster should be large enough to match the video reference').toBeGreaterThanOrEqual(100)
+  expect(obsessionLayout.poster.width, 'the editorial poster should remain visible in the mobile spotlight').toBeGreaterThanOrEqual(84)
   expect(obsessionLayout.poster.width).toBeLessThanOrEqual(124)
-  expect(obsessionLayout.poster.right).toBeLessThanOrEqual(obsessionLayout.copy.left)
-  expect(obsessionLayout.copy.right).toBeLessThanOrEqual(obsessionLayout.viewport - 10)
-  await expect(heroSpotlight.getByRole('button', { name: 'Another option' })).toBeVisible()
-  const librariesTop = (await librariesShelf.boundingBox())!.y
-  const calendarTop = (await calendar.boundingBox())!.y
+  expect(obsessionLayout.poster.right).toBeLessThanOrEqual(obsessionLayout.card.right - 10)
+  expect(obsessionLayout.copy.right).toBeLessThanOrEqual(obsessionLayout.card.right - 8)
   const obsessionTop = (await page.getByRole('heading', { name: 'Your Next Obsession' }).boundingBox())!.y
   const trendingTop = (await page.getByRole('heading', { name: 'OR TRY', exact: true }).boundingBox())!.y
   const topTenTop = (await page.getByRole('heading', { name: 'Top 10 For You', exact: true }).boundingBox())!.y
@@ -499,10 +495,10 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const obsessionHeading = await page.getByRole('heading', { name: 'Your Next Obsession' }).boundingBox()
   const weekendCard = await heroSpotlight.boundingBox()
   const browseControls = await page.locator('.discover-page__tabs').boundingBox()
-  expect(librariesTop).toBeLessThan(calendarTop)
-  expect(calendarTop).toBeLessThan(obsessionTop)
   expect(obsessionTop).toBeLessThan(trendingTop)
   expect(trendingTop).toBeLessThan(topTenTop)
+  expect(topTenTop).toBeLessThan((await librariesShelf.boundingBox())!.y)
+  expect((await librariesShelf.boundingBox())!.y).toBeLessThan((await calendar.boundingBox())!.y)
   await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toHaveCount(0)
   await expect(heroSpotlight.getByRole('button', { name: 'Details' })).toBeVisible()
   const firstSpotlightTitle = await obsessionCard.getAttribute('data-title')
@@ -518,7 +514,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.keyboard.press('Escape')
   await expect(page.getByRole('dialog', { name: 'Discovery settings' })).toHaveCount(0)
   await expect(discoverySettings).toBeFocused()
-  await expect(page.locator('.discover-weekend-plan__heading').getByText('A movie for tonight').first()).toBeVisible()
+  await expect(page.locator('.discover-spotlight-heading').getByText('A movie for tonight').first()).toBeVisible()
   expect(profileWelcomeHeading).not.toBeNull()
   expect(obsessionHeading).not.toBeNull()
   expect(weekendCard).not.toBeNull()
@@ -599,15 +595,13 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
   const trendingRailOrder = await page.evaluate(() => {
     const trend = Array.from(document.querySelectorAll<HTMLElement>('.discover-shelf h2')).find((heading) => heading.textContent?.trim() === 'OR TRY')
-    const obsession = document.querySelector<HTMLElement>('.discover-next__card')
-    const spotlight = document.querySelector<HTMLElement>('.discover-weekend-plan')
+    const obsession = document.querySelector<HTMLElement>('.discover-next-hero')
     const topTen = Array.from(document.querySelectorAll<HTMLElement>('.discover-shelf h2')).find((heading) => heading.textContent?.trim() === 'Top 10 For You')
-    return Boolean(trend && spotlight && topTen && obsession
+    return Boolean(trend && topTen && obsession
       && (obsession.compareDocumentPosition(trend) & Node.DOCUMENT_POSITION_FOLLOWING)
-      && (trend.compareDocumentPosition(topTen) & Node.DOCUMENT_POSITION_FOLLOWING)
-      && (topTen.compareDocumentPosition(spotlight) & Node.DOCUMENT_POSITION_FOLLOWING))
+      && (trend.compareDocumentPosition(topTen) & Node.DOCUMENT_POSITION_FOLLOWING))
   })
-  expect(trendingRailOrder, 'the editorial extra should lead into OR TRY and Top 10 before the separate Weekend Plan').toBe(true)
+  expect(trendingRailOrder, 'the independent editorial pick should lead into OR TRY and Top 10').toBe(true)
   const pickerBeforeShelves = await page.evaluate(() => {
     const picker = document.querySelector('#discover-refine-title')
     const topTen = Array.from(document.querySelectorAll('.discover-shelf h2')).find((heading) => heading.textContent?.trim() === 'Top 10 For You')
@@ -687,7 +681,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const surpriseButton = page.getByRole('button', { name: /surprise me/i })
   await expect(surpriseButton).toBeEnabled()
   const startingTitle = await obsessionCard.getAttribute('data-title')
-  const startingWeekendTitle = await heroSpotlight.locator('.discover-spotlight__copy').getAttribute('data-title')
+  const startingHeroTitle = await heroSpotlight.getAttribute('data-title')
   // Trigger in-page because a real Playwright click waits for smooth-scroll completion,
   // which is longer than the roulette and can miss the transient busy state.
   await surpriseButton.evaluate((button: HTMLButtonElement) => button.click())
@@ -700,7 +694,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const firstPickerTitle = await pickerDialog.locator('.discover-picker__copy').getAttribute('data-title')
   expect(firstPickerTitle).not.toBe(startingTitle)
   await expect(obsessionCard).toHaveAttribute('data-title', startingTitle!)
-  await expect(heroSpotlight.locator('.discover-spotlight__copy')).toHaveAttribute('data-title', startingWeekendTitle!)
+  await expect(heroSpotlight).toHaveAttribute('data-title', startingHeroTitle!)
   await expect(surpriseButton).toBeEnabled()
   await page.emulateMedia({ reducedMotion: 'reduce' })
   const reducedMotionTitle = await pickerDialog.locator('.discover-picker__copy').getAttribute('data-title')
@@ -714,8 +708,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.locator('.discover-picker-backdrop')).toHaveClass(/is-closing/)
   await expect(pickerDialog).toHaveCount(0)
   await expect(surpriseButton).toBeFocused()
-  await heroSpotlight.getByRole('button', { name: 'Another option' }).click()
-  await expect.poll(() => heroSpotlight.locator('.discover-spotlight__copy').getAttribute('data-title')).not.toBe(startingWeekendTitle)
+  await expect(heroSpotlight).toHaveAttribute('data-title', startingHeroTitle!)
   await expect(obsessionCard).toHaveAttribute('data-title', startingTitle!)
   await surpriseButton.evaluate((button: HTMLButtonElement) => button.click())
   await expect(pickerDialog).toBeVisible()
@@ -857,7 +850,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.evaluate(() => window.scrollTo(0, 0))
   await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
-  await expect(page.locator('.discover-weekend-plan').getByRole('button', { name: 'Another option' })).toBeVisible()
+  await expect(page.locator('.discover-next-hero').getByRole('button', { name: 'Not for me' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Surprise Me' })).toBeVisible()
   const desktopCardMotion = await page.locator('.discover-shelf--trending .media-row-card-slot > button').first().evaluate((card) => ({
     transitionDuration: getComputedStyle(card).transitionDuration,
@@ -895,11 +888,11 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     const desktopBounds = await page.evaluate(() => {
       const viewport = document.documentElement.clientWidth
       const page = document.querySelector<HTMLElement>('.discover-page')!
-      const hero = document.querySelector<HTMLElement>('.discover-weekend-plan')!
+      const hero = document.querySelector<HTMLElement>('.discover-next-hero')!
       const copy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
       const poster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
       const contentSections = Array.from(page.querySelectorAll<HTMLElement>(
-        '.discover-next, .discover-weekend-plan, .discover-shelf, .discover-refine, .discover-genres, .discover-binge, .discover-more',
+        '.discover-next-hero, .discover-shelf, .discover-refine, .discover-genres, .discover-binge, .discover-more',
       )).map((section) => section.getBoundingClientRect())
       return {
         viewport,
@@ -921,7 +914,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     const desktopBounds = await page.evaluate(() => {
       const viewport = document.documentElement.clientWidth
       const page = document.querySelector<HTMLElement>('.discover-page')!
-      const hero = document.querySelector<HTMLElement>('.discover-weekend-plan')!
+      const hero = document.querySelector<HTMLElement>('.discover-next-hero')!
       const copy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
       const poster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
       return {

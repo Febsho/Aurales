@@ -478,10 +478,8 @@ export default function DiscoverPage() {
   watchProgressRef.current = watchProgress
   const [starterGenres]=useState<number[]>(()=>{try{const saved=JSON.parse(localStorage.getItem('aurales_discovery_starter_genres')||'[]');return Array.isArray(saved)?saved.filter((value):value is number=>Number.isFinite(value)):[]}catch{return[]}})
   const [pickerSelectionKey, setPickerSelectionKey] = useState<string | null>(null)
-  const [weekendPlanKey, setWeekendPlanKey] = useState<string | null>(null)
-  const weekendPlanScopeRef = useRef<string | null>(null)
-  const [weekendLogoError,setWeekendLogoError]=useState(false)
   const [pickerLogoError,setPickerLogoError]=useState(false)
+  const [heroLogoError,setHeroLogoError]=useState(false)
   const [heroArt,setHeroArt]=useState<Record<string,{poster?:string;backdrop?:string;logo?:string}>>({})
   const [loadedHeroBackdrop,setLoadedHeroBackdrop]=useState<string | null>(null)
   const [surpriseSpinning, setSurpriseSpinning] = useState(false)
@@ -1153,18 +1151,6 @@ export default function DiscoverPage() {
   }, [heroMediaKey, ranked])
   const pickerRecommendation = (pickerSelectionKey ? pickerPool.find((entry) => mediaIdentity(entry.item) === pickerSelectionKey) : undefined) || pickerPool[0]
   const pickerItem = pickerRecommendation?.item
-  const weekendPlanRecommendation = useMemo(() => {
-    return weekendPlanKey ? pickerPool.find((entry) => mediaIdentity(entry.item) === weekendPlanKey) : undefined
-  }, [pickerPool, weekendPlanKey])
-  const weekendPlanItem = weekendPlanRecommendation?.item
-  useEffect(() => {
-    const scope = `${tab}:${mode}:${discoveryQueryKey}`
-    const scopeChanged = weekendPlanScopeRef.current !== scope
-    if (scopeChanged) weekendPlanScopeRef.current = scope
-    if (!pickerPool.length || (!scopeChanged && weekendPlanKey && pickerPool.some((entry) => mediaIdentity(entry.item) === weekendPlanKey))) return
-    const pick = chooseSurpriseRecommendation(pickerPool)
-    if (pick) setWeekendPlanKey(mediaIdentity(pick.item))
-  }, [discoveryQueryKey, mode, pickerPool, tab, weekendPlanKey])
   const tastePickPool = useMemo(() => {
     if (!ranked.length) return []
     const query = tasteQuery.trim().toLocaleLowerCase()
@@ -1173,14 +1159,15 @@ export default function DiscoverPage() {
       .map((entry) => entry.item)
   }, [ranked, pickedIds, tasteQuery])
   const tastePickCandidates = useMemo(() => tastePickPool.slice(0, 10 + pickOffset), [tastePickPool, pickOffset])
-  useEffect(() => { setPickerSelectionKey(null); setWeekendLogoError(false); setPickerLogoError(false) }, [tab, mode, discoveryQueryKey])
-  useEffect(() => { setWeekendLogoError(false); setLoadedHeroBackdrop(null) }, [weekendPlanItem?.id])
+  useEffect(() => { setPickerSelectionKey(null); setPickerLogoError(false); setHeroLogoError(false) }, [tab, mode, discoveryQueryKey])
+  useEffect(() => { setHeroLogoError(false) }, [heroItem?.id])
+  useEffect(() => { setLoadedHeroBackdrop(null) }, [heroItem?.id])
   useEffect(() => { setPickerLogoError(false) }, [pickerItem?.id])
 
   // Resolve the two editorial surfaces independently from the roulette.
   useEffect(() => {
     let cancelled = false
-    const featuredItems = [heroItem, weekendPlanItem].filter((item): item is SearchResult => Boolean(item))
+    const featuredItems = [heroItem].filter((item): item is SearchResult => Boolean(item))
     void Promise.all(featuredItems.map(async (item) => {
       const key = String(item.id)
       if (heroArt[key]) return
@@ -1190,7 +1177,7 @@ export default function DiscoverPage() {
       } catch { /* provider artwork is optional */ }
     }))
     return () => { cancelled = true }
-  }, [heroItem, heroArt, weekendPlanItem])
+  }, [heroItem, heroArt])
 
   useEffect(() => {
     let cancelled = false
@@ -1367,11 +1354,9 @@ export default function DiscoverPage() {
 
   const openItemDetail = (item: SearchResult, autoPlay = false) => navigate(item.type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`, { state: { ...item, autoPlay } })
   const openHeroDetail = (autoPlay = false) => { if (heroRecommendation) openItemDetail(heroRecommendation.item, autoPlay) }
-  const openWeekendPlanDetail = (autoPlay = false) => { if (weekendPlanItem) openItemDetail(weekendPlanItem, autoPlay) }
   const heroPoster = heroRecommendation ? (heroRecommendation.item.poster || heroArt[String(heroRecommendation.item.id)]?.poster || heroRecommendation.item.backdrop || heroArt[String(heroRecommendation.item.id)]?.backdrop) : undefined
-  const weekendPlanLogo = weekendPlanRecommendation ? (heroArt[String(weekendPlanRecommendation.item.id)]?.logo || weekendPlanRecommendation.item.logo) : undefined
-  const weekendPlanPoster = weekendPlanRecommendation ? (weekendPlanRecommendation.item.poster || heroArt[String(weekendPlanRecommendation.item.id)]?.poster || weekendPlanRecommendation.item.backdrop || heroArt[String(weekendPlanRecommendation.item.id)]?.backdrop) : undefined
-  const weekendPlanBackdrop = weekendPlanRecommendation ? (weekendPlanRecommendation.item.backdrop || heroArt[String(weekendPlanRecommendation.item.id)]?.backdrop || weekendPlanRecommendation.item.poster || heroArt[String(weekendPlanRecommendation.item.id)]?.poster) : undefined
+  const heroLogo = heroRecommendation ? (heroArt[String(heroRecommendation.item.id)]?.logo || heroRecommendation.item.logo) : undefined
+  const heroBackdrop = heroRecommendation ? (heroRecommendation.item.backdrop || heroArt[String(heroRecommendation.item.id)]?.backdrop || heroRecommendation.item.poster || heroArt[String(heroRecommendation.item.id)]?.poster) : undefined
   const pickerLogo = pickerRecommendation ? (heroArt[String(pickerRecommendation.item.id)]?.logo || pickerRecommendation.item.logo) : undefined
   const pickerPoster = pickerRecommendation ? (pickerRecommendation.item.poster || heroArt[String(pickerRecommendation.item.id)]?.poster || pickerRecommendation.item.backdrop || heroArt[String(pickerRecommendation.item.id)]?.backdrop) : undefined
   const pickerBackdrop = pickerRecommendation ? (pickerRecommendation.item.backdrop || heroArt[String(pickerRecommendation.item.id)]?.backdrop || pickerRecommendation.item.poster || heroArt[String(pickerRecommendation.item.id)]?.poster) : undefined
@@ -1412,29 +1397,33 @@ export default function DiscoverPage() {
             <button ref={surpriseButtonRef} className="discover-surprise-trigger" type="button" onClick={triggerSurprise} disabled={pickerPool.length < 2 || surpriseSpinning} aria-busy={surpriseSpinning}><Shuffle size={16} aria-hidden="true" /> <span>{surpriseSpinning ? 'Choosing…' : 'Surprise Me'}</span></button>
             <button ref={preferencesButtonRef} className="discover-preferences-trigger" type="button" onClick={() => setPreferencesOpen(true)} aria-label="Discovery settings"><Settings size={18} aria-hidden="true" /></button>
           </div>
-          {viewState === 'content' && <DiscoveryReveal><DiscoveryLibrariesRow rows={homeRows} /></DiscoveryReveal>}
-          {viewState === 'content' && <DiscoveryReveal><DiscoveryCalendarRow watchProgress={watchProgress} traktConnected={traktConnected} simklConnected={simklConnected} anilistConnected={anilistConnected} mdblistApiKey={mdblistApiKey} /></DiscoveryReveal>}
           {viewState === 'content' && heroRecommendation && <DiscoveryReveal>
-            <section className="discover-next row-contain" aria-labelledby="discover-next-title">
-              <header className="discover-next__heading"><div><p className="discover-section-eyebrow">Picked for you</p><h2 id="discover-next-title">Your Next Obsession</h2></div></header>
-              <article key={mediaIdentity(heroRecommendation.item)} className="discover-next__card" data-title={heroRecommendation.item.title}>
-                <button className="discover-next__poster" type="button" onClick={() => openHeroDetail(false)} aria-label={`Details for ${heroRecommendation.item.title}`}>
-                  {heroPoster && <img src={heroPoster} alt={`${heroRecommendation.item.title} poster`} loading="eager" decoding="async" />}
-                  {heroRecommendation.item.rating != null && <span>★ {Number(heroRecommendation.item.rating).toFixed(1)}</span>}
-                </button>
-                <div className="discover-next__copy">
-                  <p className="discover-next__reason">{heroRecommendation.reasons[0]?.label.replace(/\btaste\b/gi, 'preferences') || 'A popular pick selected for you'}</p>
-                  <h3>{heroRecommendation.item.title}</h3>
-                  <p className="discover-next__meta">{[heroRecommendation.item.year, heroRecommendation.item.type === 'series' ? 'Series' : 'Movie', heroRecommendation.item.genres?.[0], heroRecommendation.item.rating != null ? `★ ${Number(heroRecommendation.item.rating).toFixed(1)}` : undefined].filter(Boolean).join(' · ')}</p>
-                  {heroRecommendation.item.overview && <p className="discover-next__overview">{heroRecommendation.item.overview}</p>}
-                  <div className="discover-next__actions">
-                    <button type="button" className="discover-spotlight__play" onClick={() => openHeroDetail(true)}>▶ <span>Play</span></button>
-                    <button type="button" onClick={() => openHeroDetail(false)}><Info size={16} aria-hidden="true"/><span>Details</span></button>
-                    <button type="button" aria-label="Not for me" onClick={() => submitFeedback(heroRecommendation.item, 'not-interested')}><ThumbsDown size={16} aria-hidden="true"/><span>Not for me</span></button>
+            <>
+              <header className="discover-spotlight-heading row-contain"><p>{tab === 'movies' ? 'A movie for tonight' : tab === 'series' ? 'A series for tonight' : 'An anime for tonight'}</p><h2 id="discover-next-title">Your Next Obsession</h2><span className="discover-spotlight-heading__accent" aria-hidden="true" /></header>
+              <section key={mediaIdentity(heroRecommendation.item)} className="discover-spotlight discover-next-hero" aria-labelledby="discover-next-title" data-title={heroRecommendation.item.title}>
+                {heroBackdrop && <div key={heroBackdrop} className="discover-spotlight__ambient" aria-hidden="true"><img className={loadedHeroBackdrop === heroBackdrop ? 'is-loaded' : undefined} src={heroBackdrop} alt="" draggable={false} decoding="async" fetchPriority="high" onLoad={() => setLoadedHeroBackdrop(heroBackdrop)} /></div>}
+                <div className="discover-spotlight__copy" data-title={heroRecommendation.item.title}>
+                  <div className="discover-spotlight__top"><p className="discover-spotlight__eyebrow">Tonight</p><p className="discover-spotlight__duration">Usually {formatWatchDuration(tasteProfile.preferredRuntimeMinutes || heroRecommendation.runtimeMinutes || (tab === 'movies' ? 105 : 45))}</p></div>
+                  <div className="discover-spotlight__bottom">
+                    {heroLogo && !heroLogoError ? <img key={heroRecommendation.item.id} src={heroLogo} alt={heroRecommendation.item.title} draggable={false} onError={() => setHeroLogoError(true)} className="discover-spotlight__logo" /> : <h2 key={heroRecommendation.item.id}>{heroRecommendation.item.title}</h2>}
+                    <div className="discover-spotlight__meta">
+                      {heroRecommendation.item.year && <span>{heroRecommendation.item.year}</span>}
+                      <span>{heroRecommendation.runtimeMinutes ? formatWatchDuration(heroRecommendation.runtimeMinutes) : heroRecommendation.item.type === 'series' ? 'Series' : 'Movie'}</span>
+                      {heroRecommendation.item.genres?.slice(0, 1).map((genre) => <span key={genre}>{genre}</span>)}
+                      {heroRecommendation.item.rating != null && <span>★ {Number(heroRecommendation.item.rating).toFixed(1)}</span>}
+                    </div>
+                    {heroRecommendation.reasons[0] && <p className="discover-spotlight__reason">{heroRecommendation.reasons[0].label.replace(/\btaste\b/gi, 'preferences')}</p>}
+                    {heroRecommendation.item.overview && <p className="discover-spotlight__overview">{heroRecommendation.item.overview}</p>}
+                    <div className="discover-spotlight__actions">
+                      <button type="button" className="discover-spotlight__play" onClick={() => openHeroDetail(true)}>▶ <span>Play</span></button>
+                      <button type="button" className="discover-spotlight__another discover-spotlight__secondary" onClick={() => openHeroDetail(false)} aria-label="Details"><Info size={17} aria-hidden="true"/><span>Details</span></button>
+                      <button type="button" className="discover-spotlight__another" aria-label="Not for me" onClick={() => submitFeedback(heroRecommendation.item, 'not-interested')}><ThumbsDown size={17} aria-hidden="true"/><span>Not for me</span></button>
+                    </div>
                   </div>
                 </div>
-              </article>
-            </section>
+                {heroPoster && <div className="discover-spotlight__poster"><img key={heroRecommendation.item.id} src={heroPoster} alt={`${heroRecommendation.item.title} poster`} draggable={false} loading="eager" decoding="async" />{heroRecommendation.item.rating != null && <span className="discover-picker__rating">★ {Number(heroRecommendation.item.rating).toFixed(1)}</span>}</div>}
+              </section>
+            </>
           </DiscoveryReveal>}
           {viewState === 'error' && <div className="mx-6 mb-8 grid min-h-72 place-items-center rounded-3xl border border-white/10 bg-white/[.03] p-8 text-center"><div><h2 className="text-xl font-black">Recommendations are unavailable</h2><p className="mt-2 max-w-md text-sm text-white/60">Cached discovery data was not available and recommendation sources could not be loaded. Check your network or TMDB settings.</p><button onClick={() => window.location.reload()} className="mt-5 rounded-full bg-white px-5 py-2 font-bold text-black">Retry</button></div></div>}
           {viewState === 'content' && trendingSection && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--trending"><MediaRow title="OR TRY" items={trendingSection.items.map((entry) => entry.item)} showAllItems={trendingSection.catalogItems?.map((entry) => entry.item)} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-trending-this-week?title=${encodeURIComponent('OR TRY')}`} /></div></DiscoveryReveal>}
@@ -1447,40 +1436,8 @@ export default function DiscoverPage() {
             const catalogItems = (section.catalogItems ?? section.items).map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
             return <DiscoveryReveal key={section.id}><div className="row-contain discover-shelf"><MediaRow title={title} items={items} showAllItems={catalogItems} layout={isTopTen ? 'ranked' : 'poster'} disableCinematic forceShowAll showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div></DiscoveryReveal>
           })}
-          {viewState === 'content' && weekendPlanRecommendation && <DiscoveryReveal>
-            <div className="discover-weekend-plan__heading row-contain">
-              <p>{tab === 'movies' ? 'A movie for tonight' : tab === 'series' ? 'A series for tonight' : 'An anime for tonight'}</p>
-              <h2>Your Weekend Plan</h2>
-              <span className="discover-spotlight-heading__accent" aria-hidden="true" />
-            </div>
-            <section key={mediaIdentity(weekendPlanRecommendation.item)} className="discover-spotlight discover-weekend-plan" aria-label="Your Weekend Plan">
-              {weekendPlanBackdrop && <div key={weekendPlanBackdrop} className="discover-spotlight__ambient" aria-hidden="true"><img className={loadedHeroBackdrop === weekendPlanBackdrop ? 'is-loaded' : undefined} src={weekendPlanBackdrop} alt="" draggable={false} decoding="async" fetchPriority="high" onLoad={() => setLoadedHeroBackdrop(weekendPlanBackdrop)} /></div>}
-              <div className="discover-spotlight__copy" data-title={weekendPlanRecommendation.item.title}>
-                <div className="discover-spotlight__top">
-                  <p className="discover-spotlight__eyebrow">Tonight</p>
-                  <p className="discover-spotlight__duration">Usually {formatWatchDuration(tasteProfile.preferredRuntimeMinutes || weekendPlanRecommendation.runtimeMinutes || (tab === 'movies' ? 105 : 45))}</p>
-                </div>
-                <div className="discover-spotlight__bottom">
-                  {weekendPlanLogo && !weekendLogoError
-                    ? <img key={weekendPlanRecommendation.item.id} src={weekendPlanLogo} alt={weekendPlanRecommendation.item.title} draggable={false} onError={() => setWeekendLogoError(true)} className="discover-spotlight__logo" />
-                    : <h2 key={weekendPlanRecommendation.item.id}>{weekendPlanRecommendation.item.title}</h2>}
-                  <div className="discover-spotlight__meta">
-                    {weekendPlanRecommendation.item.year && <span>{weekendPlanRecommendation.item.year}</span>}
-                    <span>{weekendPlanRecommendation.runtimeMinutes ? formatWatchDuration(weekendPlanRecommendation.runtimeMinutes) : weekendPlanRecommendation.item.type === 'series' ? 'Series' : 'Movie'}</span>
-                    {weekendPlanRecommendation.item.genres?.slice(0, 1).map((genre) => <span key={genre}>{genre}</span>)}
-                    {weekendPlanRecommendation.item.rating != null && <span>★ {Number(weekendPlanRecommendation.item.rating).toFixed(1)}</span>}
-                  </div>
-                  {weekendPlanRecommendation.reasons[0] && <p className="discover-spotlight__reason">{weekendPlanRecommendation.reasons[0].label.replace(/\btaste\b/gi, 'preferences')}</p>}
-                  <div className="discover-spotlight__actions">
-                    <button onClick={() => openWeekendPlanDetail(true)} className="discover-spotlight__play">▶ <span>Play</span></button>
-                    <button className="discover-spotlight__another discover-spotlight__secondary" type="button" onClick={() => openWeekendPlanDetail(false)} aria-label="Details"><Info size={17} aria-hidden="true"/><span>Details</span></button>
-                    <button className="discover-spotlight__another discover-weekend-plan__another" type="button" onClick={() => { const next = chooseSurpriseRecommendation(pickerPool, weekendPlanItem?.id); if (next) setWeekendPlanKey(mediaIdentity(next.item)) }} disabled={pickerPool.length < 2}><Shuffle size={16} aria-hidden="true"/><span>Another option</span></button>
-                  </div>
-                </div>
-              </div>
-              {weekendPlanPoster && <div className="discover-spotlight__poster"><img key={weekendPlanRecommendation.item.id} src={weekendPlanPoster} alt={`${weekendPlanRecommendation.item.title} poster`} draggable={false} loading="eager" decoding="async" /></div>}
-            </section>
-          </DiscoveryReveal>}
+          {viewState === 'content' && <DiscoveryReveal><DiscoveryLibrariesRow rows={homeRows} /></DiscoveryReveal>}
+          {viewState === 'content' && <DiscoveryReveal><DiscoveryCalendarRow watchProgress={watchProgress} traktConnected={traktConnected} simklConnected={simklConnected} anilistConnected={anilistConnected} mdblistApiKey={mdblistApiKey} /></DiscoveryReveal>}
           {ranked.length > 0 && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
             <p className="discover-section-eyebrow">Refine your taste</p>
             <div className="discover-refine__heading">
