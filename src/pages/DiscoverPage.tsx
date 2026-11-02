@@ -1329,6 +1329,13 @@ export default function DiscoverPage() {
   }, [])
   const closePreferences = useCallback(() => {
     setPreferencesOpen(false)
+    // The dialog is conditionally removed. In WebKit/Firefox the passive
+    // keyboard listener can finish before the state commit, so schedule a
+    // post-commit focus restore as well as the layout-effect fallback below.
+    window.requestAnimationFrame(() => {
+      const trigger = preferencesButtonRef.current
+      if (trigger?.isConnected) trigger.focus({ preventScroll: true })
+    })
   }, [])
   useLayoutEffect(() => {
     if (preferencesWereOpenRef.current && !preferencesOpen) {
@@ -1460,7 +1467,7 @@ export default function DiscoverPage() {
                     </div>
                   </div>
                 </div>
-                {heroPoster && <div className="discover-spotlight__poster"><img key={heroRecommendation.item.id} className="discover-artwork-enter" src={heroPoster} alt={`${heroRecommendation.item.title} poster`} draggable={false} loading="eager" decoding="async" onLoad={revealDiscoveryArtwork} />{heroRecommendation.item.rating != null && <span className="discover-picker__rating">★ {Number(heroRecommendation.item.rating).toFixed(1)}</span>}</div>}
+                {heroPoster && <div className="discover-spotlight__poster"><img key={heroPoster} className="discover-artwork-enter" src={heroPoster} alt={`${heroRecommendation.item.title} poster`} draggable={false} loading="eager" decoding="async" onLoad={revealDiscoveryArtwork} />{heroRecommendation.item.rating != null && <span className="discover-picker__rating">★ {Number(heroRecommendation.item.rating).toFixed(1)}</span>}</div>}
               </section>
             </>
           </DiscoveryReveal>}
@@ -1494,7 +1501,7 @@ export default function DiscoverPage() {
               {tastePickCandidates.map((item) => {
                 const id = mediaIdentity(item)
                 return <button key={id} type="button" className="discover-taste-pick" onClick={() => selectTastePick(item)} disabled={pickedIds.length >= 3} aria-label={`Choose ${item.title}`}>
-                  <span className="discover-taste-pick__poster">{item.poster && <img className="discover-artwork-enter" src={item.poster} alt="" loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />}{item.rating != null && <span className="discover-taste-pick__rating">★ {Number(item.rating).toFixed(1)}</span>}</span>
+                  <span className="discover-taste-pick__poster">{item.poster && <img key={item.poster} className="discover-artwork-enter" src={item.poster} alt="" loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />}{item.rating != null && <span className="discover-taste-pick__rating">★ {Number(item.rating).toFixed(1)}</span>}</span>
                   <span className="discover-taste-pick__title">{item.title}</span>
                   <span className="discover-taste-pick__year">{item.year || (item.isAnime ? 'Anime' : item.type === 'series' ? 'Series' : 'Movie')}</span>
                 </button>
@@ -1535,13 +1542,13 @@ export default function DiscoverPage() {
               </div>
               {activeBingeItem && <div key={`gallery-${mediaIdentity(activeBingeItem)}`} className="discover-binge__gallery" aria-label="Binge recommendations">
                 <button className="discover-binge__main-poster" type="button" onClick={() => openItemDetail(activeBingeItem)} aria-label={`Details for ${activeBingeItem.title}`}>
-                  <img className="discover-artwork-enter" src={activeBingeItem.poster} alt={`${activeBingeItem.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
+                  <img key={activeBingeItem.poster} className="discover-artwork-enter" src={activeBingeItem.poster} alt={`${activeBingeItem.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
                   <span>{activeBingeItem.title}</span>
                   {activeBingeItem.rating != null && <small>★ {Number(activeBingeItem.rating).toFixed(1)}</small>}
                 </button>
                 <div className="discover-binge__alternatives">
                   {bingeRecommendations.filter((item) => mediaIdentity(item) !== mediaIdentity(activeBingeItem)).slice(0, 4).map((item) => <button key={mediaIdentity(item)} type="button" onClick={() => openItemDetail(item)} aria-label={`Details for ${item.title}`}>
-                    <img className="discover-artwork-enter" src={item.poster} alt={`${item.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
+                    <img key={item.poster} className="discover-artwork-enter" src={item.poster} alt={`${item.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
                     <span>{item.title}</span>
                     {item.rating != null && <small>★ {Number(item.rating).toFixed(1)}</small>}
                   </button>)}
