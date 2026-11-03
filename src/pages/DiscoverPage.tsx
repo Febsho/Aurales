@@ -98,6 +98,10 @@ function formatWatchDuration(minutes: number): string {
   return hours ? `${hours}h${remainingMinutes ? ` ${remainingMinutes}m` : ''}` : `${remainingMinutes}m`
 }
 
+function formatDiscoveryRating(value: number | undefined): string | undefined {
+  return value != null && Number.isFinite(value) && value > 0 ? value.toFixed(1) : undefined
+}
+
 const HENTAI_EXCLUDE_KEYWORDS = [{ id: 293054, name: 'hentai' }, { id: 6126, name: 'ecchi' }]
 // Impressions recorded this session — once per day/tab/mode, so revisiting Discover
 // doesn't re-penalize the shown titles and reshuffle the recommendations every time
@@ -1343,6 +1347,7 @@ export default function DiscoverPage() {
       .slice(0, 5)
   }, [activity, bingeSeries, bingeTrending, currentTrendingRanked, feedback, impressions, mode, prefs, rankingNow, tab, tabRanked, tasteProfile])
   const activeBingeItem = bingeRecommendations.length ? bingeRecommendations[bingeIndex % bingeRecommendations.length] : undefined
+  const activeBingeRating = formatDiscoveryRating(activeBingeItem?.rating)
   const pickerPool = useMemo(() => {
     const seen = new Set<string>()
     // Live weekly trends lead the randomizer too; a still-valid daily snapshot
@@ -1688,7 +1693,9 @@ export default function DiscoverPage() {
   const heroPoster = heroRecommendation ? (heroRecommendation.item.poster || heroArt[String(heroRecommendation.item.id)]?.poster || heroRecommendation.item.backdrop || heroArt[String(heroRecommendation.item.id)]?.backdrop) : undefined
   const heroLogo = heroRecommendation ? (heroArt[String(heroRecommendation.item.id)]?.logo || heroRecommendation.item.logo) : undefined
   const heroBackdrop = heroRecommendation ? (heroRecommendation.item.backdrop || heroArt[String(heroRecommendation.item.id)]?.backdrop || heroRecommendation.item.poster || heroArt[String(heroRecommendation.item.id)]?.poster) : undefined
+  const heroRating = formatDiscoveryRating(heroRecommendation?.item.rating)
   const pickerLogo = pickerRecommendation ? (heroArt[String(pickerRecommendation.item.id)]?.logo || pickerRecommendation.item.logo) : undefined
+  const pickerRating = formatDiscoveryRating(pickerRecommendation?.item.rating)
   const pickerPoster = pickerRecommendation ? (pickerRecommendation.item.poster || heroArt[String(pickerRecommendation.item.id)]?.poster || pickerRecommendation.item.backdrop || heroArt[String(pickerRecommendation.item.id)]?.backdrop) : undefined
   const pickerBackdrop = pickerRecommendation ? (pickerRecommendation.item.backdrop || heroArt[String(pickerRecommendation.item.id)]?.backdrop || pickerRecommendation.item.poster || heroArt[String(pickerRecommendation.item.id)]?.poster) : undefined
   return (
@@ -1745,7 +1752,7 @@ export default function DiscoverPage() {
                       {heroRecommendation.item.year && <span>{heroRecommendation.item.year}</span>}
                       <span>{heroRecommendation.runtimeMinutes ? formatWatchDuration(heroRecommendation.runtimeMinutes) : isAnimeLike(heroRecommendation.item) ? 'Anime' : heroRecommendation.item.type === 'series' ? 'Series' : 'Movie'}</span>
                       {heroRecommendation.item.genres?.slice(0, 1).map((genre) => <span key={genre}>{genre}</span>)}
-                      {heroRecommendation.item.rating != null && <span>★ {Number(heroRecommendation.item.rating).toFixed(1)}</span>}
+                      {heroRating && <span>★ {heroRating}</span>}
                     </div>
                     {heroReason && <p className="discover-spotlight__reason">{heroReason.label.replace(/\btaste\b/gi, 'preferences')}</p>}
                     {heroRecommendation.item.overview && <p className="discover-spotlight__overview">{heroRecommendation.item.overview}</p>}
@@ -1757,7 +1764,7 @@ export default function DiscoverPage() {
                     </div>
                   </div>
                 </div>
-                {heroPoster && <div className="discover-spotlight__poster"><img key={heroPoster} className="discover-artwork-enter" src={heroPoster} alt={`${heroRecommendation.item.title} poster`} draggable={false} loading="eager" decoding="async" onLoad={revealDiscoveryArtwork} />{heroEditorialLabel && <span className="discover-spotlight__accolade">{heroEditorialLabel}</span>}{heroRecommendation.item.rating != null && <span className="discover-picker__rating">★ {Number(heroRecommendation.item.rating).toFixed(1)}</span>}</div>}
+                {heroPoster && <div className="discover-spotlight__poster"><img key={heroPoster} className="discover-artwork-enter" src={heroPoster} alt={`${heroRecommendation.item.title} poster`} draggable={false} loading="eager" decoding="async" onLoad={revealDiscoveryArtwork} />{heroEditorialLabel && <span className="discover-spotlight__accolade">{heroEditorialLabel}</span>}{heroRating && <span className="discover-picker__rating">★ {heroRating}</span>}</div>}
               </section>
             </>
           </DiscoveryReveal>}
@@ -1781,7 +1788,7 @@ export default function DiscoverPage() {
               {tastePickCandidates.map((item) => {
                 const id = mediaIdentity(item)
                 return <button key={id} type="button" className="discover-taste-pick" onClick={() => selectTastePick(item)} disabled={pickedIds.length >= 3} aria-label={`Choose ${item.title}`}>
-                  <span className="discover-taste-pick__poster">{item.poster && <img key={item.poster} className="discover-artwork-enter" src={item.poster} alt="" loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />}{item.rating != null && <span className="discover-taste-pick__rating">★ {Number(item.rating).toFixed(1)}</span>}</span>
+                  <span className="discover-taste-pick__poster">{item.poster && <img key={item.poster} className="discover-artwork-enter" src={item.poster} alt="" loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />}{formatDiscoveryRating(item.rating) && <span className="discover-taste-pick__rating">★ {formatDiscoveryRating(item.rating)}</span>}</span>
                   <span className="discover-taste-pick__title">{item.title}</span>
                   <span className="discover-taste-pick__year">{item.year || (item.isAnime ? 'Anime' : item.type === 'series' ? 'Series' : 'Movie')}</span>
                 </button>
@@ -1873,13 +1880,13 @@ export default function DiscoverPage() {
                 <button className="discover-binge__main-poster" type="button" onClick={() => openItemDetail(activeBingeItem)} aria-label={`Details for ${activeBingeItem.title}`}>
                   <img key={activeBingeItem.poster} className="discover-artwork-enter" src={activeBingeItem.poster} alt={`${activeBingeItem.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
                   <span>{activeBingeItem.title}</span>
-                  {activeBingeItem.rating != null && <small>★ {Number(activeBingeItem.rating).toFixed(1)}</small>}
+                  {activeBingeRating && <small>★ {activeBingeRating}</small>}
                 </button>
                 <div className="discover-binge__alternatives">
                   {bingeRecommendations.filter((item) => mediaIdentity(item) !== mediaIdentity(activeBingeItem)).slice(0, 4).map((item) => <button key={mediaIdentity(item)} type="button" onClick={() => openItemDetail(item)} aria-label={`Details for ${item.title}`}>
                     <img key={item.poster} className="discover-artwork-enter" src={item.poster} alt={`${item.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
                     <span>{item.title}</span>
-                    {item.rating != null && <small>★ {Number(item.rating).toFixed(1)}</small>}
+                    {formatDiscoveryRating(item.rating) && <small>★ {formatDiscoveryRating(item.rating)}</small>}
                   </button>)}
                 </div>
               </div>}
@@ -1926,7 +1933,7 @@ export default function DiscoverPage() {
             <div className="discover-picker__visual">
               <div className="discover-picker__poster" style={{ '--discover-picker-roll-duration': `${pickerRollDurationMs}ms` } as import('react').CSSProperties}>
                 {pickerPoster && <img src={pickerPoster} alt={`${pickerRecommendation.item.title} poster`} draggable={false} />}
-                {pickerRecommendation.item.rating != null && <span className="discover-picker__rating">★ {Number(pickerRecommendation.item.rating).toFixed(1)}</span>}
+                {pickerRating && <span className="discover-picker__rating">★ {pickerRating}</span>}
               </div>
               {surpriseSpinning && <p className="discover-picker__status" role="status" aria-live="polite"><Shuffle size={15} aria-hidden="true" />Finding something for you</p>}
             </div>
@@ -1936,7 +1943,7 @@ export default function DiscoverPage() {
                 ? <img className="discover-picker__logo" src={pickerLogo} alt={pickerRecommendation.item.title} onError={() => setPickerLogoError(true)} />
                 : <h2 id="discover-picker-title">{pickerRecommendation.item.title}</h2>}
               {pickerLogo && !pickerLogoError && <h2 id="discover-picker-title" className="sr-only">{pickerRecommendation.item.title}</h2>}
-              <p className="discover-picker__meta">{[pickerRecommendation.item.genres?.[0], pickerRecommendation.item.year, pickerRecommendation.item.type === 'movie' ? 'Movie' : 'Series', pickerRecommendation.item.rating != null ? `★ ${Number(pickerRecommendation.item.rating).toFixed(1)}` : undefined].filter(Boolean).join(' · ')}</p>
+              <p className="discover-picker__meta">{[pickerRecommendation.item.genres?.[0], pickerRecommendation.item.year, pickerRecommendation.item.type === 'movie' ? 'Movie' : 'Series', pickerRating ? `★ ${pickerRating}` : undefined].filter(Boolean).join(' · ')}</p>
               {pickerRecommendation.reasons[0] && <p className="discover-picker__reason">{pickerRecommendation.reasons[0].label}</p>}
               <div className="discover-picker__actions">
                 <button type="button" className="discover-picker__open" onClick={() => { const item = pickerRecommendation.item; closePicker(); openItemDetail(item) }}>Open</button>

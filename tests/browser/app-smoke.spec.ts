@@ -584,7 +584,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         overview: 'A current weekly-trending test title.',
         release_date: '2026-05-01',
         first_air_date: '2026-05-01',
-        vote_average: 8.2,
+        vote_average: weeklyType === 'series' && index === 1 ? 0 : 8.2,
         vote_count: 1800,
         // TMDB's individual popularity field can conflict with its live weekly
         // chart position; Discovery must retain the provider's actual rank.
@@ -1258,6 +1258,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.locator('.discover-binge__main-poster img')).toHaveAttribute('alt', 'Weekly trend 1 poster')
   await expect(page.locator('.discover-binge__main-poster')).toBeVisible()
   await expect(page.locator('.discover-binge__alternatives button')).toHaveCount(4)
+  await expect(page.locator('.discover-binge__alternatives button[aria-label="Details for Weekly trend 2"] small')).toHaveCount(0)
   await page.locator('.discover-binge').scrollIntoViewIfNeeded()
   await expect.poll(() => page.locator('.discover-binge').evaluate((element) => element.parentElement?.getAttribute('data-revealed'))).toBe('true')
   const bingeGalleryLayout = await page.locator('.discover-binge__gallery').evaluate((gallery) => {
