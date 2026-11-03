@@ -1072,12 +1072,15 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       const time = page.querySelector<HTMLElement>('.discover-time')!.getBoundingClientRect()
       const copy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
       const poster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
+      const shelfCard = page.querySelector<HTMLElement>('.discover-shelf .media-row-card-slot > button')
       return {
         viewport,
         documentWidth: document.documentElement.scrollWidth,
         page: page.getBoundingClientRect().toJSON(),
         headingFontSize: Number.parseFloat(getComputedStyle(page.querySelector<HTMLElement>('.discover-page__heading h1')!).fontSize),
         heroHeight: hero.getBoundingClientRect().height,
+        heroAnimation: getComputedStyle(hero).animationName,
+        shelfCardTransition: shelfCard ? getComputedStyle(shelfCard).transitionProperty : '',
         timeWidth: time.width,
         timeLeft: time.left,
         timeRight: time.right,
@@ -1092,6 +1095,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopBounds.timeLeft, `Tauri time picker shifted offscreen at ${width}px`).toBeGreaterThanOrEqual(-1)
     expect(desktopBounds.timeRight, `Tauri time picker exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
     expect(desktopBounds.heroColumnsSeparated, `Tauri hero copy overlaps its poster at ${width}px`).toBe(true)
+    expect(desktopBounds.heroAnimation, `Tauri editorial spotlight should animate at ${width}px`).not.toBe('none')
+    expect(desktopBounds.shelfCardTransition, `Tauri shelf cards should keep their focus transitions at ${width}px`).toContain('transform')
     expect(desktopBounds.headingFontSize, `Tauri Discovery heading should stay within its desktop type scale at ${width}px`).toBeGreaterThanOrEqual(28)
     expect(desktopBounds.headingFontSize, `Tauri Discovery heading should stay within its desktop type scale at ${width}px`).toBeLessThanOrEqual(44)
     expect(desktopBounds.heroHeight, `Tauri spotlight should retain its desktop composition at ${width}px`).toBeGreaterThanOrEqual(300)
