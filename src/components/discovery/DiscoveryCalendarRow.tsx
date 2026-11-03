@@ -58,14 +58,15 @@ export default function DiscoveryCalendarRow({ watchProgress, traktConnected, si
   }, [progressSignature, traktConnected, simklConnected, anilistConnected, mdblistConnected, serverRevision, today, horizon])
 
   const visibleEntries = range === 'today' ? entries.filter((entry) => entry.date === today) : entries
-  // Keep Discovery focused on titles while calendar data is empty or loading.
-  // The full release calendar remains available from the Library navigation.
-  if (loading || entries.length === 0) return null
+  // Keep Discovery focused on titles when there is nothing to show. If a
+  // refresh is running, keep the current entries mounted to avoid a layout
+  // jump; the full release calendar remains available from Library.
+  if (entries.length === 0) return null
   const dateLabel = range === 'today'
     ? new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric' }).format(new Date())
     : `${new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(new Date())} – ${new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(addDays(new Date(), 30))}`
 
-  return <section className="discover-calendar row-contain" aria-labelledby="discover-calendar-title">
+  return <section className="discover-calendar row-contain" aria-labelledby="discover-calendar-title" aria-busy={loading}>
     <div className="discover-calendar__heading">
       <div><h2 id="discover-calendar-title">Calendar</h2><p>{dateLabel}</p></div>
       <div className="discover-calendar__actions" role="group" aria-label="Calendar range">
