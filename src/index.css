@@ -6396,7 +6396,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-picker__poster > img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .discover-picker__status { display: inline-flex; min-height: 1.35rem; align-items: center; justify-content: center; gap: .45rem; margin: 0; color: rgba(255,255,255,.64); font-size: .78rem; font-weight: 550; text-align: center; }
 .discover-picker__status svg { flex: none; animation: discover-picker-status-pulse .8s ease-in-out infinite alternate; }
-.discover-picker.is-spinning .discover-picker__poster { animation: discover-picker-rolling .52s cubic-bezier(.42,0,.58,1) infinite alternate; transform-origin: 50% 55%; box-shadow: 0 22px 64px rgba(0,0,0,.52); }
+.discover-picker.is-spinning .discover-picker__poster { animation: discover-picker-rolling var(--discover-picker-roll-duration, .52s) cubic-bezier(.42,0,.58,1) infinite alternate; transform-origin: 50% 55%; box-shadow: 0 22px 64px rgba(0,0,0,.52); }
 .discover-picker.is-spinning .discover-picker__poster > img { opacity: .82; transition: opacity .12s ease; }
 .discover-picker__copy h2:not(.sr-only), .discover-picker__logo { transition: opacity .14s ease, transform .14s ease; }
 .discover-picker.is-spinning .discover-picker__copy h2:not(.sr-only),

@@ -505,6 +505,7 @@ export default function DiscoverPage() {
   const [heroArt,setHeroArt]=useState<Record<string,{poster?:string;backdrop?:string;logo?:string}>>({})
   const [loadedHeroBackdrop,setLoadedHeroBackdrop]=useState<string | null>(null)
   const [surpriseSpinning, setSurpriseSpinning] = useState(false)
+  const [pickerRollDurationMs, setPickerRollDurationMs] = useState(520)
   const surpriseSpinningRef = useRef(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerClosing, setPickerClosing] = useState(false)
@@ -517,6 +518,7 @@ export default function DiscoverPage() {
   const surpriseRunRef = useRef(0)
   const updateSurpriseSpinning = useCallback((spinning: boolean) => {
     surpriseSpinningRef.current = spinning
+    setPickerRollDurationMs(spinning ? 180 : 520)
     setSurpriseSpinning(spinning)
   }, [])
   const [pickOffset, setPickOffset] = useState(0)
@@ -1423,7 +1425,7 @@ export default function DiscoverPage() {
       ? 150
       : Math.max(48, Math.min(360, (now - previousFrameAt) * 0.82))
     const surfaces = pickerDialogRef.current?.querySelectorAll<HTMLElement>(
-      '.discover-picker__poster > img, .discover-picker__copy h2:not(.sr-only), .discover-picker__logo',
+      '.discover-picker__poster > img, .discover-picker__ambient > img, .discover-picker__copy h2:not(.sr-only), .discover-picker__logo',
     )
     if (!surfaces?.length) return
     surfaces.forEach((surface) => {
@@ -1564,6 +1566,9 @@ export default function DiscoverPage() {
         for (const delay of delays) {
           await new Promise<void>((resolve) => window.setTimeout(resolve, delay))
           if (surpriseRunRef.current !== runId) return
+          // Tie the 3D turn to the planned frame cadence so slow browsers
+          // still show a deliberate, progressive deceleration.
+          setPickerRollDurationMs(Math.max(180, delay * 2.1))
           const next = chooseSurpriseAnimationFrame(pickerPool, winner.item.id, previousId)
           if (next) {
             onSelect(next.item)
@@ -1918,7 +1923,7 @@ export default function DiscoverPage() {
           <button type="button" autoFocus className="discover-picker__close" onClick={closePicker} aria-label="Close picker"><X size={19} aria-hidden="true" /></button>
           <div className="discover-picker__body">
             <div className="discover-picker__visual">
-              <div className="discover-picker__poster">
+              <div className="discover-picker__poster" style={{ '--discover-picker-roll-duration': `${pickerRollDurationMs}ms` } as import('react').CSSProperties}>
                 {pickerPoster && <img src={pickerPoster} alt={`${pickerRecommendation.item.title} poster`} draggable={false} />}
                 {pickerRecommendation.item.rating != null && <span className="discover-picker__rating">★ {Number(pickerRecommendation.item.rating).toFixed(1)}</span>}
               </div>
