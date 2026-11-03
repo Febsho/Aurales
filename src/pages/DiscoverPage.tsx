@@ -1807,6 +1807,30 @@ export default function DiscoverPage() {
               showAllPath={`/catalog/discover-section-${tab}-${activeSimilaritySection.id}?title=${encodeURIComponent(`Because you ${activeSimilaritySection.id.startsWith('because-favorited') ? 'favorited' : 'watched'} ${activeSimilarityTitle}`)}`}
             />
           </div></DiscoveryReveal>}
+          {viewState === 'content' && <DiscoveryReveal><div className="discover-time discover-shelf--time">
+            {timeTonightItems.length > 0
+              ? <MediaRow
+                title="How Much Time Tonight?"
+                headerEyebrow="Picked to fit"
+                headerBottomControls={<div className="discover-editorial-tabs" role="group" aria-label="Choose a watch duration">
+                  {DISCOVERY_RUNTIME_BUCKETS.map((bucket) => <button key={bucket.id} type="button" aria-pressed={selectedRuntimeBucket.id === bucket.id} onClick={() => setSelectedRuntimeBucketId(bucket.id)}>{bucket.label}</button>)}
+                </div>}
+                items={timeTonightItems}
+                showAllItems={timeTonightCatalogItems}
+                showAllContinuation={{ configs: tab === 'anime' ? [timeTonightConfig, timeTonightAnimeMovieConfig] : [timeTonightConfig], tab }}
+                layout="poster"
+                disableCinematic
+                showAllPath={`/catalog/discover-time-${tab}-${selectedRuntimeBucket.id}-${discoveryQueryKey}?title=${encodeURIComponent('How Much Time Tonight?')}`}
+              />
+              : <section className="discover-time__empty row-contain" aria-labelledby="discover-time-title">
+                <div className="discover-editorial-heading"><div><p className="discover-section-eyebrow">Picked to fit</p><h2 id="discover-time-title">How Much Time Tonight?</h2></div>
+                  <div className="discover-editorial-tabs" role="group" aria-label="Choose a watch duration">
+                    {DISCOVERY_RUNTIME_BUCKETS.map((bucket) => <button key={bucket.id} type="button" aria-pressed={selectedRuntimeBucket.id === bucket.id} onClick={() => setSelectedRuntimeBucketId(bucket.id)}>{bucket.label}</button>)}
+                  </div>
+                </div>
+                <p className="discover-editorial-empty" role="status">{timeTonightLoading ? 'Finding popular titles that fit…' : 'No titles found for this time yet.'}</p>
+              </section>}
+          </div></DiscoveryReveal>}
           {(tabRanked.length > 0 || currentTrendingRanked.length > 0) && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
             <p className="discover-section-eyebrow">Refine your taste</p>
             <div className="discover-refine__heading">
@@ -1833,30 +1857,6 @@ export default function DiscoverPage() {
               {tastePickCandidates.length === 0 && <p className="discover-taste-picks__empty">No matching titles. Try another search.</p>}
             </div>
           </section></DiscoveryReveal>}
-          {viewState === 'content' && <DiscoveryReveal><div className="discover-time discover-shelf--time">
-            {timeTonightItems.length > 0
-              ? <MediaRow
-                title="How Much Time Tonight?"
-                headerEyebrow="Picked to fit"
-                headerBottomControls={<div className="discover-editorial-tabs" role="group" aria-label="Choose a watch duration">
-                  {DISCOVERY_RUNTIME_BUCKETS.map((bucket) => <button key={bucket.id} type="button" aria-pressed={selectedRuntimeBucket.id === bucket.id} onClick={() => setSelectedRuntimeBucketId(bucket.id)}>{bucket.label}</button>)}
-                </div>}
-                items={timeTonightItems}
-                showAllItems={timeTonightCatalogItems}
-                showAllContinuation={{ configs: tab === 'anime' ? [timeTonightConfig, timeTonightAnimeMovieConfig] : [timeTonightConfig], tab }}
-                layout="poster"
-                disableCinematic
-                showAllPath={`/catalog/discover-time-${tab}-${selectedRuntimeBucket.id}-${discoveryQueryKey}?title=${encodeURIComponent('How Much Time Tonight?')}`}
-              />
-              : <section className="discover-time__empty row-contain" aria-labelledby="discover-time-title">
-                <div className="discover-editorial-heading"><div><p className="discover-section-eyebrow">Picked to fit</p><h2 id="discover-time-title">How Much Time Tonight?</h2></div>
-                  <div className="discover-editorial-tabs" role="group" aria-label="Choose a watch duration">
-                    {DISCOVERY_RUNTIME_BUCKETS.map((bucket) => <button key={bucket.id} type="button" aria-pressed={selectedRuntimeBucket.id === bucket.id} onClick={() => setSelectedRuntimeBucketId(bucket.id)}>{bucket.label}</button>)}
-                  </div>
-                </div>
-                <p className="discover-editorial-empty" role="status">{timeTonightLoading ? 'Finding popular titles that fit…' : 'No titles found for this time yet.'}</p>
-              </section>}
-          </div></DiscoveryReveal>}
           {viewState === 'content' && colorPreviewItems.length >= 3 && <DiscoveryReveal><section className="discover-colors row-contain" aria-labelledby="discover-colors-title">
             <div className="discover-colors__heading"><div><p className="discover-section-eyebrow">Browse by poster colour</p><h2 id="discover-colors-title">Pick by Colour</h2></div><span>Popular titles, grouped by their artwork</span></div>
             <div className="discover-colors__filters" role="group" aria-label="Poster colour">

@@ -660,7 +660,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         release_date: '2026-05-01',
         // Make the most popular continuation item less personally attractive
         // than the rest so the long-tail surface proves it keeps popularity first.
-        vote_average: index === 0 ? 5 : 8.5,
+        vote_average: index === 0 ? 6.2 : 8.5,
         vote_count: 900,
         popularity: 240 - index,
         genre_ids: [18, 35, 53, 27, 80, 9648, 878, 10765, 10759, 10751, 10762, 14],
@@ -850,13 +850,15 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     const trending = [...document.querySelectorAll<HTMLElement>('.discover-shelf h2')].find((heading) => heading.textContent?.trim() === 'OR TRY')
     const topTen = [...document.querySelectorAll<HTMLElement>('.discover-shelf h2')].find((heading) => heading.textContent?.trim() === 'Top 10 For You')
     const obsession = document.querySelector<HTMLElement>('.discover-next-hero')
+    const timeTonight = document.querySelector<HTMLElement>('.discover-time')
     const refine = document.querySelector<HTMLElement>('.discover-refine')
-    return Boolean(obsession && trending && topTen && refine
+    return Boolean(obsession && trending && topTen && timeTonight && refine
       && obsession.compareDocumentPosition(trending) & Node.DOCUMENT_POSITION_FOLLOWING
       && trending.compareDocumentPosition(topTen) & Node.DOCUMENT_POSITION_FOLLOWING
-      && topTen.compareDocumentPosition(refine) & Node.DOCUMENT_POSITION_FOLLOWING)
+      && topTen.compareDocumentPosition(timeTonight) & Node.DOCUMENT_POSITION_FOLLOWING
+      && timeTonight.compareDocumentPosition(refine) & Node.DOCUMENT_POSITION_FOLLOWING)
   })
-  expect(discoverySurfaceOrder, 'the editorial spotlight leads into OR TRY and Top 10 before the taste picker').toBe(true)
+  expect(discoverySurfaceOrder, 'the editorial spotlight leads into OR TRY, Top 10, the time recommendations, and then the taste picker').toBe(true)
   const mobileDiscoveryLayout = await page.evaluate(() => {
     const rect = (selector: string) => {
       const element = document.querySelector<HTMLElement>(selector)
@@ -882,6 +884,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       obsessionCard: rect('.discover-next-hero'),
       trendingHeading: headingRect('OR TRY'),
       topTenHeading: headingRect('Top 10 For You'),
+      timeTonight: rect('.discover-time'),
       tastePicker: rect('.discover-refine'),
     }
   })
@@ -892,7 +895,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const topTenTop = topTenHeading!.y
   expect(obsessionTop).toBeLessThan(trendingTop)
   expect(trendingTop).toBeLessThan(topTenTop)
-  expect(topTenTop).toBeLessThan(mobileDiscoveryLayout.tastePicker!.y)
+  expect(topTenTop).toBeLessThan(mobileDiscoveryLayout.timeTonight!.y)
+  expect(mobileDiscoveryLayout.timeTonight!.y).toBeLessThan(mobileDiscoveryLayout.tastePicker!.y)
   await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toBeVisible()
   await expect(page.locator('.discover-shelf--recent')).toBeVisible()
   await expect(heroSpotlight.getByRole('button', { name: 'Details' })).toBeVisible()
@@ -1031,11 +1035,14 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     const picker = document.querySelector('#discover-refine-title')
     const trend = Array.from(document.querySelectorAll('.discover-shelf h2')).find((heading) => heading.textContent?.trim() === 'OR TRY')
     const topTen = Array.from(document.querySelectorAll('.discover-shelf h2')).find((heading) => heading.textContent?.trim() === 'Top 10 For You')
-    return Boolean(picker && trend && topTen
+    const timeTonight = document.querySelector('.discover-time')
+    return Boolean(picker && trend && topTen && timeTonight
       && (trend.compareDocumentPosition(topTen) & Node.DOCUMENT_POSITION_FOLLOWING)
+      && (topTen.compareDocumentPosition(timeTonight) & Node.DOCUMENT_POSITION_FOLLOWING)
+      && (timeTonight.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING)
       && (topTen.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING))
   })
-  expect(pickerOrder, 'the taste picker should follow the weekly trending rail and Top 10 catalog').toBe(true)
+  expect(pickerOrder, 'the taste picker should follow the weekly trending rail, Top 10 and time recommendations').toBe(true)
   await expect(page.getByRole('heading', { name: 'Your Genres' })).toBeVisible()
   const fantasyGenreTile = page.locator('.discover-genres__grid button').filter({ hasText: 'Fantasy' }).first()
   const spotlightTitle = await page.locator('.discover-next-hero').getAttribute('data-title')
@@ -1097,7 +1104,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await contentTypeControls.getByRole('button', { name: 'Movies', exact: true }).click()
   const discoveryFlow = await page.locator('.discover-page').evaluate((root) => {
     const headings = Array.from(root.querySelectorAll<HTMLElement>('h2, h3')).map((heading) => heading.textContent?.trim() || '')
-    const referenceOrder = ['Your Next Obsession', 'OR TRY', 'Pick Three You Like', 'Top 10 For You', 'How Much Time Tonight?', 'Pick by Colour', 'Your Genres', 'Your Next Binge', 'Sunday Night Moods', 'Made for the Big Screen', 'Hidden Gems', 'New in Your Library', 'Keep Exploring']
+    const referenceOrder = ['Your Next Obsession', 'OR TRY', 'Top 10 For You', 'How Much Time Tonight?', 'Pick Three You Like', 'Pick by Colour', 'Your Genres', 'Your Next Binge', 'Sunday Night Moods', 'Made for the Big Screen', 'Hidden Gems', 'New in Your Library', 'Keep Exploring']
     return referenceOrder.filter((title) => headings.includes(title)).map((title) => headings.indexOf(title))
   })
   expect(discoveryFlow.every((position, index) => index === 0 || position > discoveryFlow[index - 1]!), 'the taste picker should stay near the Tonight recommendations before the deeper catalog shelves').toBe(true)
@@ -1599,14 +1606,14 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   }
   await expect.poll(() => continuationPages.has(4), { timeout: 10_000 }).toBe(true)
   const continuedGrid = page.locator('.discover-more__grid')
-  const firstContinuedCard = continuedGrid.getByRole('button', { name: 'More discovery fixture 1 More discovery fixture 1 2026', exact: true })
+  const firstContinuedCard = continuedGrid.getByRole('button', { name: /^More discovery fixture 1 .*More discovery fixture 1 2026$/ })
   await expect(firstContinuedCard).toBeVisible()
   await expect.poll(() => firstContinuedCard.evaluate((card) => getComputedStyle(card).animationName)).toBe('discover-more-card-arrive')
   const continuedGridStagger = await continuedGrid.locator(':scope > button').evaluateAll((cards) => cards.slice(0, 10).map((card) => getComputedStyle(card).animationDelay))
   expect(continuedGridStagger).toEqual(['0s', '0.032s', '0.064s', '0.096s', '0.128s', '0.16s', '0.192s', '0.224s', '0.256s', '0.288s'])
   const continuedBatchStagger = await continuedGrid.locator(':scope > button').evaluateAll((cards) => cards.slice(10, 12).map((card) => getComputedStyle(card).animationDelay))
   expect(continuedBatchStagger).toEqual(['0s', '0.032s'])
-  await expect(continuedGrid.getByRole('button').first()).toHaveAccessibleName('More discovery fixture 1 More discovery fixture 1 2026')
+  await expect(continuedGrid.getByRole('button').first()).toHaveAccessibleName(/More discovery fixture 1 .*More discovery fixture 1 2026$/)
   const continuedArtworkTitles = await continuedGrid.locator('img.media-card-artwork').evaluateAll((images) => images.map((image) => image.getAttribute('alt') || ''))
   expect(continuedArtworkTitles.slice(0, 5)).toEqual(Array.from({ length: 5 }, (_, index) => `More discovery fixture ${index + 1}`))
   expect(continuedArtworkTitles).not.toContain(heroTitle)
