@@ -1786,6 +1786,11 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
         const hero = root.querySelector<HTMLElement>('.discover-next-hero')!
         const heroCopy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
         const heroPoster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
+        const binge = root.querySelector<HTMLElement>('.discover-binge__feature')
+        const bingeCopy = binge?.querySelector<HTMLElement>('.discover-binge__copy')?.getBoundingClientRect()
+        const bingeGallery = binge?.querySelector<HTMLElement>('.discover-binge__gallery')?.getBoundingClientRect()
+        const bingeTitle = binge?.querySelector<HTMLElement>('.discover-binge__copy h3')?.getBoundingClientRect()
+        const bingeActions = binge?.querySelector<HTMLElement>('.discover-binge__actions')?.getBoundingClientRect()
         const bingeMainPoster = root.querySelector<HTMLElement>('.discover-binge__main-poster')?.getBoundingClientRect()
         const bingeAlternativePosters = Array.from(root.querySelectorAll<HTMLElement>('.discover-binge__alternatives button')).map((poster) => poster.getBoundingClientRect())
         const heroTitle = hero.querySelector<HTMLElement>('.discover-spotlight__copy h2')!
@@ -1834,6 +1839,13 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
           controlsRowsSeparated: modes.top >= tabs.bottom - 1,
           hero: hero.getBoundingClientRect().toJSON(),
           bingePosterRatios: [bingeMainPoster, ...bingeAlternativePosters].filter((bounds): bounds is DOMRect => Boolean(bounds && bounds.width > 0 && bounds.height > 0)).map((bounds) => bounds.width / bounds.height),
+          bingeLayout: binge && bingeCopy && bingeGallery && bingeTitle && bingeActions ? {
+            feature: binge.getBoundingClientRect().toJSON(),
+            copy: bingeCopy.toJSON(),
+            gallery: bingeGallery.toJSON(),
+            title: bingeTitle.toJSON(),
+            actions: bingeActions.toJSON(),
+          } : null,
           timeRow: timeRowBounds.toJSON(),
           timeCardsInside: timeCards.every((bounds) => bounds.top >= timeRowBounds.top - 2 && bounds.bottom <= timeRowBounds.bottom + 2),
           headingFontSize: Number.parseFloat(getComputedStyle(root.querySelector<HTMLElement>('.discover-page__heading h1')!).fontSize),
@@ -1873,9 +1885,22 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
       expect(layout.heroTextStacked, `${platform} spotlight text overlaps at ${width}px`).toBe(true)
       expect(layout.heroFontFamily, `${platform} spotlight should use the app's standard system font`).toContain('system-ui')
       expect(layout.maxPosterRatio, `${platform} posters are stretched at ${width}px`).toBeLessThanOrEqual(2.4)
-      if (width >= 1100) {
+      if (width >= 900) {
         expect(layout.bingePosterRatios, `${platform} desktop Binge posters should keep their portrait artwork shape`).toHaveLength(5)
         expect(layout.bingePosterRatios.every((ratio) => ratio >= 0.58 && ratio <= 0.76), `${platform} desktop Binge posters should not be stretched or cropped into landscape tiles: ${JSON.stringify(layout.bingePosterRatios)}`).toBe(true)
+      }
+      if (width >= 1100) {
+        expect(layout.bingeLayout, `${platform} desktop Binge content should render at ${width}px`).not.toBeNull()
+        if (layout.bingeLayout) {
+          const { feature, copy, gallery, title, actions } = layout.bingeLayout
+          expect(copy.left, `${platform} Binge copy should stay inside its feature`).toBeGreaterThanOrEqual(feature.left)
+          expect(copy.right, `${platform} Binge copy should not overlap the poster gallery`).toBeLessThanOrEqual(gallery.left + 1)
+          expect(gallery.right, `${platform} Binge gallery should stay inside its feature`).toBeLessThanOrEqual(feature.right)
+          expect(title.left, `${platform} Binge title should stay inside its copy column`).toBeGreaterThanOrEqual(copy.left)
+          expect(title.right, `${platform} Binge title should stay inside its copy column`).toBeLessThanOrEqual(copy.right + 1)
+          expect(actions.top, `${platform} Binge actions should follow the recommendation title`).toBeGreaterThanOrEqual(title.bottom - 1)
+          expect(actions.bottom, `${platform} Binge actions should stay inside their copy column`).toBeLessThanOrEqual(copy.bottom + 1)
+        }
       }
       expect(layout.headingFontSize, `${platform} Discovery heading is unexpectedly large at ${width}px`).toBeLessThanOrEqual(44)
       if (width >= 900) {
