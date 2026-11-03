@@ -480,7 +480,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       first_air_date: new Date().toISOString().slice(0, 10),
       vote_average: 8.2,
       vote_count: 1200,
-      popularity: 160 - index,
+      popularity: index >= 32 ? 30 - (index - 32) : 160 - index,
       genre_ids: [18, 35, 53, 27, 80, 9648, 878, 10765, 10759, 10751, 10762, 14],
       original_language: 'en',
     }))
@@ -647,8 +647,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const topTenTop = topTenHeading!.y
   expect(obsessionTop).toBeLessThan(trendingTop)
   expect(trendingTop).toBeLessThan(topTenTop)
-  await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toHaveCount(0)
-  await expect(page.locator('.discover-shelf--recent')).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toBeVisible()
+  await expect(page.locator('.discover-shelf--recent')).toBeVisible()
   await expect(heroSpotlight.getByRole('button', { name: 'Details' })).toBeVisible()
   const firstSpotlightTitle = await obsessionCard.getAttribute('data-title')
   expect(firstSpotlightTitle).not.toBeNull()
@@ -688,9 +688,10 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.getByRole('heading', { name: 'Top 10 For You', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Drama Picks', exact: true })).toHaveCount(0)
   await expect(page.locator('.discover-shelf--personal-genre')).toHaveCount(0)
-  await expect(page.locator('.discover-shelf--big-screen')).toHaveCount(0)
-  await expect(page.locator('.discover-shelf--recent')).toHaveCount(0)
-  await expect(page.locator('.discover-shelf--gems, .discover-shelf--top-rated')).toHaveCount(0)
+  await expect(page.locator('.discover-shelf--big-screen')).toBeVisible()
+  await expect(page.locator('.discover-shelf--recent')).toBeVisible()
+  await expect(page.locator('.discover-shelf--gems')).toBeVisible()
+  await expect(page.locator('.discover-shelf--top-rated')).toHaveCount(0)
   await expect.poll(() => tmdbRequestPaths.has('/3/discover/tv')).toBe(true)
   await expect(page.getByRole('heading', { name: 'Your Next Binge', exact: true })).toBeVisible()
   await expect.poll(() => tmdbRequestPaths.has('/3/trending/tv/week')).toBe(true)
@@ -770,7 +771,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       && (obsession.compareDocumentPosition(trend) & Node.DOCUMENT_POSITION_FOLLOWING)
       && (trend.compareDocumentPosition(topTen) & Node.DOCUMENT_POSITION_FOLLOWING))
   })
-  expect(trendingRailOrder, 'the independent editorial pick should lead into OR TRY and Top 10').toBe(true)
+  expect(trendingRailOrder, `the independent editorial pick should lead into OR TRY and Top 10 (headings: ${await page.locator('.discover-shelf h2').allTextContents()})`).toBe(true)
   const pickerBeforeShelves = await page.evaluate(() => {
     const picker = document.querySelector('#discover-refine-title')
     const topTen = Array.from(document.querySelectorAll('.discover-shelf h2')).find((heading) => heading.textContent?.trim() === 'Top 10 For You')
@@ -791,9 +792,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   }
   await expect(page.locator('.discover-next-hero')).toHaveAttribute('data-title', spotlightBeforeWeekendAlternate!)
   await expect(page.locator('.discover-time')).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Made for the Big Screen' })).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: 'Hidden Gems', exact: true })).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Made for the Big Screen' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Hidden Gems', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Sunday Night Moods' })).toBeVisible()
   await expect(page.getByRole('group', { name: 'Choose a watch duration' }).getByRole('button')).toHaveCount(3)
   await expect(page.getByRole('group', { name: 'Choose a mood' }).getByRole('button')).toHaveCount(3)
@@ -808,7 +809,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await contentTypeControls.getByRole('button', { name: 'Movies', exact: true }).click()
   const discoveryFlow = await page.locator('.discover-page').evaluate((root) => {
     const headings = Array.from(root.querySelectorAll<HTMLElement>('h2, h3')).map((heading) => heading.textContent?.trim() || '')
-    const referenceOrder = ['Your Next Obsession', 'OR TRY', 'Top 10 For You', 'Your Weekend Plan', 'Pick Three You Like', 'Pick by Colour', 'Your Genres', 'Your Next Binge', 'Sunday Night Moods', 'Keep Exploring']
+    const referenceOrder = ['Your Next Obsession', 'OR TRY', 'Top 10 For You', 'Your Weekend Plan', 'Pick Three You Like', 'Pick by Colour', 'Your Genres', 'Your Next Binge', 'Sunday Night Moods', 'Made for the Big Screen', 'Hidden Gems', 'New in Your Library', 'Keep Exploring']
     return referenceOrder.filter((title) => headings.includes(title)).map((title) => headings.indexOf(title))
   })
   expect(discoveryFlow.every((position, index) => index === 0 || position > discoveryFlow[index - 1]!), 'Discovery shelves should follow the order shown in the reference video').toBe(true)
@@ -995,7 +996,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(bingeFeature.locator('.discover-binge__copy')).toHaveCSS('animation-name', 'discover-binge-content-enter')
   await expect(bingeFeature.locator('.discover-binge__art img')).toHaveCSS('animation-name', 'discover-binge-art-enter')
   await page.getByRole('button', { name: 'Movies', exact: true }).click()
-  await expect(page.locator('.discover-shelf--big-screen')).toHaveCount(0)
+  await expect(page.locator('.discover-shelf--big-screen')).toBeVisible()
   await expect(page.locator('.discover-page .show-all-card')).toHaveCount(0)
   await page.locator('.discover-spotlight').first().scrollIntoViewIfNeeded()
   const discoveryLayout = await page.evaluate(() => {
@@ -1343,7 +1344,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(fullOrTryOrder.slice(0, 5), 'the full OR TRY catalog should use the same fresh, popularity-sorted entries as its shelf').toEqual(visibleOrTryOrder.slice(0, 5))
   await page.goBack()
   await expect(page.locator('.discover-page')).toBeVisible()
-  await expect(page.locator('.discover-shelf--recent')).toHaveCount(0)
+  await expect(page.locator('.discover-shelf--recent')).toBeVisible()
   // TMDB interactive requests retry once; fail both attempts to exercise a
   // true partial response, then let the user's explicit retry succeed.
   animeMovieContinuationFailuresRemaining = 2
@@ -1394,6 +1395,10 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
     }]))
     localStorage.setItem('aurales_active_profile_v1', profileId)
     localStorage.setItem(`aurales_skip_profile_picker:profile:${profileId}`, 'true')
+    localStorage.setItem(`aurales_local_watchlist_v1:profile:${profileId}`, JSON.stringify([{
+      id: 'tmdb-998101', tmdbId: 998101, title: 'Recently Added Composition Fixture', type: 'movie', provider: 'tmdb',
+      poster: 'https://image.tmdb.org/t/p/w500/recently-added-composition-fixture.jpg', year: 2026, addedAt: Date.now(),
+    }]))
     localStorage.setItem('aurales_app_managed_metadata', 'false')
     localStorage.setItem('tmdb_api_key', 'playwright-public-test-key')
   })
@@ -1414,7 +1419,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
       first_air_date: '2026-10-01',
       vote_average: 8.2,
       vote_count: 1400,
-      popularity: 240 - index * 5,
+      popularity: index >= 16 ? 30 - (index - 16) : 240 - index * 5,
       genre_ids: type === 'movie' ? [18, 35, 878, 27, 14] : [18, 10759, 10765],
       original_language: 'en',
     }))
@@ -1437,9 +1442,9 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
   await expect(page.getByRole('heading', { name: 'Pick by Colour' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Your Weekend Plan' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Sunday Night Moods' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Made for the Big Screen' })).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: 'Hidden Gems', exact: true })).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Made for the Big Screen' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Hidden Gems', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toBeVisible()
 
   for (const platform of ['web', 'tauri'] as const) {
     await page.evaluate((runtime) => { document.documentElement.dataset.runtimePlatform = runtime }, platform)
@@ -1465,6 +1470,12 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
         const sections = Array.from(root.querySelectorAll<HTMLElement>(
           '.discover-next-hero, .discover-time, .discover-shelf, .discover-refine, .discover-colors, .discover-genres, .discover-binge, .discover-more',
         )).map((section) => section.getBoundingClientRect())
+        const sectionDetails = Array.from(root.querySelectorAll<HTMLElement>(
+          '.discover-next-hero, .discover-time, .discover-shelf, .discover-refine, .discover-colors, .discover-genres, .discover-binge, .discover-more',
+        )).map((section) => {
+          const bounds = section.getBoundingClientRect()
+          return { title: section.querySelector('h2')?.textContent?.trim() || section.className, top: bounds.top, bottom: bounds.bottom }
+        })
         const editorialHeaders = Array.from(root.querySelectorAll<HTMLElement>('.discover-editorial-heading')).map((header) => {
           const section = header.closest<HTMLElement>('.discover-time, .discover-weekend, .discover-shelf')!
           const title = header.querySelector<HTMLElement>('h2')!.getBoundingClientRect()
@@ -1493,6 +1504,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
           heroTextContained: textBlocks.every((bounds) => bounds.left >= heroCopy.left - 1 && bounds.right <= heroCopy.right + 1 && bounds.top >= heroCopy.top - 1 && bounds.bottom <= heroCopy.bottom + 1),
           heroTextStacked: textBlocks.every((bounds, index) => index === 0 || textBlocks[index - 1]!.bottom <= bounds.top + 2),
           sectionsInside: sections.every((bounds) => bounds.left >= -1 && bounds.right <= document.documentElement.clientWidth + 1),
+          sectionDetails,
           sectionsStacked: sections.every((bounds, index) => index === 0 || bounds.height === 0 || sections[index - 1]!.height === 0 || sections[index - 1]!.bottom <= bounds.top + 1),
           editorialControlsInside: editorialHeaders.every(({ section, tabs }) => tabs.left >= section.left - 1 && tabs.right <= section.right + 1),
           editorialControlsSeparated: editorialHeaders.every(({ tabsSeparated }) => tabsSeparated),
@@ -1504,7 +1516,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
       expect(layout.page.left, `${platform} Discovery shifted at ${width}px`).toBeGreaterThanOrEqual(-1)
       expect(layout.page.right, `${platform} Discovery exceeds the viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
       expect(layout.sectionsInside, `${platform} Discovery sections exceed ${width}px`).toBe(true)
-      expect(layout.sectionsStacked, `${platform} Discovery sections overlap at ${width}px`).toBe(true)
+      expect(layout.sectionsStacked, `${platform} Discovery sections overlap at ${width}px: ${JSON.stringify(layout.sectionDetails)}`).toBe(true)
       expect(layout.editorialControlsInside, `${platform} time/mood controls escape their section at ${width}px`).toBe(true)
       expect(layout.editorialControlsSeparated, `${platform} time/mood headings overlap their controls at ${width}px`).toBe(true)
       expect(layout.minEditorialButtonHeight, `${platform} time/mood touch targets are too small at ${width}px`).toBeGreaterThanOrEqual(44)
