@@ -862,6 +862,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const timeTonightRail = page.locator('.discover-time .media-row')
   await expect(timeTonightRail).toBeVisible()
   await expect.poll(() => timeTonightRail.locator('.media-row-card-slot').count()).toBeGreaterThan(0)
+  const firstTimeTonightTitle = await timeTonightRail.locator('.media-row-card-slot img').first().getAttribute('alt')
+  expect(firstTimeTonightTitle, 'the runtime shelf should lead with the most popular eligible result instead of a stale low-momentum title').toBe('Discovery fixture 1')
   await timeTonightRail.getByRole('button', { name: 'Open How Much Time Tonight? catalog' }).click()
   const timeTonightCatalog = page.locator('.catalog-page')
   await expect(timeTonightCatalog.getByRole('heading', { name: 'How Much Time Tonight?', exact: true })).toBeVisible()
