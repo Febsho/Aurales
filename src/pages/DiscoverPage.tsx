@@ -5,7 +5,7 @@ import type { DiscoverConfig, DiscoveryCatalogContinuation, SearchResult, WatchP
 import { discoverTmdbPageWithCache, discoverTmdbWithCache, getTmdbPerson, getTrendingTmdb, tmdbProvider } from '../services/tmdb'
 import MediaRow from '../components/MediaRow'
 import MediaCard from '../components/MediaCard'
-import { applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
+import { applySearchResultArt, getSearchResultCustomArt, resolveArtFromProviders } from '../services/artwork'
 import { loadAmbientColor } from '../services/ambientColor'
 import { classifyPosterColor, POSTER_COLOR_GROUPS, selectPosterColorItems, type PosterColorGroup } from '../services/discovery/posterColor'
 import { useAppStore } from '../stores/appStore'
@@ -31,7 +31,7 @@ import { providerCacheScope } from '../services/cache/homeRowCacheKeys'
 import { getBerlinDateKey, getNextBerlinMidnight } from '../services/discovery/berlinDate'
 import { DISCOVERY_ALGORITHM_VERSION, discoverySourcesSettled, latestSnapshotForScope, makeDailySnapshotKey } from '../services/discovery/dailySnapshot'
 import { getActiveProfile, getActiveProfileId } from '../services/profiles'
-import { mediaIdentity } from '../services/mediaPresentation'
+import { cardArtworkUrl, mediaIdentity } from '../services/mediaPresentation'
 import { editorialAccolade } from '../services/accolades'
 import { getLocalWatchlist, subscribeLocalWatchlist, type LocalWatchlistItem } from '../services/localWatchlist'
 import { parseLibraryAddedAt, type DatedLibraryItem } from '../services/discovery/libraryItems'
@@ -1166,13 +1166,17 @@ export default function DiscoverPage() {
       .slice(0, 3)
       .map((entry) => entry.item),
   })), [genreOptions, genreTileCandidates])
+  const selectedGenreTileItems = useMemo(
+    () => genreTiles.find(({ option }) => option.genres[0] === selectedGenreId)?.items ?? [],
+    [genreTiles, selectedGenreId],
+  )
   const genreSelectionItems = useMemo(() => {
     if (selectedGenreId == null) return []
     const seen = new Set<string>()
     // genreItems came from a provider query that already includes this genre.
     // Some addon/local metadata omits genreIds on returned records, so checking
     // that field again incorrectly turns a successful genre query into an empty row.
-    return [...genreItems, ...tabRanked.filter((entry) => entry.item.genreIds?.includes(selectedGenreId)).map((entry) => entry.item)]
+    return [...selectedGenreTileItems, ...genreItems, ...tabRanked.filter((entry) => entry.item.genreIds?.includes(selectedGenreId)).map((entry) => entry.item)]
       .filter((item) => {
         const key = mediaIdentity(item)
         if (seen.has(key)) return false
@@ -1180,7 +1184,7 @@ export default function DiscoverPage() {
         return true
       })
       .slice(0, 20)
-  }, [genreItems, selectedGenreId, tabRanked])
+  }, [genreItems, selectedGenreId, selectedGenreTileItems, tabRanked])
   useEffect(() => {
     // Today's snapshot is immutable once committed. History, feedback and
     // provider refreshes influence tomorrow instead of reshuffling the page.
@@ -1348,6 +1352,35 @@ export default function DiscoverPage() {
       .slice(0, 5)
   }, [activity, bingeSeries, bingeTrending, currentTrendingRanked, feedback, impressions, mode, prefs, rankingNow, tab, tabRanked, tasteProfile])
   const activeBingeItem = bingeRecommendations.length ? bingeRecommendations[bingeIndex % bingeRecommendations.length] : undefined
+  const [bingePosters, setBingePosters] = useState<Record<string, string>>({})
+  const posterSize = useAppStore((state) => state.posterSize)
+  useEffect(() => {
+    let cancelled = false
+    const resolvePosters = async () => {
+      const resolved = await Promise.all(bingeRecommendations.map(async (item) => {
+        const key = mediaIdentity(item)
+        const displayItem = applySearchResultArt(item)
+        const customArt = getSearchResultCustomArt(item)
+        try {
+          const providerArt = await resolveArtFromProviders(
+            displayItem.type,
+            { tmdbId: displayItem.tmdbId, tvdbId: displayItem.tvdbId, imdbId: displayItem.imdbId },
+            Boolean(displayItem.isAnime),
+            'poster',
+          )
+          const poster = customArt.poster || providerArt.poster || displayItem.poster || item.poster
+          return poster ? [key, cardArtworkUrl(poster, 'poster', posterSize)!] as const : null
+        } catch {
+          const poster = customArt.poster || displayItem.poster || item.poster
+          return poster ? [key, cardArtworkUrl(poster, 'poster', posterSize)!] as const : null
+        }
+      }))
+      if (!cancelled) setBingePosters(Object.fromEntries(resolved.filter((entry): entry is readonly [string, string] => Boolean(entry))))
+    }
+    void resolvePosters()
+    return () => { cancelled = true }
+  }, [bingeRecommendations, posterSize])
+  const bingePoster = (item: SearchResult) => bingePosters[mediaIdentity(item)] || cardArtworkUrl(applySearchResultArt(item).poster || item.poster, 'poster', posterSize)
   const activeBingeRating = formatDiscoveryRating(activeBingeItem?.rating)
   const pickerPool = useMemo(() => {
     const seen = new Set<string>()
@@ -1854,13 +1887,15 @@ export default function DiscoverPage() {
               {tastePickCandidates.length === 0 && <p className="discover-taste-picks__empty">No matching titles. Try another search.</p>}
             </div>
           </section></DiscoveryReveal>}
-          {viewState === 'content' && colorPreviewItems.length >= 3 && <DiscoveryReveal><section className="discover-colors row-contain" aria-labelledby="discover-colors-title">
+          {viewState === 'content' && colorSamples.length >= 3 && <DiscoveryReveal><section className="discover-colors row-contain" aria-labelledby="discover-colors-title">
             <div className="discover-colors__heading"><div><p className="discover-section-eyebrow">Browse by poster colour</p><h2 id="discover-colors-title">Pick by Colour</h2></div><span>Popular titles, grouped by their artwork</span></div>
             <div className="discover-colors__filters" role="group" aria-label="Poster colour">
               <button type="button" className={selectedPosterColor === 'all' ? 'is-active' : ''} aria-pressed={selectedPosterColor === 'all'} onClick={() => setSelectedPosterColor('all')}>All</button>
               {POSTER_COLOR_GROUPS.filter((group) => availablePosterColors.has(group.id)).map((group) => <button key={group.id} type="button" className={selectedPosterColor === group.id ? 'is-active' : ''} aria-pressed={selectedPosterColor === group.id} onClick={() => setSelectedPosterColor(group.id)}><span aria-hidden="true" style={{ backgroundColor: group.color }} />{group.label}</button>)}
             </div>
-            <div className="discover-colors__row"><MediaRow title={colorCatalogTitle} items={colorPreviewItems} showAllItems={colorSelectionItems} layout="poster" disableCinematic showAllPath={`/catalog/${colorRowId}?title=${encodeURIComponent(colorCatalogTitle)}`} /></div>
+            {colorPreviewItems.length > 0
+              ? <div className="discover-colors__row"><MediaRow title={colorCatalogTitle} items={colorPreviewItems} showAllItems={colorSelectionItems} layout="poster" disableCinematic showAllPath={`/catalog/${colorRowId}?title=${encodeURIComponent(colorCatalogTitle)}`} /></div>
+              : <p className="discover-colors__empty" role="status">No titles found in this colour yet. Choose another colour.</p>}
           </section></DiscoveryReveal>}
           <DiscoveryReveal><section className="discover-genres row-contain" aria-labelledby="discover-genres-title">
             <div className="discover-genres__heading"><div><p className="discover-section-eyebrow">Browse by category</p><h2 id="discover-genres-title">Your Genres</h2></div></div>
@@ -1882,7 +1917,7 @@ export default function DiscoverPage() {
                     <small>{option.genres[0] === selectedGenreId && genreSelectionItems.length ? genreSelectionItems.length : filteredCandidates.filter((entry) => entry.item.genreIds?.includes(option.genres[0]!)).length} titles</small>
                   </span>
                   <span className="discover-genres__tile-art" aria-hidden="true">
-                    {items.map((item) => <img key={mediaIdentity(item)} src={item.poster} alt="" loading="lazy" decoding="async" />)}
+                    {items.map((item) => <img key={mediaIdentity(item)} src={cardArtworkUrl(applySearchResultArt(item).poster || item.poster, 'poster', posterSize)} alt="" loading="lazy" decoding="async" />)}
                   </span>
                 </button>
               })}
@@ -1903,12 +1938,12 @@ export default function DiscoverPage() {
               </div>
               {activeBingeItem && <div key={`gallery-${mediaIdentity(activeBingeItem)}`} className="discover-binge__gallery" aria-label="Binge recommendations">
                 <button className="discover-binge__main-poster" type="button" onClick={() => openItemDetail(activeBingeItem)} aria-label={`Details for ${activeBingeItem.title}`}>
-                  <img key={activeBingeItem.poster} className="discover-artwork-enter" src={activeBingeItem.poster} alt={`${activeBingeItem.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
+                  <img key={bingePoster(activeBingeItem)} className="discover-artwork-enter" src={bingePoster(activeBingeItem)} alt={`${activeBingeItem.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
                   {activeBingeRating && <small>★ {activeBingeRating}</small>}
                 </button>
                 <div className="discover-binge__alternatives">
                   {bingeRecommendations.filter((item) => mediaIdentity(item) !== mediaIdentity(activeBingeItem)).slice(0, 4).map((item) => <button key={mediaIdentity(item)} type="button" onClick={() => openItemDetail(item)} aria-label={`Details for ${item.title}`}>
-                    <img key={item.poster} className="discover-artwork-enter" src={item.poster} alt={`${item.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
+                    <img key={bingePoster(item)} className="discover-artwork-enter" src={bingePoster(item)} alt={`${item.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
                     {formatDiscoveryRating(item.rating) && <small>★ {formatDiscoveryRating(item.rating)}</small>}
                   </button>)}
                 </div>
