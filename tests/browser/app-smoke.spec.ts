@@ -190,6 +190,7 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
   await page.addInitScript(({ id, rows }) => {
     localStorage.setItem('aurales_profiles_v1', JSON.stringify([{ id, name: 'Mobile test', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', isDefault: true }]))
     localStorage.setItem('aurales_active_profile_v1', id)
+    localStorage.setItem(`aurales_skip_profile_picker:profile:${id}`, 'true')
     localStorage.setItem('tmdb_api_key', 'playwright-public-test-key')
     localStorage.setItem('aurales_app_managed_metadata', 'false')
     localStorage.setItem(`aurales_home_rows:profile:${id}`, JSON.stringify(rows))
@@ -221,7 +222,7 @@ test('mobile Home keeps a real catalogue hero and poster shelf compact', async (
   await page.route('https://image.tmdb.org/**', (route) => route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 3"><rect width="2" height="3" fill="#222"/></svg>' }))
 
   await page.goto('/')
-  await page.getByRole('button', { name: /select profile/i }).click()
+  await expect(page.locator('main')).toBeVisible()
   const loadingPosterShelf = page.locator('[data-home-shelves] .home-row-skeleton[data-layout="poster"]').first()
   await expect(loadingPosterShelf).toBeVisible()
   const skeletonMeasurements = await loadingPosterShelf.evaluate((shelf) => {
