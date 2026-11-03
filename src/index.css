@@ -6473,11 +6473,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-calendar__empty { margin: .35rem 0; color: rgba(255,255,255,.48); font-size: .72rem; }
 .discover-calendar__open { margin-top: .2rem; }
 .discover-calendar__open span { margin-left: .3rem; font-size: 1.1rem; }
-.discover-calendar--empty { display: flex; min-height: 3.25rem; align-items: center; justify-content: space-between; gap: .75rem; }
-.discover-calendar--empty .discover-calendar__empty-copy { display: flex; min-width: 0; align-items: baseline; gap: .65rem; }
-.discover-calendar--empty .discover-calendar__heading h2 { font-size: .92rem; }
-.discover-calendar--empty .discover-calendar__empty-copy > p { margin: 0; overflow: hidden; color: rgba(255,255,255,.45); font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
-.discover-calendar--empty .discover-calendar__open { flex: 0 0 auto; margin: 0; }
 .discover-binge__feature { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: .7rem; overflow: hidden; padding: 1rem; border: 1px solid rgba(255,255,255,.1); border-radius: 1.2rem; background: linear-gradient(110deg, rgba(28,28,33,.98), rgba(28,28,33,.72)); }
 .discover-binge__art { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
 .discover-binge__art::after { position: absolute; inset: 0; content: ''; background: linear-gradient(180deg, rgba(17,17,20,.76), rgba(17,17,20,.88)); }
@@ -6559,9 +6554,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-binge__main-poster { height: 100%; }
 }
 @media (max-width: 640px) {
-  .discover-calendar--empty { min-height: 2.9rem; }
-  .discover-calendar--empty .discover-calendar__empty-copy { align-items: flex-start; flex-direction: column; gap: .1rem; }
-  .discover-calendar--empty .discover-calendar__open { min-height: 40px; padding-inline: .65rem; font-size: .68rem; }
   .discover-page__heading .discover-spotlight-heading { margin-block: .9rem .45rem; }
   .discover-spotlight-heading { margin-block: .7rem .55rem; }
   .discover-spotlight-heading > p, .discover-spotlight-heading__accent { display: none; }

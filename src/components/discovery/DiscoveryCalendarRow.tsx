@@ -58,13 +58,9 @@ export default function DiscoveryCalendarRow({ watchProgress, traktConnected, si
   }, [progressSignature, traktConnected, simklConnected, anilistConnected, mdblistConnected, serverRevision, today, horizon])
 
   const visibleEntries = range === 'today' ? entries.filter((entry) => entry.date === today) : entries
-  if (!loading && entries.length === 0) return <section className="discover-calendar discover-calendar--empty row-contain" aria-labelledby="discover-calendar-title">
-    <div className="discover-calendar__empty-copy">
-      <div className="discover-calendar__heading"><h2 id="discover-calendar-title">Calendar</h2></div>
-      <p>No upcoming releases</p>
-    </div>
-    <button type="button" className="discover-calendar__open" onClick={() => navigate('/collections?tab=calendar')}>Open calendar <span aria-hidden="true">›</span></button>
-  </section>
+  // Keep Discovery focused on titles while calendar data is empty or loading.
+  // The full release calendar remains available from the Library navigation.
+  if (loading || entries.length === 0) return null
   const dateLabel = range === 'today'
     ? new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric' }).format(new Date())
     : `${new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(new Date())} – ${new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(addDays(new Date(), 30))}`
@@ -83,7 +79,7 @@ export default function DiscoveryCalendarRow({ watchProgress, traktConnected, si
         <span className="discover-calendar__title">{entry.title}</span>
         <span className="discover-calendar__subtitle">{entry.subtitle || (entry.kind === 'episode' ? 'New episode' : 'Movie')}</span>
       </button>)}
-    </div> : <p className="discover-calendar__empty" role={loading ? 'status' : undefined}>{loading ? 'Loading your calendar…' : range === 'today' ? 'Nothing new on your calendar today.' : 'No upcoming releases in your calendar yet.'}</p>}
+    </div> : <p className="discover-calendar__empty">Nothing new on your calendar today.</p>}
     <button type="button" className="discover-calendar__open" onClick={() => navigate('/collections?tab=calendar')}>Open calendar <span aria-hidden="true">›</span></button>
   </section>
 }
