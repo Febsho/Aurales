@@ -280,10 +280,6 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
       setLoading(false)
       return
     }
-    const makeStreamId = (baseId: string) => seasonEpisode && !/:\d+:\d+$/.test(baseId)
-      ? `${baseId}:${seasonEpisode.season}:${seasonEpisode.episode}`
-      : baseId
-
     // Merge installed addons (in-memory map) with store addons
     const installedStream = getStreamAddons(mediaType)
     const storeStream = addons.filter((a) => a.enabled)
@@ -355,31 +351,50 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
       })
     }
 
-    const subtitleAddons = getSubtitleAddons(mediaType)
-    const subtitleSeenUrls = new Set(seenUrls)
-    const allSubAddons = [...allAddons]
-    for (const a of subtitleAddons) {
-      if (!subtitleSeenUrls.has(a.url)) { allSubAddons.push(a); subtitleSeenUrls.add(a.url) }
-    }
+    return () => { cancelled = true }
+  }, [open, mediaId, mediaType, title, seasonEpisode, addons, sourceAddonId, sourceAddonItemId, sourceConnectionId, sourceItemId, playback, refreshRevision, tmdbId, imdbId, tvdbId, malId, anilistId])
 
+  // Subtitle lookup must outlive stream selection: playback can start while
+  // addon subtitle requests are still in flight, and selecting a stream must
+  // not cancel those requests along with the stream-list effect.
+  useEffect(() => {
+    if (!open || !mediaId) return
+    const cleanMediaId = String(mediaId).trim().replace(/:(\d+):(\d+)$/, '')
+    if (!cleanMediaId) return
+    const makeStreamId = (baseId: string) => seasonEpisode && !/:\d+:\d+$/.test(baseId)
+      ? `${baseId}:${seasonEpisode.season}:${seasonEpisode.episode}`
+      : baseId
+    const allSubAddons = [...getStreamAddons(mediaType)]
+    const seenUrls = new Set(allSubAddons.map((addon) => addon.url))
+    for (const addon of addons.filter((candidate) => candidate.enabled)) {
+      if (!seenUrls.has(addon.url)) {
+        allSubAddons.push(addon)
+        seenUrls.add(addon.url)
+      }
+    }
+    for (const addon of getSubtitleAddons(mediaType)) {
+      if (!seenUrls.has(addon.url)) {
+        allSubAddons.push(addon)
+        seenUrls.add(addon.url)
+      }
+    }
     const subtitleBaseIds = Array.from(new Set([
       sourceAddonItemId,
       cleanMediaId,
       tmdbId ? `tmdb:${tmdbId}` : undefined,
       tvdbId ? `tvdb:${tvdbId}` : undefined,
     ].filter((id): id is string => Boolean(id))))
-
     const subtitleRequests = allSubAddons.flatMap((addon) => subtitleBaseIds.map((baseId) => ({ addon, baseId })))
     const subtitleResults: SubtitleResult[][] = Array.from({ length: subtitleRequests.length }, () => [])
-    let subtitleCursor = 0
+    let cancelled = false
+    let cursor = 0
     const loadSubtitleWorker = async () => {
       while (!cancelled) {
-        const index = subtitleCursor++
+        const index = cursor++
         if (index >= subtitleRequests.length) return
         const { addon, baseId } = subtitleRequests[index]
         try {
-          const streamId = makeStreamId(baseId)
-          const tracks = await getAddonSubtitles(addon.url, mediaType, streamId, 'interactive')
+          const tracks = await getAddonSubtitles(addon.url, mediaType, makeStreamId(baseId), 'interactive')
           subtitleResults[index] = tracks.map((track) => ({
             ...track,
             label: track.label || getLanguageNameFromTrack(track.lang),
@@ -391,22 +406,18 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
         }
       }
     }
-    // A title may expose several ID variants across every installed addon.
-    // Bound these optional subtitle probes and keep them below stream requests
-    // in the shared network scheduler.
     void Promise.all(Array.from({ length: Math.min(4, subtitleRequests.length) }, loadSubtitleWorker)).then(() => {
       if (cancelled) return
       const seenTracks = new Set<string>()
-      const unique = subtitleResults.flat().filter((subtitle) => {
+      setSubtitles(subtitleResults.flat().filter((subtitle) => {
         const key = `${subtitle.url}\u0000${subtitle.lang}`
         if (seenTracks.has(key)) return false
         seenTracks.add(key)
         return true
-      })
-      setSubtitles(unique)
+      }))
     })
     return () => { cancelled = true }
-  }, [open, mediaId, mediaType, title, seasonEpisode, addons, sourceAddonId, sourceAddonItemId, sourceConnectionId, sourceItemId, playback, refreshRevision, tmdbId, imdbId, tvdbId, malId, anilistId])
+  }, [open, mediaId, mediaType, addons, seasonEpisode, sourceAddonItemId, tmdbId, tvdbId, refreshRevision])
 
   useEffect(() => {
     const unchecked = isTorBoxConnected() && streams.some((stream) => stream.infoHash && stream.behaviorHints?.torboxChecked !== true)
