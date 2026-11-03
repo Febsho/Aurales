@@ -5716,18 +5716,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .discover-page__tabs button { min-height: 2.75rem; padding-inline: .75rem; font-size: .78rem; }
   html[data-runtime-platform="web"] .discover-page__heading > span { font-size: .65rem; }
   html[data-runtime-platform="web"] .discover-page__controls { gap: .5rem; }
-  html[data-runtime-platform="web"] .discover-mode-menu { min-height: 2.75rem; }
-  html[data-runtime-platform="web"] .discover-hero { min-height: 440px !important; margin: 0 .875rem .75rem !important; border-radius: 1rem !important; }
-  html[data-runtime-platform="web"] .discover-hero__gradient { background-image: linear-gradient(to top, rgba(0,0,0,.96), rgba(0,0,0,.68) 46%, rgba(0,0,0,.1)) !important; }
-  html[data-runtime-platform="web"] .discover-hero > div.relative { min-height: 440px !important; max-width: none; padding: .9rem !important; }
-  html[data-runtime-platform="web"] .discover-hero h2 { font-size: clamp(1.45rem, 6vw, 1.8rem); line-height: 1.1; overflow-wrap: anywhere; }
-  html[data-runtime-platform="web"] .discover-hero > div.relative > img { max-width: 72%; max-height: 3.75rem; }
-  html[data-runtime-platform="web"] .discover-hero > div.relative > p { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: .74rem; line-height: 1.1rem; }
-  html[data-runtime-platform="web"] .discover-hero > div.relative > div.flex { gap: .4rem; }
-  html[data-runtime-platform="web"] .discover-hero > div.relative > div.flex > button { min-height: 2.65rem; padding: .55rem .8rem; font-size: .75rem; }
-  html[data-runtime-platform="web"] .discover-hero > button[aria-label^="Previous"],
-  html[data-runtime-platform="web"] .discover-hero > button[aria-label^="Next"] { display: none; }
-  html[data-runtime-platform="web"] .discover-hero > div.absolute.bottom-7 { right: 1rem; bottom: 1rem; }
 
   /* Detail pages keep one readable left edge and a shorter hero so the season
      picker and episode rail are reachable without a long empty backdrop. */
@@ -5833,8 +5821,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 
 @media (max-width: 390px) {
   html[data-runtime-platform="web"] .cinematic-nav-link { padding-inline: .38rem; font-size: .68rem; }
-  html[data-runtime-platform="web"] .discover-hero { min-height: 420px !important; }
-  html[data-runtime-platform="web"] .discover-hero > div.relative { min-height: 420px !important; padding: .85rem !important; }
   html[data-runtime-platform="web"] .detail-page .detail-hero-panel { height: clamp(34rem, 67svh, 40rem) !important; }
 }
 
@@ -6243,12 +6229,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-spotlight-heading > p { margin: 0 0 .22rem !important; color: rgba(255,255,255,.52); font-size: .78rem; font-weight: 600; line-height: 1.2; }
 .discover-spotlight-heading h2 { margin: 0; color: #fff; font-size: clamp(1.45rem, 2.7vw, 2.1rem); font-weight: 700; letter-spacing: -.035em; line-height: 1.12; overflow-wrap: anywhere; }
 .discover-spotlight-heading__accent { display: block; width: 2.25rem; height: .22rem; margin-top: .65rem; border-radius: 999px; background: #f7f7f7; }
-.discover-mode-menu { position: relative; display: inline-grid; min-height: 2.7rem; grid-template-columns: auto minmax(0, 13rem) auto; align-items: center; gap: .65rem; padding: .35rem .7rem .35rem .9rem; border: 1px solid rgba(255,255,255,.12); border-radius: .85rem; background: rgba(255,255,255,.055); color: rgba(255,255,255,.55); }
-.discover-mode-menu > span { font-size: .75rem; font-weight: 600; }
-.discover-mode-menu select { width: 100%; min-width: 0; min-height: 2rem; appearance: none; border: 0; outline: 0; background: transparent; color: white; font: inherit; font-size: .82rem; font-weight: 650; cursor: pointer; }
-.discover-mode-menu select option { background: #19191d; color: white; }
-.discover-mode-menu > svg { pointer-events: none; color: rgba(255,255,255,.65); }
-.discover-mode-menu { flex: 0 1 auto; }
 .discover-surprise-trigger { display: inline-flex; flex: 0 0 auto; min-height: 2.7rem; align-items: center; justify-content: center; gap: .55rem; padding: .55rem 1rem; border: 1px solid rgba(255,255,255,.13); border-radius: 999px; background: rgba(255,255,255,.08); color: #fff; font-size: .82rem; font-weight: 650; cursor: pointer; transition: background .18s ease, transform .18s ease; }
 .discover-surprise-trigger:hover { background: rgba(255,255,255,.16); }
 .discover-surprise-trigger:active { transform: scale(.97); }
@@ -6689,12 +6669,10 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-page__heading h1 { font-size: 1.65rem !important; }
   .discover-page__heading p { font-size: .78rem; line-height: 1.25rem; }
   .discover-page__heading > span { padding: .4rem .55rem; font-size: .62rem; }
-  .discover-page__controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .45rem; margin-top: .7rem; }
+  .discover-page__controls { display: flex; gap: .45rem; margin-top: .7rem; }
   .discover-page__tabs { display: grid; width: 100%; min-width: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: .25rem !important; }
   .discover-page__tabs button { display: flex; width: 100%; min-width: 0; min-height: 44px; align-items: center; justify-content: center; overflow: hidden; padding-inline: .2rem !important; font-size: clamp(.64rem, 2.8vw, .72rem) !important; line-height: 1.1; text-align: center; text-overflow: ellipsis; }
   .discover-page__modes { gap: .4rem; margin-bottom: .8rem !important; }
-  .discover-mode-menu { display: grid; width: auto; min-width: 0; min-height: 44px; flex: 1 1 auto; grid-template-columns: auto minmax(0, 1fr) auto; padding: .25rem .6rem; }
-  .discover-mode-menu select { min-height: 40px; font-size: .78rem; }
   .discover-surprise-trigger { min-height: 44px; gap: .35rem; padding-inline: .65rem; font-size: .73rem; }
   .discover-preferences-trigger { width: 44px; min-width: 44px; height: 44px; }
   .discover-spotlight { min-height: clamp(17rem, 36svh, 20rem); margin-bottom: .85rem; padding: .9rem; grid-template-columns: minmax(0, 1fr) clamp(6.5rem, 24vw, 7.5rem); grid-template-rows: minmax(0, 1fr); align-content: stretch; align-items: stretch; column-gap: .7rem; row-gap: 0; border-radius: 1.1rem; background: #27272b; box-shadow: 0 14px 35px rgba(0,0,0,.18); }

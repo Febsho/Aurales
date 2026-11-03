@@ -52,6 +52,8 @@ describe('cinematic detail responsive and scroll contracts', () => {
     expect(css).toContain('.media-row--ranked .media-row-card-slot > button')
     expect(css).toContain('--ranked-card-height: clamp(10.5rem, 42vw, 11.25rem)')
     expect(css).toContain('.discover-spotlight {')
+    expect(css).not.toContain('.discover-mode-menu')
+    expect(css).not.toContain('.discover-hero')
     expect(css).toContain('.discover-spotlight { min-height: clamp(17rem, 36svh, 20rem);')
     expect(css).not.toContain('.discover-spotlight__ambient { display: block; }')
     expect(css).toContain('grid-template-columns: minmax(0, 1fr) clamp(6.5rem, 24vw, 7.5rem);')

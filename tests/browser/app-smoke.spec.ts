@@ -1015,6 +1015,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     return {
       viewport,
       document: document.documentElement.scrollWidth,
+      controlsWidth: document.querySelector<HTMLElement>('.discover-page__controls')!.getBoundingClientRect().width,
+      tabsWidth: tabs.getBoundingClientRect().width,
       headingFits: contained(heading),
       tabsFit: contained(tabs),
       modesFit: contained(modes),
@@ -1053,6 +1055,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(discoveryLayout!.document).toBeLessThanOrEqual(discoveryLayout!.viewport + 1)
   expect(discoveryLayout!.headingFits).toBe(true)
   expect(discoveryLayout!.tabsFit).toBe(true)
+  expect(discoveryLayout!.tabsWidth).toBeGreaterThanOrEqual(discoveryLayout!.controlsWidth - 1)
   expect(discoveryLayout!.modesFit).toBe(true)
   expect(discoveryLayout!.surpriseHeight).toBeGreaterThanOrEqual(44)
   await page.locator('.app-scroll-root').evaluate((root) => root.scrollTo({ top: 0, behavior: 'instant' }))
