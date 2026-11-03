@@ -13,7 +13,7 @@ import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, rankCandidates, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
-import type { DiscoveryMode, RankedRecommendation, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
+import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
 import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktWatchedShows, getRatings as getTraktRatings } from '../services/trakt/sync'
 import { getSimklWatchedMovies, getSimklWatchedEpisodes } from '../services/simkl/history'
 import { getSimklWatchlist } from '../services/simkl/lists'
@@ -30,11 +30,7 @@ import { DISCOVERY_ALGORITHM_VERSION, discoverySourcesSettled, latestSnapshotFor
 import { getActiveProfile, getActiveProfileId } from '../services/profiles'
 import { mediaIdentity } from '../services/mediaPresentation'
 import { getLocalWatchlist, subscribeLocalWatchlist, type LocalWatchlistItem } from '../services/localWatchlist'
-import { loadAmbientColor } from '../services/ambientColor'
-import { classifyPosterColor, POSTER_COLOR_GROUPS, selectPosterColorItems, type PosterColorGroup } from '../services/discovery/posterColor'
 import { parseLibraryAddedAt, type DatedLibraryItem } from '../services/discovery/libraryItems'
-import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
-import { MIN_WIDESCREEN_RECOMMENDATIONS, selectWidescreenMovies } from '../services/discovery/widescreen'
 import { preferredScrollBehavior } from '../services/motion'
 
 
@@ -93,44 +89,6 @@ const IMPRESSIONS_RECORDED = new Set<string>()
 const MAX_DISCOVER_SESSION_KEYS = 500
 // Keep anime out of the Movies/Series tabs — it lives in the Anime tab only
 const ANIME_EXCLUDE_KEYWORDS = [{ id: 210024, name: 'anime' }]
-
-type DiscoveryMoodId = 'feel-good' | 'edge-of-your-seat' | 'mind-bending'
-type DiscoveryTimeId = 'short' | 'standard' | 'long'
-type DiscoveryTimeOption = { id: DiscoveryTimeId; label: string; runtimeMin?: number; runtimeMax?: number }
-const DISCOVERY_MOODS: Record<DiscoverTab, readonly { id: DiscoveryMoodId; label: string; genres: readonly number[] }[]> = {
-  movies: [
-    { id: 'feel-good', label: 'Feel-Good', genres: [35, 10751, 10749] },
-    { id: 'edge-of-your-seat', label: 'Edge of Your Seat', genres: [53, 27, 80] },
-    { id: 'mind-bending', label: 'Mind-Bending', genres: [878, 9648, 14] },
-  ],
-  series: [
-    { id: 'feel-good', label: 'Feel-Good', genres: [35, 10751, 10762] },
-    { id: 'edge-of-your-seat', label: 'Edge of Your Seat', genres: [80, 9648, 10759] },
-    { id: 'mind-bending', label: 'Mind-Bending', genres: [10765, 9648, 18] },
-  ],
-  anime: [
-    { id: 'feel-good', label: 'Feel-Good', genres: [35, 10751, 10762] },
-    { id: 'edge-of-your-seat', label: 'Edge of Your Seat', genres: [10759, 9648, 80] },
-    { id: 'mind-bending', label: 'Mind-Bending', genres: [10765, 9648, 878] },
-  ],
-}
-const DISCOVERY_TIME_OPTIONS: Record<DiscoverTab, readonly DiscoveryTimeOption[]> = {
-  movies: [
-    { id: 'short', label: 'Under 90 Minutes', runtimeMax: 90 },
-    { id: 'standard', label: 'About 2 Hours', runtimeMin: 91, runtimeMax: 140 },
-    { id: 'long', label: 'Long Night', runtimeMin: 141 },
-  ],
-  series: [
-    { id: 'short', label: 'Short Episodes', runtimeMax: 30 },
-    { id: 'standard', label: 'About 45 Minutes', runtimeMin: 31, runtimeMax: 50 },
-    { id: 'long', label: 'Long Episodes', runtimeMin: 51 },
-  ],
-  anime: [
-    { id: 'short', label: 'Short Episodes', runtimeMax: 25 },
-    { id: 'standard', label: 'About 30 Minutes', runtimeMin: 26, runtimeMax: 40 },
-    { id: 'long', label: 'Long Episodes', runtimeMin: 41 },
-  ],
-}
 
 function readDiscoveryPicks(key: string): string[] {
   try {
@@ -433,7 +391,6 @@ export default function DiscoverPage() {
   const traktConnected = useAppStore((s) => s.traktConnected)
   const simklConnected = useAppStore((s) => s.simklConnected)
   const anilistConnected = useAppStore((s) => s.anilistConnected)
-  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
   const stremioAuthKey = useMemo(() => getStremioAuth()?.authKey ?? null, [])
   const accountScope = useMemo(() => [
     traktConnected ? `trakt:${providerCacheScope('trakt')}` : '',
@@ -466,10 +423,6 @@ export default function DiscoverPage() {
   const [similarReadyScope, setSimilarReadyScope] = useState('')
   const [connectedReadyScope, setConnectedReadyScope] = useState('')
   const [selectedGenreId, setSelectedGenreId] = useState<number | null>(null)
-  const [selectedMoodId, setSelectedMoodId] = useState<DiscoveryMoodId>('feel-good')
-  const [selectedTimeId, setSelectedTimeId] = useState<DiscoveryTimeId>('standard')
-  const [selectedPosterColor, setSelectedPosterColor] = useState<PosterColorGroup | 'all'>('all')
-  const [posterColorSamples, setPosterColorSamples] = useState<Array<{ item: SearchResult; color: PosterColorGroup }>>([])
   const [tasteQuery, setTasteQuery] = useState('')
   const [bingeIndex, setBingeIndex] = useState(0)
   const [moreToDiscover, setMoreToDiscover] = useState<SearchResult[]>([])
@@ -698,35 +651,7 @@ export default function DiscoverPage() {
     refreshNonce,
     reportDiscoveryRowLoading,
   )
-  const moodOptions = DISCOVERY_MOODS[tab]
-  const selectedMood = moodOptions.find((mood) => mood.id === selectedMoodId) ?? moodOptions[0]!
-  const timeOptions = DISCOVERY_TIME_OPTIONS[tab]
-  const selectedTime = timeOptions.find((option) => option.id === selectedTimeId) ?? timeOptions[1]!
-  const moodRowId = `discover-mood-${tab}-${selectedMood.id}-${discoveryQueryKey}`
-  const timeRowId = `discover-time-${tab}-${selectedTime.id}-${discoveryQueryKey}`
   const genreRowId = `discover-genre-${tab}-${selectedGenreId ?? 'all'}-${discoveryQueryKey}`
-  const posterColorRowId = `discover-color-${tab}-${selectedPosterColor}-${discoveryQueryKey}`
-  const moodConfig = makeConfig(contentType, 'popularity.desc', preferences, {
-    includeGenres: tab === 'anime' ? ['16'] : selectedMood.genres.map(String),
-    genreMatchMode: tab === 'anime' ? 'AND' : 'OR',
-    voteCountMin: tab === 'anime' ? 25 : 100,
-    ...(tab === 'anime'
-      ? { originalLanguage: 'ja', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS }
-      : { excludeKeywords: ANIME_EXCLUDE_KEYWORDS }),
-  })
-  const moodRow = useDiscoverRow(moodConfig, moodRowId, true, refreshNonce, reportDiscoveryRowLoading)
-  const timeRowConfig = makeConfig(contentType, 'popularity.desc', preferences, {
-    runtimeMin: selectedTime.runtimeMin,
-    runtimeMax: selectedTime.runtimeMax,
-    voteAverageMin: Math.max(6.5, minRating),
-    voteCountMin: tab === 'anime' ? 50 : 150,
-    ...animeOverrides,
-  })
-  // Keep the explicit Discovery choice in control even when a user's global
-  // runtime preference is set; intersect it with the selected bucket.
-  if (selectedTime.runtimeMin !== undefined) timeRowConfig.runtimeMin = Math.max(timeRowConfig.runtimeMin ?? 0, selectedTime.runtimeMin)
-  if (selectedTime.runtimeMax !== undefined) timeRowConfig.runtimeMax = Math.min(timeRowConfig.runtimeMax ?? Number.POSITIVE_INFINITY, selectedTime.runtimeMax)
-  const timeRow = useDiscoverRow(timeRowConfig, timeRowId, true, refreshNonce, reportDiscoveryRowLoading)
   // Anime movies — the anime tab's discover rows are series-only, so without these
   // rows anime films would never surface in the anime category
   const animeMovieOverrides = { originalLanguage: 'ja', includeGenres: ['16'], genreMatchMode: 'AND' as const, excludeKeywords: HENTAI_EXCLUDE_KEYWORDS }
@@ -1129,76 +1054,6 @@ export default function DiscoverPage() {
     observer.observe(sentinel)
     return () => observer.disconnect()
   }, [continuationScope, viewState])
-  const posterColorCandidates = useMemo(() => {
-    const unique = new Map<string, { entry: RankedRecommendation; isTrending: boolean }>()
-    for (const entry of [...currentTrendingRanked, ...ranked]) {
-      if (!entry.item.poster) continue
-      const key = mediaIdentity(entry.item)
-      const existing = unique.get(key)
-      unique.set(key, {
-        entry: existing?.entry ?? entry,
-        isTrending: Boolean(existing?.isTrending || entry.trendSignal || entry.source === 'tmdb-trending'),
-      })
-    }
-    return [...unique.values()]
-      .sort((left, right) => Number(right.isTrending) - Number(left.isTrending)
-        || (right.entry.popularity || 0) - (left.entry.popularity || 0)
-        || right.entry.score.total - left.entry.score.total)
-      .slice(0, 24)
-      .map(({ entry }) => entry.item)
-  }, [currentTrendingRanked, ranked])
-  const posterColorCandidatesRef = useRef(posterColorCandidates)
-  posterColorCandidatesRef.current = posterColorCandidates
-  const posterColorCandidatesKey = posterColorCandidates.map((item) => `${mediaIdentity(item)}:${item.poster}`).join('|')
-  useEffect(() => {
-    const controller = new AbortController()
-    const candidates = posterColorCandidatesRef.current
-    setPosterColorSamples((current) => current.length ? [] : current)
-    let next = 0
-    const samples: Array<{ item: SearchResult; color: PosterColorGroup }> = []
-    const candidateOrder = new Map(candidates.map((item, index) => [mediaIdentity(item), index]))
-    const sampleWorker = async () => {
-      while (!controller.signal.aborted) {
-        const item = candidates[next++]
-        if (!item) return
-        const color = await loadAmbientColor(item.poster!, controller.signal)
-        if (color && !controller.signal.aborted) samples.push({ item, color: classifyPosterColor(color) })
-      }
-    }
-    void Promise.all(Array.from({ length: Math.min(4, candidates.length) }, () => sampleWorker()))
-      .then(() => { if (!controller.signal.aborted && samples.length) setPosterColorSamples(samples.sort((left, right) => (candidateOrder.get(mediaIdentity(left.item)) ?? 0) - (candidateOrder.get(mediaIdentity(right.item)) ?? 0))) })
-    return () => controller.abort()
-  }, [posterColorCandidatesKey])
-  const posterColorItems = useMemo(
-    () => selectPosterColorItems(posterColorSamples, selectedPosterColor),
-    [posterColorSamples, selectedPosterColor],
-  )
-  const availablePosterColors = useMemo(() => new Set(posterColorSamples.map(({ color }) => color)), [posterColorSamples])
-  const moodItems = useMemo(() => {
-    const moodGenreIds = new Set(selectedMood.genres)
-    const candidates = new Map<string, { item: SearchResult; popularity: number; trending: boolean; score: number }>()
-    const addCandidate = (item: SearchResult, popularity: number | undefined, trending: boolean, score = 0) => {
-      if (!matchesDiscoverTab(item, tab) || !candidatePassesPrefs(item, prefs) || !item.genreIds?.some((genreId) => moodGenreIds.has(genreId))) return
-      const key = mediaIdentity(item)
-      const existing = candidates.get(key)
-      candidates.set(key, {
-        item: existing?.item ?? item,
-        popularity: Math.max(existing?.popularity || 0, popularity || 0),
-        trending: Boolean(existing?.trending || trending),
-        score: Math.max(existing?.score || 0, score),
-      })
-    }
-    currentTrendingRanked.forEach((entry) => addCandidate(entry.item, entry.popularity, true, entry.score.total))
-    moodRow.forEach((item) => addCandidate(item, item.popularity, false))
-    ranked.forEach((entry) => addCandidate(entry.item, entry.popularity, Boolean(entry.trendSignal || entry.source === 'tmdb-trending'), entry.score.total))
-    return [...candidates.values()]
-      .sort((left, right) => Number(right.trending) - Number(left.trending)
-        || right.popularity - left.popularity
-        || (right.item.rating || 0) - (left.item.rating || 0)
-        || right.score - left.score)
-      .slice(0, 20)
-      .map(({ item }) => item)
-  }, [currentTrendingRanked, moodRow, ranked, selectedMood, tab, prefs])
   const genreTiles = useMemo(() => genreOptions.map((genre) => ({
     option: { title: genre.title, genres: [genre.id] },
     item: ranked.find((entry) => entry.item.genreIds?.includes(genre.id))?.item,
@@ -1300,12 +1155,6 @@ export default function DiscoverPage() {
     if (catalogItems.length < 5) return undefined
     return { id: 'trending-this-week', title: 'OR TRY', items: catalogItems.slice(0, 10), catalogItems }
   }, [currentTrendingRanked, heroItem, ranked, visiblePersonalizedSections])
-  // A separate widescreen movie shelf from public discovery data. Keep it
-  // independent of library activity and of the Surprise Me pool.
-  const bigScreenItems = useMemo(() => {
-    if (tab !== 'movies') return []
-    return selectWidescreenMovies(currentTrendingRanked, ranked, heroMediaKey ?? undefined)
-  }, [currentTrendingRanked, heroMediaKey, ranked, tab])
   const bingeRecommendations = useMemo(() => {
     const bingeRanked = sortRecommendationsByPopularity(tab === 'movies'
       ? rankCandidates(
@@ -1430,21 +1279,8 @@ export default function DiscoverPage() {
     catalogSetCache(`discover-section-${tab}-trending-this-week`, { items: trendingSection.catalogItems?.map((entry) => entry.item) ?? trendingSection.items.map((entry) => entry.item), page: 0, hasMore: false, scrollTop: 0 })
   }, [catalogSetCache, tab, trendingSection])
   useEffect(() => {
-    if (tab !== 'movies' || !bigScreenItems.length) return
-    catalogSetCache('discover-section-movies-big-screen', { items: bigScreenItems, page: 0, hasMore: false, scrollTop: 0 })
-  }, [bigScreenItems, catalogSetCache, tab])
-  useEffect(() => {
-    catalogSetCache(moodRowId, { items: moodItems, page: 0, hasMore: false, scrollTop: 0 })
-  }, [catalogSetCache, moodItems, moodRowId])
-  useEffect(() => {
-    catalogSetCache(timeRowId, { items: timeRow, page: 0, hasMore: false, scrollTop: 0 })
-  }, [catalogSetCache, timeRow, timeRowId])
-  useEffect(() => {
     catalogSetCache(genreRowId, { items: genreSelectionItems, page: 0, hasMore: false, scrollTop: 0 })
   }, [catalogSetCache, genreRowId, genreSelectionItems])
-  useEffect(() => {
-    catalogSetCache(posterColorRowId, { items: posterColorItems, page: 0, hasMore: false, scrollTop: 0 })
-  }, [catalogSetCache, posterColorItems, posterColorRowId])
   useEffect(() => {
     const key = `${berlinDateKey}:${tab}:${mode}`
     if (!ranked.length || IMPRESSIONS_RECORDED.has(key)) return
@@ -1688,7 +1524,6 @@ export default function DiscoverPage() {
             const catalogItems = (section.catalogItems ?? section.items).map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
             return <DiscoveryReveal key={section.id}><div className="row-contain discover-shelf"><MediaRow title={title} items={items} showAllItems={catalogItems} layout={isTopTen ? 'ranked' : 'poster'} previewLimit={isTopTen ? 10 : undefined} renderAllPreviewItems={isTopTen} disableCinematic forceShowAll showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div></DiscoveryReveal>
           })}
-          {viewState === 'content' && <DiscoveryReveal><DiscoveryCalendarRow watchProgress={watchProgress} traktConnected={traktConnected} simklConnected={simklConnected} anilistConnected={anilistConnected} mdblistApiKey={mdblistApiKey} /></DiscoveryReveal>}
           {ranked.length > 0 && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
             <p className="discover-section-eyebrow">Refine your taste</p>
             <div className="discover-refine__heading">
@@ -1750,38 +1585,6 @@ export default function DiscoverPage() {
               </div>}
             </div>
           </section></DiscoveryReveal>}
-          {viewState === 'content' && <DiscoveryReveal><section className="discover-moods row-contain" aria-labelledby="discover-moods-title">
-            <div className="discover-moods__heading"><div><p className="discover-section-eyebrow">Choose the mood</p><h2 id="discover-moods-title">Sunday Night Moods</h2></div></div>
-            <div className="discover-moods__options" role="group" aria-label="Choose a mood">
-              {moodOptions.map((mood) => <button key={mood.id} type="button" aria-pressed={selectedMood.id === mood.id} onClick={() => setSelectedMoodId(mood.id)}>{mood.label}</button>)}
-            </div>
-            {moodItems.length > 0
-              ? <MediaRow title={`${selectedMood.label} Picks`} items={moodItems} showAllItems={moodItems} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${moodRowId}?title=${encodeURIComponent(`${selectedMood.label} Picks`)}`} />
-              : <p className="discover-moods__status" role="status">{discoveryRowLoads[moodRowId] ? `Finding popular ${selectedMood.label.toLowerCase()} titles…` : `No popular ${selectedMood.label.toLowerCase()} titles found yet. Try another mood.`}</p>}
-          </section></DiscoveryReveal>}
-          {viewState === 'content' && <DiscoveryReveal><section className="discover-color row-contain" aria-labelledby="discover-color-title">
-            <div className="discover-color__heading"><div><p className="discover-section-eyebrow">Browse by poster colour</p><h2 id="discover-color-title">Pick by Colour</h2></div></div>
-            <div className="discover-color__filters" role="group" aria-label="Filter posters by dominant colour">
-              <button type="button" aria-pressed={selectedPosterColor === 'all'} onClick={() => setSelectedPosterColor('all')}>All</button>
-              {POSTER_COLOR_GROUPS.filter((group) => availablePosterColors.has(group.id)).map((group) => <button type="button" key={group.id} aria-pressed={selectedPosterColor === group.id} onClick={() => setSelectedPosterColor(group.id)}><span aria-hidden="true" style={{ backgroundColor: group.color }} />{group.label}</button>)}
-            </div>
-            {posterColorItems.length > 0
-              ? <MediaRow title={selectedPosterColor === 'all' ? 'Popular Posters' : `${POSTER_COLOR_GROUPS.find((group) => group.id === selectedPosterColor)?.label} Posters`} items={posterColorItems} showAllItems={posterColorItems} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${posterColorRowId}?title=${encodeURIComponent(selectedPosterColor === 'all' ? 'Popular Posters' : `${POSTER_COLOR_GROUPS.find((group) => group.id === selectedPosterColor)?.label} Posters`)}`} />
-              : <p className="discover-color__status" role="status">{ranked.some((entry) => entry.item.poster) ? 'Sampling artwork colours…' : 'Popular artwork will appear here when discovery results load.'}</p>}
-          </section></DiscoveryReveal>}
-          {viewState === 'content' && <DiscoveryReveal><section className="discover-time row-contain" aria-labelledby="discover-time-title">
-            <div className="discover-time__heading">
-              <div><p className="discover-section-eyebrow">Picked to fit</p><h2 id="discover-time-title">How Much Time Tonight?</h2></div>
-              <p>{tab === 'movies' ? 'Choose a film length' : 'Choose an episode length'}</p>
-            </div>
-            <div className="discover-time__options" role="group" aria-label={tab === 'movies' ? 'Choose film runtime' : 'Choose episode runtime'}>
-              {timeOptions.map((option) => <button key={option.id} type="button" aria-pressed={selectedTime.id === option.id} onClick={() => setSelectedTimeId(option.id)}>{option.label}</button>)}
-            </div>
-            {timeRow.length > 0
-              ? <MediaRow title={`${selectedTime.label} ${tab === 'movies' ? 'Picks' : 'Episodes'}`} items={timeRow} showAllItems={timeRow} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${timeRowId}?title=${encodeURIComponent(`${selectedTime.label} ${tab === 'movies' ? 'Picks' : 'Episodes'}`)}`} />
-              : <p className="discover-time__status" role="status">{discoveryRowLoads[timeRowId] ? 'Finding popular titles that fit…' : 'No popular titles found in this range yet.'}</p>}
-          </section></DiscoveryReveal>}
-          {viewState === 'content' && tab === 'movies' && bigScreenItems.length >= MIN_WIDESCREEN_RECOMMENDATIONS && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--big-screen"><MediaRow title="Best in Widescreen" items={bigScreenItems.slice(0, 10)} showAllItems={bigScreenItems} forceShowAll layout="landscape" disableCinematic showAllPath={`/catalog/discover-section-movies-big-screen?title=${encodeURIComponent('Best in Widescreen')}`} /></div></DiscoveryReveal>}
           {viewState === 'content' && <DiscoveryReveal><section className="discover-more row-contain" aria-labelledby="discover-more-title">
             <div className="discover-more__heading"><div><p className="discover-section-eyebrow">More popular picks</p><h2 id="discover-more-title">Keep Exploring</h2></div><span>{moreToDiscover.length ? `${moreToDiscover.length} titles loaded` : 'Fresh titles load as you scroll'}</span></div>
             {moreToDiscover.length > 0 && <div className="media-grid discover-more__grid">
