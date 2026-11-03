@@ -8448,6 +8448,29 @@ mod tests {
         assert!(materialized_info["streams"]
             .as_array()
             .is_some_and(|streams| streams.iter().any(|stream| stream["codec_type"] == "video")));
+        let mobile_hls_mp4 = dir.join("materialized-hls-mobile.mp4");
+        transcode_local_output(
+            &ffmpeg,
+            &materialized_playlist,
+            &mobile_hls_mp4,
+            ConversionMode::H264AacCompat,
+            ConversionOutputFormat::Mp4,
+        )
+        .await
+        .expect("FFmpeg should encode materialized HLS segments as mobile MP4");
+        let mobile_hls_info = probe_local_media(&ffmpeg, &mobile_hls_mp4)
+            .await
+            .expect("FFmpeg should probe the mobile MP4 made from HLS segments");
+        assert!(mobile_hls_info["streams"]
+            .as_array()
+            .is_some_and(|streams| {
+                streams
+                    .iter()
+                    .any(|stream| stream["codec_type"] == "video" && stream["codec_name"] == "h264")
+                    && streams.iter().any(|stream| {
+                        stream["codec_type"] == "audio" && stream["codec_name"] == "aac"
+                    })
+            }));
 
         let segment_bytes = tokio::fs::read(fixtures.join("hls-segment-000.m2ts"))
             .await

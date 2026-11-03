@@ -139,6 +139,8 @@ VOD seeking through MSE on desktop. Its iOS WebKit and Android Chromium
 projects also decode and seek a mobile H.264 Baseline Level 3.0 MP4 fixture;
 Android additionally exercises worker handoff and fallback escalation. These
 projects emulate mobile profiles and do not replace tests on physical devices.
+The FFmpeg integration also feeds materialized MPEG-TS HLS segments through
+the mobile H.264/AAC MP4 conversion path.
 For mobile video encoding (including HLS fallback when
 MP4 muxing is unavailable), the worker uses H.264 Baseline Level 4.2 and scales
 landscape video to at most 1920×1080 and portrait video to at most 1080×1920.
