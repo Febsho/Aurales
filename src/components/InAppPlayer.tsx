@@ -1609,6 +1609,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     conversionControllerRef.current?.abort()
     conversionControllerRef.current = controller
     setConversionBusy(true)
+    setLoading(true)
+    setError('')
     let conversionJobId: string | null = null
     setConversionMessage(mode === 'auto'
       ? 'Inspecting the source on your media worker. It will try stream copy, then AAC-only conversion, then video encoding…'
@@ -1770,7 +1772,12 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       }
     } catch (error) {
       if (controller.signal.aborted) return false
-      setConversionMessage(error instanceof Error ? error.message : 'The media worker conversion failed.')
+      const message = error instanceof Error ? error.message : 'The media worker conversion failed.'
+      setConversionMessage(message)
+      if (conversionSequenceRunRef.current !== playbackRunRef.current) {
+        setLoading(false)
+        setError(message)
+      }
       return false
     } finally {
       if (controller.signal.aborted && conversionJobId) void cancelMediaConversion(conversionJobId).catch(() => undefined)
@@ -1821,24 +1828,28 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     const message = browserPlaybackFailureMessage(url, video)
     const refreshingLiveSnapshot = liveSnapshotEnded
     autoplayBlockedRef.current = true
-    setLoading(false)
+    setLoading(true)
     setPaused(true)
-    setError(refreshingLiveSnapshot
-      ? 'The media worker is loading the latest live segments…'
-      : 'The browser could not decode this stream. Aurales is checking whether the media worker can prepare a compatible copy…')
+    setError('')
+    setPlayerNotice(refreshingLiveSnapshot
+      ? 'Loading the latest live segments through the media worker…'
+      : 'Checking playback support and preparing a compatible copy automatically…')
     const begin = (modes: MediaConversionMode[]) => {
       if (!isCurrentRun()) return
       updateConversionModes(modes)
       if (modes.length === 0) {
         const unavailable = `${message} The configured media worker does not offer a compatible output format or encoder.`
+        setLoading(false)
         setError(unavailable)
         if (!refreshingLiveSnapshot) playbackStartupRef.current.onPlaybackError?.(unavailable, video.currentTime)
         if (conversionSequenceRunRef.current === playbackRun) conversionSequenceRunRef.current = null
         return
       }
-      setError(refreshingLiveSnapshot
-        ? 'The media worker is preparing a fresh live snapshot…'
-        : 'The stream is not browser-compatible. Aurales is preparing a browser-friendly copy; the source is not modified.')
+      setLoading(true)
+      setError('')
+      setPlayerNotice(refreshingLiveSnapshot
+        ? 'Preparing a fresh live snapshot…'
+        : 'Preparing a browser-compatible copy. The original source is not modified.')
       void (async () => {
         for (const mode of modes) {
           if (!isCurrentRun()) return
@@ -1862,6 +1873,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         }
         if (!isCurrentRun()) return
         const failed = `${message} Automatic conversion attempts failed. Pick another source or check the media worker logs.`
+        setLoading(false)
         setError(failed)
         if (!refreshingLiveSnapshot) playbackStartupRef.current.onPlaybackError?.(failed, video.currentTime)
         if (conversionSequenceRunRef.current === playbackRun) conversionSequenceRunRef.current = null
@@ -1885,7 +1897,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
                 || (error instanceof DOMException && error.name === 'TimeoutError')
             if (!retryable || retries >= 2) throw error
             retries += 1
-            setError('The media worker connection was interrupted. Retrying its capability check…')
+            setLoading(true)
+            setPlayerNotice('The media worker connection was interrupted. Retrying its capability check…')
             await new Promise((resolve) => window.setTimeout(resolve, 1_000 * 2 ** (retries - 1)))
           }
         }
@@ -1910,6 +1923,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       }).catch(() => {
         if (!isCurrentRun()) return
         conversionOptionsCheckedRef.current = false
+        setLoading(false)
         setError(`${message} The media worker could not be reached to check conversion support.`)
         if (!refreshingLiveSnapshot) playbackStartupRef.current.onPlaybackError?.(message, video.currentTime)
         if (conversionSequenceRunRef.current === playbackRun) conversionSequenceRunRef.current = null
@@ -2238,7 +2252,13 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="flex flex-col items-center gap-4">
             <div className="w-12 h-12 border-2 border-white/80 border-t-transparent rounded-full animate-spin" />
-            <p className="text-sm text-white/60">Buffering stream...</p>
+            <p className="max-w-[min(85vw,28rem)] text-center text-sm text-white/75">
+              {conversionBusy
+                ? conversionMessage || 'Preparing a compatible stream…'
+                : conversionSequenceRunRef.current === playbackRunRef.current
+                  ? 'Checking playback support and preparing a compatible stream…'
+                  : 'Buffering stream…'}
+            </p>
           </div>
         </div>
       )}
