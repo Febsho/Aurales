@@ -105,6 +105,21 @@ const MAX_SUBTITLE_BYTES = 10 * 1024 * 1024
 const NO_SUBTITLES: SubtitleResult[] = []
 const NO_PLAYBACK_REQUEST_HEADERS: PlaybackRequestHeaders = {}
 
+function isWorkerMediaSessionUrl(value: string): boolean {
+  const config = getMediaWorkerConfig()
+  if (!config) return false
+  try {
+    const source = new URL(value, window.location.href)
+    const worker = new URL(config.baseUrl)
+    return source.origin === worker.origin
+      && /^\/v1\/media\/[a-f\d]{32}(?:\/[^/]+)?$/i.test(source.pathname)
+      && source.searchParams.has('signature')
+      && source.searchParams.has('expires')
+  } catch {
+    return false
+  }
+}
+
 async function resolvePmdbPlaybackEpisode(item: PlaybackItem): Promise<{ tmdbId?: number; season?: number; episode?: number }> {
   const tmdbId = item.tmdbId
   if (!item.isAnime || item.contentType !== 'series' || item.tvdbId == null || item.season == null || item.episode == null) {
@@ -458,7 +473,11 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     const capabilities = getPlatformCapabilities(video)
     const mobileSafari = /iPhone|iPad|iPod/i.test(navigator.userAgent)
       || (navigator.maxTouchPoints > 1 && /Macintosh/i.test(navigator.userAgent))
-    const useHlsJsForNativeHls = capabilities.nativeHls && capabilities.mediaSource && mobileSafari && !workerPlaybackUrl
+    const useHlsJsForNativeHls = capabilities.nativeHls
+      && capabilities.mediaSource
+      && mobileSafari
+      && !workerPlaybackUrl
+      && !isWorkerMediaSessionUrl(sourceUrl)
     if (capabilities.nativeHls && !useHlsJsForNativeHls) {
       video.src = sourceUrl
       setPlayerNotice(workerPlaybackDescriptionRef.current || 'Using native HLS playback. Available audio and subtitle tracks depend on this browser and stream.')
