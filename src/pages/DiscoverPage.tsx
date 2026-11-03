@@ -92,11 +92,6 @@ const MAX_DISCOVER_SESSION_KEYS = 500
 // Keep anime out of the Movies/Series tabs — it lives in the Anime tab only
 const ANIME_EXCLUDE_KEYWORDS = [{ id: 210024, name: 'anime' }]
 
-const DISCOVERY_SECTION_TITLES: Record<string, string> = {
-  'hidden-gems': 'Hidden Gems',
-  new: 'Recently Released',
-}
-
 type DiscoveryMoodId = 'feel-good' | 'edge-of-your-seat' | 'mind-bending'
 type DiscoveryTimeId = 'short' | 'standard' | 'long'
 type DiscoveryTimeOption = { id: DiscoveryTimeId; label: string; runtimeMin?: number; runtimeMax?: number }
@@ -1547,7 +1542,7 @@ export default function DiscoverPage() {
           {viewState === 'error' && <div className="mx-6 mb-8 grid min-h-72 place-items-center rounded-3xl border border-white/10 bg-white/[.03] p-8 text-center"><div><h2 className="text-xl font-black">Recommendations are unavailable</h2><p className="mt-2 max-w-md text-sm text-white/60">Cached discovery data was not available and recommendation sources could not be loaded. Check your network or TMDB settings.</p><button onClick={() => window.location.reload()} className="mt-5 rounded-full bg-white px-5 py-2 font-bold text-black">Retry</button></div></div>}
           {viewState === 'content' && trendingSection && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--trending"><MediaRow title="OR TRY" items={trendingSection.items.map((entry) => entry.item)} showAllItems={trendingSection.catalogItems?.map((entry) => entry.item)} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-trending-this-week?title=${encodeURIComponent('OR TRY')}`} /></div></DiscoveryReveal>}
           {visiblePersonalizedSections.filter((section) => section.id !== 'trending-this-week').map((section) => {
-            const title = section.id === 'made-for-you' ? (mode === 'for-you' ? 'Top 10 For You' : section.title) : (DISCOVERY_SECTION_TITLES[section.id] ?? section.title.replace(/\s+for you$/i, ''))
+            const title = section.id === 'made-for-you' ? (mode === 'for-you' ? 'Top 10 For You' : section.title) : section.title.replace(/\s+for you$/i, '')
             const isTopTen = section.id === 'made-for-you'
             const items = section.items.map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
             // A Top 10 catalog must stay a ten-title collection even when the
