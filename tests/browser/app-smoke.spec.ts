@@ -1767,6 +1767,15 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
     return Boolean(trending && calendar && calendar.getBoundingClientRect().top >= trending.getBoundingClientRect().bottom)
   })
   expect(calendarFollowsSpotlight, 'keep Calendar available after the Tonight and OR TRY editorial content').toBe(true)
+  const calendarLeadsTheCatalogs = await page.evaluate(() => {
+    const calendar = document.querySelector<HTMLElement>('.discover-calendar')
+    const tastePicker = document.querySelector<HTMLElement>('.discover-refine')
+    const firstCatalog = document.querySelector<HTMLElement>('.discover-shelf--top-rated, .media-row--ranked')
+    return Boolean(calendar && tastePicker && firstCatalog
+      && calendar.getBoundingClientRect().bottom <= tastePicker.getBoundingClientRect().top
+      && calendar.getBoundingClientRect().bottom <= firstCatalog.getBoundingClientRect().top)
+  })
+  expect(calendarLeadsTheCatalogs, 'Calendar should be surfaced near the top of Discovery before the recommendation catalogs').toBe(true)
   await expect(page.getByRole('heading', { name: 'Pick by Colour' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Sunday Night Moods' })).toBeVisible()
