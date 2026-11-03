@@ -5615,11 +5615,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     box-shadow: 0 1.1rem 2.8rem rgba(0,0,0,.32);
     cursor: pointer;
   }
-  /* The hero pagination sits just below the artwork card and is absolutely
-     positioned, so reserve its own line before the first Home shelf. */
-  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-shelves] {
-    margin-top: 2.65rem !important;
-  }
   html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] > .mobile-home-hero > div:not(.hero-content-overlay):not(.hero-carousel-arrow) {
     overflow: hidden;
     border-radius: inherit;
