@@ -451,7 +451,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         backdrop_path: '/more-discovery-fixture-backdrop.jpg',
         overview: 'An additional popular title loaded by Discovery pagination.',
         release_date: '2026-05-01',
-        vote_average: 7.8,
+        // Make the most popular continuation item less personally attractive
+        // than the rest so the long-tail surface proves it keeps popularity first.
+        vote_average: index === 0 ? 5 : 8.5,
         vote_count: 900,
         popularity: 240 - index,
         genre_ids: [18, 35, 53, 27, 80, 9648, 878, 10765, 10759, 10751, 10762, 14],
@@ -1281,6 +1283,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect.poll(() => firstContinuedCard.evaluate((card) => getComputedStyle(card).animationName)).toBe('discover-more-card-arrive')
   await expect(continuedGrid.getByRole('button').first()).toHaveAccessibleName('More discovery fixture 1 More discovery fixture 1 2026')
   const continuedArtworkTitles = await continuedGrid.locator('img.media-card-artwork').evaluateAll((images) => images.map((image) => image.getAttribute('alt') || ''))
+  expect(continuedArtworkTitles.slice(0, 5)).toEqual(Array.from({ length: 5 }, (_, index) => `More discovery fixture ${index + 1}`))
   expect(continuedArtworkTitles).not.toContain(heroTitle)
   expect(continuedArtworkTitles.some((title) => /^Weekly trend \d+$/.test(title))).toBe(false)
   expect(continuationPages).toContain(4)

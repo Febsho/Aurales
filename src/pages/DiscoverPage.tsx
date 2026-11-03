@@ -14,7 +14,7 @@ import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, rankCandidates, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
-import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
+import type { DiscoveryMode, RankedRecommendation, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
 import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktWatchedShows, getRatings as getTraktRatings } from '../services/trakt/sync'
 import { getSimklWatchedMovies, getSimklWatchedEpisodes } from '../services/simkl/history'
 import { getSimklWatchlist } from '../services/simkl/lists'
@@ -1096,7 +1096,7 @@ export default function DiscoverPage() {
         }
       }
 
-      const appended = rankCandidates(
+      const appended = sortRecommendationsByPopularity(rankCandidates(
         appendedCandidates.map((item) => recommendationCandidate(item, 'tmdb-discover')),
         tasteProfile,
         activity,
@@ -1105,7 +1105,7 @@ export default function DiscoverPage() {
         rankingNow,
         impressions,
         prefsWeights(prefs),
-      ).map((entry) => entry.item)
+      )).map((entry) => entry.item)
 
       if (appended.length) {
         moreToDiscoverItemsRef.current = [...moreToDiscoverItemsRef.current, ...appended]
@@ -1139,13 +1139,23 @@ export default function DiscoverPage() {
     return () => observer.disconnect()
   }, [continuationScope, viewState])
   const posterColorCandidates = useMemo(() => {
-    const unique = new Map<string, SearchResult>()
-    ranked
-      .filter((entry) => entry.item.poster)
-      .sort((left, right) => (right.popularity || 0) - (left.popularity || 0) || right.score.total - left.score.total)
-      .forEach((entry) => { if (unique.size < 24 && !unique.has(mediaIdentity(entry.item))) unique.set(mediaIdentity(entry.item), entry.item) })
+    const unique = new Map<string, { entry: RankedRecommendation; isTrending: boolean }>()
+    for (const entry of [...currentTrendingRanked, ...ranked]) {
+      if (!entry.item.poster) continue
+      const key = mediaIdentity(entry.item)
+      const existing = unique.get(key)
+      unique.set(key, {
+        entry: existing?.entry ?? entry,
+        isTrending: Boolean(existing?.isTrending || entry.trendSignal || entry.source === 'tmdb-trending'),
+      })
+    }
     return [...unique.values()]
-  }, [ranked])
+      .sort((left, right) => Number(right.isTrending) - Number(left.isTrending)
+        || (right.entry.popularity || 0) - (left.entry.popularity || 0)
+        || right.entry.score.total - left.entry.score.total)
+      .slice(0, 24)
+      .map(({ entry }) => entry.item)
+  }, [currentTrendingRanked, ranked])
   const posterColorCandidatesRef = useRef(posterColorCandidates)
   posterColorCandidatesRef.current = posterColorCandidates
   const posterColorCandidatesKey = posterColorCandidates.map((item) => `${mediaIdentity(item)}:${item.poster}`).join('|')
@@ -1175,23 +1185,29 @@ export default function DiscoverPage() {
   const availablePosterColors = useMemo(() => new Set(posterColorSamples.map(({ color }) => color)), [posterColorSamples])
   const moodItems = useMemo(() => {
     const moodGenreIds = new Set(selectedMood.genres)
-    const candidates = [
-      ...moodRow.map((item) => ({ item, popularity: item.popularity || 0 })),
-      ...ranked.filter((entry) => entry.item.genreIds?.some((genreId) => moodGenreIds.has(genreId))).map((entry) => ({ item: entry.item, popularity: entry.popularity || 0 })),
-    ]
-    const seen = new Set<string>()
-    return candidates
-      .filter(({ item }) => matchesDiscoverTab(item, tab) && candidatePassesPrefs(item, prefs) && item.genreIds?.some((genreId) => moodGenreIds.has(genreId)))
-      .filter(({ item }) => {
-        const key = mediaIdentity(item)
-        if (seen.has(key)) return false
-        seen.add(key)
-        return true
+    const candidates = new Map<string, { item: SearchResult; popularity: number; trending: boolean; score: number }>()
+    const addCandidate = (item: SearchResult, popularity: number | undefined, trending: boolean, score = 0) => {
+      if (!matchesDiscoverTab(item, tab) || !candidatePassesPrefs(item, prefs) || !item.genreIds?.some((genreId) => moodGenreIds.has(genreId))) return
+      const key = mediaIdentity(item)
+      const existing = candidates.get(key)
+      candidates.set(key, {
+        item: existing?.item ?? item,
+        popularity: Math.max(existing?.popularity || 0, popularity || 0),
+        trending: Boolean(existing?.trending || trending),
+        score: Math.max(existing?.score || 0, score),
       })
-      .sort((left, right) => right.popularity - left.popularity || (right.item.rating || 0) - (left.item.rating || 0))
+    }
+    currentTrendingRanked.forEach((entry) => addCandidate(entry.item, entry.popularity, true, entry.score.total))
+    moodRow.forEach((item) => addCandidate(item, item.popularity, false))
+    ranked.forEach((entry) => addCandidate(entry.item, entry.popularity, Boolean(entry.trendSignal || entry.source === 'tmdb-trending'), entry.score.total))
+    return [...candidates.values()]
+      .sort((left, right) => Number(right.trending) - Number(left.trending)
+        || right.popularity - left.popularity
+        || (right.item.rating || 0) - (left.item.rating || 0)
+        || right.score - left.score)
       .slice(0, 20)
       .map(({ item }) => item)
-  }, [moodRow, ranked, selectedMood, tab, prefs])
+  }, [currentTrendingRanked, moodRow, ranked, selectedMood, tab, prefs])
   const genreTiles = useMemo(() => genreOptions.map((genre) => ({
     option: { title: genre.title, genres: [genre.id] },
     item: ranked.find((entry) => entry.item.genreIds?.includes(genre.id))?.item,
