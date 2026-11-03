@@ -1250,7 +1250,7 @@ export default function DiscoverPage() {
     if (catalogItems.length < 5) return undefined
     return { id: 'trending-this-week', title: 'OR TRY', items: catalogItems.slice(0, 10), catalogItems }
   }, [currentTrendingRanked, heroItem, ranked, visiblePersonalizedSections])
-  // A separate cinematic movie shelf from public discovery data. Keep it
+  // A separate widescreen movie shelf from public discovery data. Keep it
   // independent of library activity and of the Surprise Me pool.
   const bigScreenItems = useMemo(() => {
     if (tab !== 'movies') return []
@@ -1259,13 +1259,12 @@ export default function DiscoverPage() {
       .filter((entry) => {
         const item = entry.item
         const key = mediaIdentity(item)
-        if (item.type !== 'movie' || !item.poster || key === heroMediaKey || seen.has(key)) return false
+        if (item.type !== 'movie' || !item.poster || !item.backdrop || key === heroMediaKey || seen.has(key)) return false
         seen.add(key)
         return true
       })
       .sort((left, right) =>
-        Number(Boolean(right.item.backdrop)) - Number(Boolean(left.item.backdrop))
-        || (right.popularity || 0) - (left.popularity || 0)
+        (right.popularity || 0) - (left.popularity || 0)
         || right.score.total - left.score.total,
       )
       .slice(0, 20)
@@ -1736,7 +1735,7 @@ export default function DiscoverPage() {
               ? <MediaRow title={`${selectedTime.label} ${tab === 'movies' ? 'Picks' : 'Episodes'}`} items={timeRow} showAllItems={timeRow} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${timeRowId}?title=${encodeURIComponent(`${selectedTime.label} ${tab === 'movies' ? 'Picks' : 'Episodes'}`)}`} />
               : <p className="discover-time__status" role="status">{discoveryRowLoads[timeRowId] ? 'Finding popular titles that fit…' : 'No popular titles found in this range yet.'}</p>}
           </section></DiscoveryReveal>}
-          {viewState === 'content' && tab === 'movies' && bigScreenItems.length >= 5 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--big-screen"><MediaRow title="Made for the Big Screen" items={bigScreenItems.slice(0, 10)} showAllItems={bigScreenItems} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-movies-big-screen?title=${encodeURIComponent('Made for the Big Screen')}`} /></div></DiscoveryReveal>}
+          {viewState === 'content' && tab === 'movies' && bigScreenItems.length >= 5 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--big-screen"><MediaRow title="Best in Widescreen" items={bigScreenItems.slice(0, 10)} showAllItems={bigScreenItems} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-movies-big-screen?title=${encodeURIComponent('Best in Widescreen')}`} /></div></DiscoveryReveal>}
           {viewState === 'content' && <DiscoveryReveal><section className="discover-more row-contain" aria-labelledby="discover-more-title">
             <div className="discover-more__heading"><div><p className="discover-section-eyebrow">More popular picks</p><h2 id="discover-more-title">Keep Exploring</h2></div><span>{moreToDiscover.length ? `${moreToDiscover.length} titles loaded` : 'Fresh titles load as you scroll'}</span></div>
             {moreToDiscover.length > 0 && <div className="media-grid discover-more__grid">

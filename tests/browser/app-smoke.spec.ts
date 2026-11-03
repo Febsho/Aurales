@@ -636,7 +636,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.getByRole('heading', { name: 'Drama Picks', exact: true })).toHaveCount(0)
   await expect(page.locator('.discover-shelf--personal-genre')).toHaveCount(0)
   await expect(page.locator('.discover-shelf--big-screen')).toHaveCount(1)
-  await expect(page.getByRole('heading', { name: 'Made for the Big Screen' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Best in Widescreen' })).toBeVisible()
   await expect(page.locator('.discover-shelf--gems, .discover-shelf--recent, .discover-shelf--top-rated')).toHaveCount(0)
   await expect.poll(() => tmdbRequestPaths.has('/3/discover/tv')).toBe(true)
   await expect(page.getByRole('heading', { name: 'Your Next Binge', exact: true })).toBeVisible()
@@ -932,7 +932,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.getByRole('button', { name: 'Movies', exact: true }).click()
   const bigScreenShelf = page.locator('.discover-shelf--big-screen')
   await expect(bigScreenShelf).toHaveCount(1)
-  await expect(bigScreenShelf.getByRole('heading', { name: 'Made for the Big Screen' })).toBeVisible()
+  await expect(bigScreenShelf.getByRole('heading', { name: 'Best in Widescreen' })).toBeVisible()
   const bigScreenLayout = await bigScreenShelf.evaluate((shelf) => {
     const rect = shelf.getBoundingClientRect()
     const firstCard = shelf.querySelector<HTMLElement>('.media-row-card-slot')?.getBoundingClientRect()
