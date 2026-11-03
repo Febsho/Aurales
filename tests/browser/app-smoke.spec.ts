@@ -1380,6 +1380,16 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
   let markTmdbRequestStarted!: () => void
   const tmdbRequestStarted = new Promise<void>((resolve) => { markTmdbRequestStarted = resolve })
   await page.addInitScript(() => {
+    const profileId = 'playwright-discovery-composition-profile'
+    localStorage.setItem('aurales_profiles_v1', JSON.stringify([{
+      id: profileId,
+      name: 'Default',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      isDefault: true,
+    }]))
+    localStorage.setItem('aurales_active_profile_v1', profileId)
+    localStorage.setItem(`aurales_skip_profile_picker:profile:${profileId}`, 'true')
     localStorage.setItem('aurales_app_managed_metadata', 'false')
     localStorage.setItem('tmdb_api_key', 'playwright-public-test-key')
   })
@@ -1413,7 +1423,8 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
   }))
 
   await page.goto('/discover')
-  await page.getByRole('button', { name: /select profile/i }).click()
+  const selectProfileButton = page.getByRole('button', { name: /select profile/i })
+  if (await selectProfileButton.isVisible().catch(() => false)) await selectProfileButton.click()
   await expect(page.locator('.discover-page')).toBeVisible()
   await tmdbRequestStarted
   await expect(page.getByRole('heading', { name: 'Calendar', exact: true })).toBeVisible()
@@ -1426,7 +1437,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
 
   for (const platform of ['web', 'tauri'] as const) {
     await page.evaluate((runtime) => { document.documentElement.dataset.runtimePlatform = runtime }, platform)
-    for (const width of [390, 768, 1024, 1440, 1920, 2560]) {
+    for (const width of [320, 390, 768, 1024, 1440, 1920, 2560]) {
       await page.setViewportSize({ width, height: 900 })
       const layout = await page.evaluate(() => {
         const root = document.querySelector<HTMLElement>('.discover-page')!
@@ -1463,6 +1474,9 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
           documentWidth: document.documentElement.scrollWidth,
           page: root.getBoundingClientRect().toJSON(),
           controls: controls.toJSON(), tabs: tabs.toJSON(), modes: modes.toJSON(),
+          tabLabelsFit: Array.from(root.querySelectorAll<HTMLElement>('.discover-page__tabs button')).every((button) => button.scrollWidth <= button.clientWidth + 4),
+          tabLabelWidths: Array.from(root.querySelectorAll<HTMLElement>('.discover-page__tabs button')).map((button) => ({ label: button.textContent?.trim(), width: button.clientWidth, scrollWidth: button.scrollWidth })),
+          controlsRowsSeparated: modes.top >= tabs.bottom - 1,
           hero: hero.getBoundingClientRect().toJSON(),
           weekend: weekendBounds.toJSON(),
           weekendColumnsSeparated: weekendCopy.right <= weekendPoster.left + 1,
@@ -1490,7 +1504,12 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
       expect(layout.minEditorialButtonHeight, `${platform} time/mood touch targets are too small at ${width}px`).toBeGreaterThanOrEqual(44)
       expect(layout.controls.left, `${platform} controls shift at ${width}px`).toBeGreaterThanOrEqual(-1)
       expect(layout.controls.right, `${platform} controls exceed the viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
-      expect(Math.abs((layout.tabs.top + layout.tabs.bottom) / 2 - (layout.modes.top + layout.modes.bottom) / 2), `${platform} tabs and actions should share a row at ${width}px`).toBeLessThanOrEqual(2)
+      if (width <= 370) {
+        expect(layout.controlsRowsSeparated, `${platform} narrow-screen actions should move below the readable category tabs at ${width}px`).toBe(true)
+        expect(layout.tabLabelsFit, `${platform} category tab labels should not be clipped at ${width}px: ${JSON.stringify(layout.tabLabelWidths)}`).toBe(true)
+      } else {
+        expect(Math.abs((layout.tabs.top + layout.tabs.bottom) / 2 - (layout.modes.top + layout.modes.bottom) / 2), `${platform} tabs and actions should share a row at ${width}px`).toBeLessThanOrEqual(2)
+      }
       expect(layout.heroColumnsSeparated, `${platform} spotlight copy overlaps its poster at ${width}px`).toBe(true)
       expect(layout.weekendColumnsSeparated, `${platform} Weekend Plan copy overlaps its poster at ${width}px`).toBe(true)
       expect(layout.weekendInside, `${platform} Weekend Plan exceeds the viewport at ${width}px`).toBe(true)

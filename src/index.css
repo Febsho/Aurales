@@ -6811,6 +6811,10 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 }
 
 @media (max-width: 370px) {
+  .discover-page__controls { flex-wrap: wrap; }
+  .discover-page__tabs { width: 100%; flex: 1 1 100%; }
+  .discover-page__modes { width: 100%; justify-content: flex-end; }
+  .discover-surprise-trigger { flex: 1 1 auto; }
   .discover-surprise-trigger { gap: .25rem; padding-inline: .5rem; font-size: .68rem; }
   .discover-spotlight { min-height: 17rem; padding: .8rem; column-gap: .6rem; }
   .discover-spotlight__poster { width: 100%; }
