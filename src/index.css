@@ -5518,6 +5518,20 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .inapp-player-options > button,
   html[data-runtime-platform="web"] .inapp-player-options > div > button { min-height: 2.5rem; }
   html[data-runtime-platform="web"] .inapp-player-transport > button:nth-child(2) { width: 3rem; height: 3rem; }
+  html[data-runtime-platform="web"] .inapp-player-controls { z-index: 15; }
+  html[data-runtime-platform="web"] .inapp-player-controls > div:first-child { margin-bottom: .25rem; }
+  html[data-runtime-platform="web"] [role="alert"] {
+    top: max(3.5rem, calc(env(safe-area-inset-top) + 2.5rem));
+    z-index: 30;
+    max-height: calc(100dvh - 8rem);
+    width: min(92vw, 38rem);
+    padding: .85rem;
+    background: rgba(0, 0, 0, .97);
+    line-height: 1.25rem;
+    pointer-events: auto;
+  }
+  html[data-runtime-platform="web"] [role="alert"] > div { display: grid; }
+  html[data-runtime-platform="web"] [role="alert"] button { min-height: 2.75rem; }
 }
 
 /* Shared touch layout: keep the desktop art direction, but remove its fixed
