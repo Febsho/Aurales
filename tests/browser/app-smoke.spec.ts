@@ -572,6 +572,18 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         genre_ids: [18, 35, 53, 27, 80, 9648, 878, 10765, 10759, 10751, 10762, 14],
         original_language: 'en',
       }))
+      : requestedPage === 7 && isUnfilteredMoviePage ? Array.from({ length: 8 }, (_, index) => ({
+        id: 85000 + index,
+        title: `More discovery after pause ${index + 1}`,
+        name: `More discovery after pause ${index + 1}`,
+        poster_path: '/more-discovery-fixture-poster.jpg',
+        release_date: '2026-05-01',
+        vote_average: 8.5,
+        vote_count: 1200,
+        popularity: 190 - index,
+        genre_ids: [18, 35, 53, 27, 80, 9648, 878, 10765, 10759, 10751, 10762, 14],
+        original_language: 'en',
+      }))
       : requestedPage > 6 && isUnfilteredMoviePage ? [] : Array.from({ length: 40 }, (_, index) => ({
       id: 81000 + index,
       title: `Discovery fixture ${index + 1}`,
@@ -587,7 +599,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       genre_ids: [18, 35, 53, 27, 80, 9648, 878, 10765, 10759, 10751, 10762, 14],
       original_language: 'en',
     }))
-    await route.fulfill({ json: { page: requestedPage, total_pages: isUnfilteredMoviePage ? 6 : 1, total_results: results.length, results } })
+    await route.fulfill({ json: { page: requestedPage, total_pages: isUnfilteredMoviePage ? 7 : 1, total_results: results.length, results } })
   })
   await page.route('https://image.tmdb.org/**', (route) => route.fulfill({ headers: { 'Access-Control-Allow-Origin': '*' }, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 3"><rect width="2" height="3" fill="#777"/></svg>' }))
 
@@ -1445,6 +1457,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await continueExploring.click()
   await expect.poll(() => continuationPages.has(6), { timeout: 10_000 }).toBe(true)
   await expect(continuedGrid.locator('img[alt^="More discovery after gap"]')).toHaveCount(8)
+  await moreSentinel.scrollIntoViewIfNeeded()
+  await expect.poll(() => continuationPages.has(7), { timeout: 10_000 }).toBe(true)
+  await expect(continuedGrid.locator('img[alt^="More discovery after pause"]')).toHaveCount(8)
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.mouse.move(0, 0)

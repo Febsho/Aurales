@@ -1134,14 +1134,11 @@ export default function DiscoverPage() {
     if (!sentinel || viewState !== 'content') return
     const observer = new IntersectionObserver((entries) => {
       if (!entries.some((entry) => entry.isIntersecting) || moreToDiscoverStatusRef.current !== 'idle') return
-      observer.unobserve(sentinel)
-      void loadMoreDiscoveryRef.current().finally(() => {
-        if (moreToDiscoverStatusRef.current === 'idle') requestAnimationFrame(() => observer.observe(sentinel))
-      })
+      void loadMoreDiscoveryRef.current()
     }, { rootMargin: '500px 0px' })
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [continuationScope, viewState])
+  }, [continuationScope, moreToDiscoverStatus, viewState])
   const genreTileCandidates = useMemo(
     () => sortRecommendationsByPopularity([...currentTrendingRanked, ...tabRanked])
       .filter((entry) => mediaIdentity(entry.item) !== heroMediaKey),
