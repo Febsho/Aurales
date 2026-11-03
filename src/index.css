@@ -6582,11 +6582,11 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-calendar__open span { margin-left: .3rem; font-size: 1.1rem; }
 .discover-binge__feature { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: .7rem; overflow: hidden; padding: 1rem; border: 1px solid rgba(255,255,255,.1); border-radius: 1.2rem; background: linear-gradient(110deg, rgba(28,28,33,.98), rgba(28,28,33,.72)); }
 .discover-binge__art { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
-.discover-binge__art::after { position: absolute; inset: 0; content: ''; background: linear-gradient(180deg, rgba(17,17,20,.76), rgba(17,17,20,.88)); }
-.discover-binge__art > img { width: 100%; height: 100%; object-fit: cover; opacity: .28; filter: blur(12px); transform: scale(1.06); animation: discover-binge-art-enter .46s cubic-bezier(.2,.75,.25,1) both; }
+.discover-binge__art::after { position: absolute; inset: 0; content: ''; background: linear-gradient(180deg, rgba(17,17,20,.58), rgba(17,17,20,.76)); }
+.discover-binge__art > img { width: 100%; height: 100%; object-fit: cover; opacity: .38; filter: blur(12px); transform: scale(1.06); animation: discover-binge-art-enter .46s cubic-bezier(.2,.75,.25,1) both; }
 .discover-binge__copy, .discover-binge__gallery { animation: discover-binge-content-enter .34s cubic-bezier(.2,.75,.25,1) both; }
 .discover-binge__copy { position: relative; z-index: 1; display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 1rem; }
-@keyframes discover-binge-art-enter { from { opacity: 0; transform: scale(1.085); } to { opacity: .28; transform: scale(1.06); } }
+@keyframes discover-binge-art-enter { from { opacity: 0; transform: scale(1.085); } to { opacity: .38; transform: scale(1.06); } }
 @keyframes discover-binge-content-enter { from { opacity: .35; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 .discover-binge__copy h3 { margin: .15rem 0 .2rem; color: #fff; font-size: clamp(1.15rem, 2.4vw, 1.6rem); line-height: 1.12; overflow-wrap: anywhere; }
 .discover-binge__copy > div:first-child > p:not(.discover-section-eyebrow) { margin: 0; color: rgba(255,255,255,.65); font-size: .8rem; }
@@ -6607,26 +6607,35 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-binge__main-poster small { bottom: 2rem; }
 @media (min-width: 900px) {
   .discover-binge__feature {
-    grid-template-columns: minmax(15rem, .8fr) minmax(0, 1.2fr);
+    min-height: clamp(18rem, 27vw, 21rem);
+    grid-template-columns: minmax(16rem, .82fr) minmax(0, 1.18fr);
     align-items: center;
     gap: clamp(1.1rem, 2.5vw, 2rem);
     padding: clamp(1rem, 2vw, 1.5rem);
   }
+  .discover-binge__art::after { background: linear-gradient(90deg, rgba(17,17,20,.58), rgba(17,17,20,.7)), linear-gradient(180deg, rgba(17,17,20,.18), rgba(17,17,20,.48)); }
   .discover-binge__copy {
     min-height: 100%;
     align-items: flex-start;
     flex-direction: column;
     justify-content: center;
   }
-  .discover-binge__actions { margin-top: .6rem; }
+  .discover-binge__copy h3 { max-width: 24rem; font-size: clamp(1.3rem, 2vw, 1.55rem); line-height: 1.15; }
+  .discover-binge__actions { gap: .55rem; margin-top: .8rem; }
+  .discover-binge__copy button { min-height: 2.8rem; padding-inline: 1rem; font-size: .82rem; }
   .discover-binge__gallery {
-    height: clamp(17rem, 27vw, 23rem);
+    height: clamp(15rem, 22vw, 19rem);
     grid-column: 2;
     grid-row: 1;
-    grid-template-columns: minmax(8rem, .9fr) minmax(0, 1.1fr);
+    grid-template-columns: minmax(7.5rem, .78fr) minmax(0, 1.22fr);
     align-self: center;
   }
-  .discover-binge__main-poster { height: 100%; }
+  .discover-binge__main-poster { width: auto; height: 100%; justify-self: center; }
+}
+@media (min-width: 1100px) {
+  .discover-binge__gallery { grid-template-columns: minmax(8rem, .82fr) minmax(0, 1.8fr); }
+  .discover-binge__alternatives { grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); align-items: center; }
+  .discover-binge__alternatives button { height: auto; align-self: center; aspect-ratio: 2 / 3; }
 }
 @media (max-width: 640px) {
   .discover-page__heading .discover-spotlight-heading { margin-block: .9rem .45rem; }

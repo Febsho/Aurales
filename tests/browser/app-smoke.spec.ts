@@ -1785,6 +1785,8 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
         const hero = root.querySelector<HTMLElement>('.discover-next-hero')!
         const heroCopy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
         const heroPoster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
+        const bingeMainPoster = root.querySelector<HTMLElement>('.discover-binge__main-poster')?.getBoundingClientRect()
+        const bingeAlternativePosters = Array.from(root.querySelectorAll<HTMLElement>('.discover-binge__alternatives button')).map((poster) => poster.getBoundingClientRect())
         const heroTitle = hero.querySelector<HTMLElement>('.discover-spotlight__copy h2')!
         const timeSection = root.querySelector<HTMLElement>('.discover-time')!
         const timeRow = timeSection.querySelector<HTMLElement>('.media-row')
@@ -1830,6 +1832,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
           }),
           controlsRowsSeparated: modes.top >= tabs.bottom - 1,
           hero: hero.getBoundingClientRect().toJSON(),
+          bingePosterRatios: [bingeMainPoster, ...bingeAlternativePosters].filter((bounds): bounds is DOMRect => Boolean(bounds && bounds.width > 0 && bounds.height > 0)).map((bounds) => bounds.width / bounds.height),
           timeRow: timeRowBounds.toJSON(),
           timeCardsInside: timeCards.every((bounds) => bounds.top >= timeRowBounds.top - 2 && bounds.bottom <= timeRowBounds.bottom + 2),
           headingFontSize: Number.parseFloat(getComputedStyle(root.querySelector<HTMLElement>('.discover-page__heading h1')!).fontSize),
@@ -1869,6 +1872,10 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
       expect(layout.heroTextStacked, `${platform} spotlight text overlaps at ${width}px`).toBe(true)
       expect(layout.heroFontFamily, `${platform} spotlight should use the app's standard system font`).toContain('system-ui')
       expect(layout.maxPosterRatio, `${platform} posters are stretched at ${width}px`).toBeLessThanOrEqual(2.4)
+      if (width >= 1100) {
+        expect(layout.bingePosterRatios, `${platform} desktop Binge posters should keep their portrait artwork shape`).toHaveLength(5)
+        expect(layout.bingePosterRatios.every((ratio) => ratio >= 0.58 && ratio <= 0.76), `${platform} desktop Binge posters should not be stretched or cropped into landscape tiles: ${JSON.stringify(layout.bingePosterRatios)}`).toBe(true)
+      }
       expect(layout.headingFontSize, `${platform} Discovery heading is unexpectedly large at ${width}px`).toBeLessThanOrEqual(44)
       if (width >= 900) {
         expect(layout.hero.height, `${platform} spotlight is too short at ${width}px`).toBeGreaterThanOrEqual(300)
