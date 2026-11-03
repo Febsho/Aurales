@@ -115,6 +115,10 @@ test('mobile HLS decoder failures are converted to a native MP4 by the worker', 
   await expect.poll(() => conversionRequest).not.toBeNull()
   expect(conversionRequest).toMatchObject({ url: sourceUrl, mode: 'auto', outputFormat: 'mp4' })
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputMediaId}?`)
+  await expect(page.locator('body')).toHaveAttribute('data-playback-started', 'true', { timeout: 15_000 })
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.duration), { timeout: 15_000 }).toBeGreaterThan(2.9)
+  await video.evaluate((element: HTMLVideoElement) => { element.currentTime = 1.5 })
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime), { timeout: 10_000 }).toBeGreaterThan(1.4)
 })
 
 test('unsupported media tries remux, AAC audio copy, then H.264/AAC automatically', async ({ page }, testInfo) => {
