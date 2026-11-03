@@ -1405,8 +1405,21 @@ export default function DiscoverPage() {
   const pickerRecommendation = (pickerSelectionKey ? pickerPool.find((entry) => mediaIdentity(entry.item) === pickerSelectionKey) : undefined) || pickerPool[0]
   const pickerItem = pickerRecommendation?.item
   const pickerFrameId = pickerItem ? mediaIdentity(pickerItem) : null
+  const pickerFrameAnimationAtRef = useRef<number | null>(null)
   useEffect(() => {
-    if (!surpriseSpinning || !pickerFrameId || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    if (!surpriseSpinning) {
+      pickerFrameAnimationAtRef.current = null
+      return
+    }
+    if (!pickerFrameId || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const now = performance.now()
+    const previousFrameAt = pickerFrameAnimationAtRef.current
+    pickerFrameAnimationAtRef.current = now
+    // Follow the roulette's decelerating frame cadence. Short early intervals
+    // get a quick crossfade; the chosen title gets a longer, settled entrance.
+    const frameDuration = previousFrameAt == null
+      ? 150
+      : Math.max(48, Math.min(360, (now - previousFrameAt) * 0.82))
     const surfaces = pickerDialogRef.current?.querySelectorAll<HTMLElement>(
       '.discover-picker__poster > img, .discover-picker__copy h2:not(.sr-only), .discover-picker__logo',
     )
@@ -1416,7 +1429,7 @@ export default function DiscoverPage() {
       surface.animate([
         { opacity: 0.28, transform: 'translateY(5px) scale(.985)' },
         { opacity: 1, transform: 'translateY(0) scale(1)' },
-      ], { duration: 180, easing: 'cubic-bezier(.2,.75,.25,1)', fill: 'both' })
+      ], { duration: frameDuration, easing: 'cubic-bezier(.2,.75,.25,1)', fill: 'both' })
     })
   }, [pickerFrameId, surpriseSpinning])
   const tastePickPool = useMemo(() => {
@@ -1527,8 +1540,8 @@ export default function DiscoverPage() {
     const delays = [65, 75, 90, 115, 150, 200, 270, 360]
     updateSurpriseSpinning(true)
     // A throttled background tab or a slow embedded WebKit timer must never
-    // leave the roulette busy indefinitely. The normal sequence completes in
-    // about 1.6 seconds; this only releases the already-selected winner when
+    // leave the roulette busy indefinitely. The normal sequence settles in
+    // about two seconds; this only releases the already-selected winner when
     // the browser stalls the scheduled frames.
     const finishTimer = window.setTimeout(() => {
       if (surpriseRunRef.current !== runId) return
@@ -1555,6 +1568,10 @@ export default function DiscoverPage() {
             previousId = next.item.id
           }
         }
+        if (surpriseRunRef.current !== runId) return
+        // Give the final rolling frame the same decelerated pause it earned
+        // before revealing the selected winner.
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 320))
         if (surpriseRunRef.current !== runId) return
         onSelect(winner.item)
         // Let the final title/poster entry animation finish while the rolling

@@ -992,6 +992,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect.poll(() => pickerDialog.locator('.discover-picker__poster').evaluate((poster) => getComputedStyle(poster).animationName)).toBe('discover-picker-rolling')
   await expect.poll(() => pickerDialog.locator('.discover-picker__poster > img').evaluate((image) => image.getAnimations().some((animation) => animation.playState === 'running'))).toBe(true)
   await expect(surpriseButton).toHaveAttribute('aria-busy', 'false', { timeout: 10_000 })
+  const winnerEntryDuration = await pickerDialog.locator('.discover-picker__poster > img').evaluate((image) => Math.max(0, ...image.getAnimations().map((animation) => Number(animation.effect?.getTiming().duration) || 0)))
+  expect(winnerEntryDuration, 'the final roulette frame should slow down into the chosen title').toBeGreaterThanOrEqual(200)
   await expect(pickerDialog.getByRole('button', { name: 'Open', exact: true })).toBeVisible()
   await expect(pickerDialog.getByRole('button', { name: 'Spin again', exact: true })).toBeVisible()
   await expect(heroSpotlight).toHaveAttribute('data-title', startingHeroTitle!)
