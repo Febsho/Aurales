@@ -34,6 +34,7 @@ import { loadAmbientColor } from '../services/ambientColor'
 import { classifyPosterColor, POSTER_COLOR_GROUPS, selectPosterColorItems, type PosterColorGroup } from '../services/discovery/posterColor'
 import { parseLibraryAddedAt, type DatedLibraryItem } from '../services/discovery/libraryItems'
 import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
+import { MIN_WIDESCREEN_RECOMMENDATIONS, selectWidescreenMovies } from '../services/discovery/widescreen'
 
 
 const GENRE_MAP_MOVIE: Record<number, string> = {
@@ -1254,21 +1255,7 @@ export default function DiscoverPage() {
   // independent of library activity and of the Surprise Me pool.
   const bigScreenItems = useMemo(() => {
     if (tab !== 'movies') return []
-    const seen = new Set<string>()
-    return [...currentTrendingRanked, ...ranked]
-      .filter((entry) => {
-        const item = entry.item
-        const key = mediaIdentity(item)
-        if (item.type !== 'movie' || !item.poster || !item.backdrop || key === heroMediaKey || seen.has(key)) return false
-        seen.add(key)
-        return true
-      })
-      .sort((left, right) =>
-        (right.popularity || 0) - (left.popularity || 0)
-        || right.score.total - left.score.total,
-      )
-      .slice(0, 20)
-      .map((entry) => entry.item)
+    return selectWidescreenMovies(currentTrendingRanked, ranked, heroMediaKey ?? undefined)
   }, [currentTrendingRanked, heroMediaKey, ranked, tab])
   const bingeRecommendations = useMemo(() => {
     const bingeRanked = tab === 'movies'
@@ -1735,7 +1722,7 @@ export default function DiscoverPage() {
               ? <MediaRow title={`${selectedTime.label} ${tab === 'movies' ? 'Picks' : 'Episodes'}`} items={timeRow} showAllItems={timeRow} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${timeRowId}?title=${encodeURIComponent(`${selectedTime.label} ${tab === 'movies' ? 'Picks' : 'Episodes'}`)}`} />
               : <p className="discover-time__status" role="status">{discoveryRowLoads[timeRowId] ? 'Finding popular titles that fit…' : 'No popular titles found in this range yet.'}</p>}
           </section></DiscoveryReveal>}
-          {viewState === 'content' && tab === 'movies' && bigScreenItems.length >= 5 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--big-screen"><MediaRow title="Best in Widescreen" items={bigScreenItems.slice(0, 10)} showAllItems={bigScreenItems} forceShowAll layout="landscape" disableCinematic showAllPath={`/catalog/discover-section-movies-big-screen?title=${encodeURIComponent('Best in Widescreen')}`} /></div></DiscoveryReveal>}
+          {viewState === 'content' && tab === 'movies' && bigScreenItems.length >= MIN_WIDESCREEN_RECOMMENDATIONS && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--big-screen"><MediaRow title="Best in Widescreen" items={bigScreenItems.slice(0, 10)} showAllItems={bigScreenItems} forceShowAll layout="landscape" disableCinematic showAllPath={`/catalog/discover-section-movies-big-screen?title=${encodeURIComponent('Best in Widescreen')}`} /></div></DiscoveryReveal>}
           {viewState === 'content' && <DiscoveryReveal><section className="discover-more row-contain" aria-labelledby="discover-more-title">
             <div className="discover-more__heading"><div><p className="discover-section-eyebrow">More popular picks</p><h2 id="discover-more-title">Keep Exploring</h2></div><span>{moreToDiscover.length ? `${moreToDiscover.length} titles loaded` : 'Fresh titles load as you scroll'}</span></div>
             {moreToDiscover.length > 0 && <div className="media-grid discover-more__grid">
