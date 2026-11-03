@@ -10,6 +10,7 @@ import { warmCachedImages } from '../services/imageCache'
 import { applySearchResultArt, resolveBetterPoster } from '../services/artwork'
 import { getShelfView, rememberShelfView, routeViewKey } from '../services/sessionViewState'
 import { isMobileWebViewport } from '../platform/mobileWeb'
+import { getMediaRowScrollTarget } from './mediaRowScroll'
 
 // A Home page can activate several shelves together. Rendering every preview
 // card on each one makes WebKit decode hundreds of full-resolution posters at
@@ -163,14 +164,14 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
     // This keeps rapid taps deterministic and clamps the final step to the
     // real scroll extent when the last card is only partly visible.
     const current = scrollTargetRef.current ?? element.scrollLeft
-    let currentIndex = 0
-    for (let index = 1; index < cardTargets.length; index += 1) {
-      if (Math.abs(cardTargets[index]! - current) < Math.abs(cardTargets[currentIndex]! - current)) currentIndex = index
+    const firstCardWidth = cards[0]?.getBoundingClientRect().width || 1
+    const gap = Number.parseFloat(getComputedStyle(element).columnGap) || 0
+    const cardsPerPage = Math.max(1, Math.floor((element.clientWidth + gap) / (firstCardWidth + gap)))
+    const target = getMediaRowScrollTarget({ cardStarts: cardTargets, current, maxScroll, direction, cardsPerPage })
+    if (target == null || Math.abs(target - element.scrollLeft) <= 1) {
+      updateScrollEdges()
+      return
     }
-    const nextIndex = Math.max(0, Math.min(cardTargets.length - 1, currentIndex + (direction === 'left' ? -2 : 2)))
-    let target = cardTargets[nextIndex]!
-    if (direction === 'right' && nextIndex === cardTargets.length - 1) target = maxScroll
-    if (direction === 'left' && nextIndex === 0) target = 0
     scrollTargetRef.current = target
     element.scrollTo({ left: target, behavior: 'smooth' })
     updateScrollEdges()
@@ -189,7 +190,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
 
   const handleRowKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!cinematic || (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')) return
-    const cards = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(':scope > button'))
+    const cards = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(':scope > .media-row-card-slot > button'))
     const index = cards.indexOf(document.activeElement as HTMLElement)
     if (index < 0) return
     const next = cards[index + (event.key === 'ArrowRight' ? 1 : -1)]
@@ -377,6 +378,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
       </div>
       <div
         ref={scrollRef}
+        onPointerDown={() => { scrollTargetRef.current = null }}
         onKeyDown={handleRowKeyDown}
         onScroll={(event) => { handleRowScroll(event); updateScrollEdges() }}
         onWheel={handleRowWheel}

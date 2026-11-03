@@ -8,11 +8,10 @@ describe('MediaRow horizontal scrolling', () => {
   it('moves between rendered card starts and clamps at the measured rail bounds', () => {
     expect(source).toContain('const maxScroll = Math.max(0, element.scrollWidth - element.clientWidth)')
     expect(source).toContain('const cardTargets = cards.map((card) => Math.max(0, Math.min(maxScroll,')
-    expect(source).toContain('currentIndex + (direction === \'left\' ? -2 : 2)')
-    expect(source).toContain("if (direction === 'right' && nextIndex === cardTargets.length - 1) target = maxScroll")
-    expect(source).toContain("if (direction === 'left' && nextIndex === 0) target = 0")
+    expect(source).toContain('getMediaRowScrollTarget({ cardStarts: cardTargets, current, maxScroll, direction, cardsPerPage })')
     expect(source).toContain('card.getBoundingClientRect().left - trackRect.left - startInset')
     expect(source).toContain("element.scrollTo({ left: target, behavior: 'smooth' })")
+    expect(source).toContain("':scope > .media-row-card-slot > button'")
     expect(source).not.toContain('Math.max(640, Math.floor(scrollRef.current.clientWidth')
   })
 
