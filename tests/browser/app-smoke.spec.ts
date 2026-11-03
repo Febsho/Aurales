@@ -179,6 +179,62 @@ test('Discovery uses public catalogs when the active profile has no library entr
   await expect(page.locator('.discover-shelf--new-library')).toHaveCount(0)
 })
 
+test('Discovery keeps the taste picker available when only weekly public trends load', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.addInitScript(() => {
+    const profileId = 'playwright-trend-only-discovery'
+    localStorage.setItem('aurales_profiles_v1', JSON.stringify([{
+      id: profileId,
+      name: 'Default',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      isDefault: true,
+    }]))
+    localStorage.setItem('aurales_active_profile_v1', profileId)
+    localStorage.setItem(`aurales_skip_profile_picker:profile:${profileId}`, 'true')
+    localStorage.setItem('aurales_app_managed_metadata', 'false')
+    localStorage.setItem('tmdb_api_key', 'playwright-public-test-key')
+  })
+  await page.route('https://api.ids.moe/**', (route) => route.fulfill({ json: {} }))
+  await page.route('https://api.themoviedb.org/**', async (route) => {
+    const url = new URL(route.request().url())
+    if (!/^\/3\/trending\/(movie|tv)\/week$/.test(url.pathname)) {
+      await route.fulfill({ status: 503, json: { status_message: 'Broad catalog unavailable in the trend-only fixture' } })
+      return
+    }
+    const type = url.pathname.includes('/movie/') ? 'movie' : 'series'
+    const results = Array.from({ length: 8 }, (_, index) => ({
+      id: 98500 + index,
+      title: `Trend-only title ${index + 1}`,
+      name: `Trend-only title ${index + 1}`,
+      poster_path: `/trend-only-${index + 1}.jpg`,
+      backdrop_path: `/trend-only-backdrop-${index + 1}.jpg`,
+      overview: 'A current weekly-trending title used to verify browser-only fallback behavior.',
+      release_date: '2026-10-01',
+      first_air_date: '2026-10-01',
+      vote_average: 8.1,
+      vote_count: 1200,
+      popularity: 180 - index * 8,
+      genre_ids: type === 'movie' ? [28, 878] : [18, 10759],
+      original_language: 'en',
+    }))
+    await route.fulfill({ json: { page: 1, total_pages: 1, total_results: results.length, results } })
+  })
+  await page.route('https://image.tmdb.org/**', (route) => route.fulfill({
+    headers: { 'Access-Control-Allow-Origin': '*' },
+    contentType: 'image/svg+xml',
+    body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 6"><rect width="4" height="6" fill="#35404c"/></svg>',
+  }))
+
+  await page.goto('/discover')
+  await expect(page.locator('.discover-next-hero')).toHaveAttribute('data-title', 'Trend-only title 1', { timeout: 15_000 })
+  const tastePicker = page.locator('.discover-refine')
+  await expect(tastePicker).toBeVisible()
+  await expect(tastePicker.locator('.discover-taste-pick')).toHaveCount(7)
+  await expect(tastePicker.locator('.discover-taste-pick__title').first()).toHaveText('Trend-only title 2')
+  await expect(page.getByRole('heading', { name: 'Top 10 For You', exact: true })).toHaveCount(0)
+})
+
 test('Discovery genre tiles open the matching provider results and full catalog', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 })
   await page.addInitScript(() => {
