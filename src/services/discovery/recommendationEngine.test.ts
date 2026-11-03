@@ -170,6 +170,19 @@ describe('discovery recommendation engine', () => {
 
     expect(trendWins).toBeGreaterThan(750)
   })
+  it('keeps the Surprise Me roulette frames focused on weekly trends too', () => {
+    const stale = candidate(141, { year: new Date().getFullYear() - 8 })
+    stale.popularity = 0
+    const trending = candidate(142, { year: new Date().getFullYear() - 2 })
+    trending.popularity = undefined
+    trending.source = 'tmdb-trending'
+    const winner = candidate(143)
+    const ranked = rankCandidates([stale, trending, winner], buildTasteProfile(activity()), activity(), [], 'for-you')
+    const draws = Array.from({ length: 1000 }, (_, index) => (index + 0.5) / 1000)
+    const trendFrames = draws.filter((draw) => chooseSurpriseAnimationFrame(ranked, winner.item.id, undefined, () => draw)?.item.tmdbId === 142).length
+
+    expect(trendFrames).toBeGreaterThan(750)
+  })
   it('prefers a verified weekly trend over a stale title whose score only looks trendy because of popularity', () => {
     const oldPopular = candidate(127, { year: new Date().getFullYear() - 10 })
     oldPopular.popularity = 250
