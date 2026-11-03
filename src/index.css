@@ -6609,8 +6609,8 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-binge__main-poster small { bottom: 2rem; }
 @media (min-width: 900px) {
   .discover-binge__feature {
-    min-height: clamp(17rem, 24vw, 20rem);
-    grid-template-columns: minmax(16rem, .78fr) minmax(0, 1.22fr);
+    min-height: 0;
+    grid-template-columns: minmax(15rem, .72fr) minmax(0, 1.28fr);
     align-items: center;
     gap: clamp(1.1rem, 2.5vw, 2rem);
     padding: clamp(1rem, 2vw, 1.5rem);
@@ -6626,39 +6626,30 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-binge__actions { gap: .55rem; margin-top: 1rem; }
   .discover-binge__copy button { min-height: 2.8rem; padding-inline: 1rem; font-size: .82rem; }
   .discover-binge__gallery {
-    height: clamp(14rem, 19vw, 18rem);
+    height: clamp(8rem, 12.5vw, 11rem);
     grid-column: 2;
     grid-row: 1;
-    grid-template-columns: minmax(8rem, .62fr) minmax(0, 1.38fr);
-    align-self: center;
-  }
-  .discover-binge__main-poster { width: auto; height: 100%; justify-self: center; }
-}
-@media (min-width: 1100px) {
-  .discover-binge__gallery { grid-template-columns: minmax(8rem, .62fr) minmax(0, 1.38fr); }
-  .discover-binge__alternatives { grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); align-items: center; }
-  .discover-binge__alternatives button { height: auto; align-self: center; aspect-ratio: 2 / 3; }
-  .discover-binge__alternatives button span { padding-inline: .55rem; font-size: .76rem; }
-}
-@media (min-width: 1200px) {
-  .discover-binge__feature {
-    min-height: 0;
-    grid-template-columns: minmax(18rem, .82fr) minmax(0, 1.18fr);
-    align-items: stretch;
-    gap: clamp(1.25rem, 2.2vw, 2rem);
-  }
-  .discover-binge__copy { padding-block: .5rem; }
-  .discover-binge__copy h3 { max-width: 34rem; font-size: clamp(1.55rem, 2vw, 2rem); }
-  .discover-binge__copy > div:first-child > p:not(.discover-section-eyebrow) { font-size: .9rem; }
-  .discover-binge__gallery {
-    height: auto;
     grid-template-columns: repeat(5, minmax(0, 1fr));
-    align-items: center;
-    gap: clamp(.45rem, .8vw, .75rem);
+    align-self: center;
   }
   .discover-binge__alternatives { display: contents; }
   .discover-binge__main-poster,
-  .discover-binge__alternatives button { width: 100%; height: auto; aspect-ratio: 2 / 3; align-self: center; }
+  .discover-binge__alternatives button { width: auto; max-width: 100%; height: 100%; aspect-ratio: 2 / 3; justify-self: center; align-self: center; }
+  .discover-binge__alternatives button span { padding-inline: .55rem; font-size: .76rem; }
+}
+@media (min-width: 701px) and (max-width: 899px) {
+  .discover-binge__feature {
+    grid-template-columns: minmax(0, 1fr);
+    gap: .85rem;
+  }
+  .discover-binge__copy { align-items: center; flex-direction: row; }
+  .discover-binge__gallery {
+    height: clamp(9rem, 22vw, 12rem);
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .discover-binge__alternatives { display: contents; }
+  .discover-binge__main-poster,
+  .discover-binge__alternatives button { width: auto; max-width: 100%; height: 100%; aspect-ratio: 2 / 3; justify-self: center; align-self: center; }
 }
 @media (max-width: 640px) {
   .discover-page__heading .discover-spotlight-heading { margin-block: .9rem .45rem; }
