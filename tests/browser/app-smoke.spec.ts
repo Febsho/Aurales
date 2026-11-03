@@ -1135,6 +1135,15 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(catalogGridColumns).toBe(3)
   await page.goBack()
   await expect(page.locator('.discover-page')).toBeVisible()
+  const orTryShelf = page.locator('.discover-shelf--trending')
+  const visibleOrTryOrder = await orTryShelf.locator('.media-row-card-slot img').evaluateAll((images) => images.map((image) => image.getAttribute('alt')))
+  await orTryShelf.getByRole('button', { name: 'Open OR TRY catalog' }).evaluate((button: HTMLButtonElement) => button.click())
+  await expect(page.locator('.catalog-page h1')).toHaveText('OR TRY')
+  await expect.poll(() => page.locator('.catalog-page__items > button').count()).toBeGreaterThanOrEqual(visibleOrTryOrder.length)
+  const fullOrTryOrder = await page.locator('.catalog-page__items img').evaluateAll((images) => images.map((image) => image.getAttribute('alt')))
+  expect(fullOrTryOrder.slice(0, 5), 'the full OR TRY catalog should use the same fresh, popularity-sorted entries as its shelf').toEqual(visibleOrTryOrder.slice(0, 5))
+  await page.goBack()
+  await expect(page.locator('.discover-page')).toBeVisible()
   await expect(page.locator('.discover-shelf--recent')).toHaveCount(0)
   // TMDB interactive requests retry once; fail both attempts to exercise a
   // true partial response, then let the user's explicit retry succeed.

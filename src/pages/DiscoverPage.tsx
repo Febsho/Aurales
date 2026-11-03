@@ -1254,6 +1254,7 @@ export default function DiscoverPage() {
   // Seed the catalog cache so "Show all" opens a full-screen view of a section like on Home
   useEffect(() => {
     visiblePersonalizedSections.forEach((section) => {
+      if (section.id === 'trending-this-week') return
       // Top 10 is a curated editorial list, not a doorway into the entire
       // recommendation pool. Keep the catalog cache contract aligned with the
       // ten cards rendered in the Discovery shelf.
@@ -1264,9 +1265,9 @@ export default function DiscoverPage() {
     })
   }, [visiblePersonalizedSections, tab, catalogSetCache])
   useEffect(() => {
-    if (!trendingSection || personalizedSections.some((section) => section.id === 'trending-this-week')) return
+    if (!trendingSection) return
     catalogSetCache(`discover-section-${tab}-trending-this-week`, { items: trendingSection.catalogItems?.map((entry) => entry.item) ?? trendingSection.items.map((entry) => entry.item), page: 0, hasMore: false, scrollTop: 0 })
-  }, [catalogSetCache, personalizedSections, tab, trendingSection])
+  }, [catalogSetCache, tab, trendingSection])
   useEffect(() => {
     catalogSetCache(moodRowId, { items: moodItems, page: 0, hasMore: false, scrollTop: 0 })
   }, [catalogSetCache, moodItems, moodRowId])
