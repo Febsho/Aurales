@@ -1230,6 +1230,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(firstContinuedCard).toBeVisible()
   await expect.poll(() => firstContinuedCard.evaluate((card) => getComputedStyle(card).animationName)).toBe('discover-more-card-arrive')
   await expect(continuedGrid.getByRole('button').first()).toHaveAccessibleName('More discovery fixture 1 More discovery fixture 1 2026')
+  const continuedArtworkTitles = await continuedGrid.locator('img.media-card-artwork').evaluateAll((images) => images.map((image) => image.getAttribute('alt') || ''))
+  expect(continuedArtworkTitles).not.toContain(heroTitle)
+  expect(continuedArtworkTitles.some((title) => /^Weekly trend \d+$/.test(title))).toBe(false)
   expect(continuationPages).toContain(4)
 
   await page.setViewportSize({ width: 390, height: 844 })

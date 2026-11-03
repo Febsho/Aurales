@@ -1041,8 +1041,15 @@ export default function DiscoverPage() {
         throw firstError?.reason ?? new Error('No Discovery continuation page could be loaded')
       }
 
-      const existingIds = new Set([
+      // Continuation pages are public popularity catalogs, so keep titles that
+      // already lead the editorial feed out of the long tail as well. The live
+      // weekly feed can contain titles missing from an older daily snapshot.
+      const featuredIds = new Set([
+        ...currentTrendingRanked.map((entry) => mediaIdentity(entry.item)),
         ...ranked.map((entry) => mediaIdentity(entry.item)),
+      ])
+      const existingIds = new Set([
+        ...featuredIds,
         ...moreToDiscoverItemsRef.current.map(mediaIdentity),
       ])
       const appendedCandidates: SearchResult[] = []
@@ -1052,7 +1059,7 @@ export default function DiscoverPage() {
         for (const item of result.items) {
           if (!matchesDiscoverTab(item, tab) || !candidatePassesPrefs(item, prefs)) continue
           const key = mediaIdentity(item)
-          if (!item.poster || existingIds.has(key)) continue
+          if (!item.poster || key === heroMediaKey || existingIds.has(key)) continue
           existingIds.add(key)
           appendedCandidates.push(applySearchResultArt(item))
         }
@@ -1084,7 +1091,7 @@ export default function DiscoverPage() {
     } finally {
       if (moreToDiscoverScopeRef.current === requestScope) moreToDiscoverLoadingRef.current = false
     }
-  }, [activity, contentType, discoveryQueryKey, feedback, impressions, mode, prefs, preferences, ranked, rankingNow, tab, tasteProfile])
+  }, [activity, contentType, currentTrendingRanked, discoveryQueryKey, feedback, heroMediaKey, impressions, mode, prefs, preferences, ranked, rankingNow, tab, tasteProfile])
 
   useEffect(() => { loadMoreDiscoveryRef.current = loadMoreDiscovery }, [loadMoreDiscovery])
   useEffect(() => {
