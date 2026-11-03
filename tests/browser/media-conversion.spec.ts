@@ -168,6 +168,66 @@ test('unsupported media tries remux, AAC audio copy, then H.264/AAC automaticall
   expect(workerManifests[0]).toContain('format=hls')
 })
 
+test('mobile decoder failures escalate through lower H.264 profiles', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'android-chromium', 'This verifies the mobile H.264 fallback ladder in Chromium Android.')
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+  })
+  await page.route('**/v1/capabilities', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ streamRanking: true, mediaDirectProxy: true, pmdbProxy: true, mediaRemux: true, mediaMp4: true, mediaHls: false, audioTranscode: true, videoTranscode: true, mobileSafeVideoTranscode: true }),
+  }))
+  const modes: string[] = []
+  const jobIds: Record<string, string> = {
+    auto: '33333333333333333333333333333333',
+    h264AacLow: '44444444444444444444444444444444',
+    h264AacCompat: '55555555555555555555555555555555',
+  }
+  const outputIds: Record<string, string> = {
+    auto: '66666666666666666666666666666666',
+    h264AacLow: '77777777777777777777777777777777',
+    h264AacCompat: '88888888888888888888888888888888',
+  }
+  await page.route('**/v1/media/conversions', async (route) => {
+    const mode = JSON.parse(route.request().postData() || '{}').mode as string
+    modes.push(mode)
+    const jobId = jobIds[mode]
+    if (!jobId) return route.fulfill({ status: 400, body: 'unexpected conversion mode' })
+    await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId, status: 'processing' }) })
+  })
+  for (const [mode, jobId] of Object.entries(jobIds)) {
+    await page.route(`**/v1/media/conversions/${jobId}`, (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ jobId, status: 'ready', mode: mode === 'auto' ? 'h264Aac' : mode, bytes: 1024, url: `/v1/media/${outputIds[mode]}?expires=1893456000&signature=${mode}` }),
+    }))
+    await page.route(`**/v1/media/${outputIds[mode]}?*`, async (route) => {
+      const fixture = await route.fetch({ url: new URL('/tests/browser/fixtures/h264-aac.mp4', route.request().url()).toString() })
+      await route.fulfill({ response: fixture })
+    })
+  }
+
+  await page.goto('/tests/browser/player-harness.html?source=' + encodeURIComponent('/tests/browser/fixtures/vp8-opus.webm'))
+  const video = page.locator('video')
+  const triggerDecoderFailure = () => video.evaluate((element: HTMLVideoElement) => {
+    Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 3 }) })
+    element.dispatchEvent(new Event('error'))
+  })
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc.endsWith('/vp8-opus.webm'))).toBe(true)
+  await triggerDecoderFailure()
+  await expect.poll(() => modes.length).toBe(1)
+  expect(modes).toEqual(['auto'])
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputIds.auto}?`)
+  await triggerDecoderFailure()
+  await expect.poll(() => modes.length).toBe(2)
+  expect(modes).toEqual(['auto', 'h264AacLow'])
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputIds.h264AacLow}?`)
+  await triggerDecoderFailure()
+  await expect.poll(() => modes.length).toBe(3)
+  expect(modes).toEqual(['auto', 'h264AacLow', 'h264AacCompat'])
+})
+
 test('expired media-worker sessions renew while preserving playback position', async ({ page }) => {
   await page.clock.install()
   await page.addInitScript(() => {
