@@ -107,11 +107,10 @@ const NO_PLAYBACK_REQUEST_HEADERS: PlaybackRequestHeaders = {}
 
 function isWorkerMediaSessionUrl(value: string): boolean {
   const config = getMediaWorkerConfig()
-  if (!config) return false
   try {
     const source = new URL(value, window.location.href)
-    const worker = new URL(config.baseUrl)
-    return source.origin === worker.origin
+    const workerOrigin = config ? new URL(config.baseUrl).origin : window.location.origin
+    return source.origin === workerOrigin
       && /^\/v1\/media\/[a-f\d]{32}(?:\/[^/]+)?$/i.test(source.pathname)
       && source.searchParams.has('signature')
       && source.searchParams.has('expires')
