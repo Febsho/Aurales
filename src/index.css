@@ -6651,7 +6651,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-page .media-row > div:first-child button[aria-label^="Scroll "] { width: 44px; height: 44px; flex: 0 0 44px; }
   .discover-page { --discover-gutter: .9rem; padding-bottom: calc(5.5rem + env(safe-area-inset-bottom)); }
   .discover-refine, .discover-genres, .discover-binge { width: calc(100% - 2 * var(--discover-gutter)); margin-inline: var(--discover-gutter); }
-  .discover-taste-picks { grid-auto-columns: clamp(5rem, 20vw, 5.8rem); grid-template-rows: repeat(2, minmax(0, auto)); column-gap: .45rem; row-gap: .55rem; }
+  .discover-taste-picks { grid-auto-columns: clamp(6rem, 28vw, 7.25rem); grid-template-rows: repeat(2, minmax(0, auto)); column-gap: .45rem; row-gap: .55rem; }
   .discover-taste-pick__title { max-width: 100%; font-size: .72rem; line-height: 1.15; }
   .discover-taste-pick__year { font-size: .65rem; line-height: 1.1; }
   .discover-genre-picks .media-row { width: 100%; }
@@ -6696,12 +6696,14 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-page .media-row { margin-bottom: .65rem !important; }
   .discover-page .media-row > div:first-child h2 { font-size: .92rem !important; line-height: 1.2rem; }
   .discover-page .media-row .cinematic-row-track { gap: .55rem !important; }
-  .discover-page .media-row--poster .cinematic-row-track > .media-row-card-slot { width: clamp(5.25rem, 22vw, 6rem); }
-  .discover-page .media-row--poster:not(.cinematic-media-row) .media-row-card-slot { width: clamp(5.25rem, 22vw, 6rem); }
-  .discover-page .media-row--ranked .cinematic-row-track > .media-row-card-slot { width: clamp(5.25rem, 22vw, 6rem) !important; }
+  /* Match the reference's three-across mobile poster rhythm while keeping
+     horizontal rails easy to browse with touch. */
+  .discover-page .media-row--poster .cinematic-row-track > .media-row-card-slot { width: clamp(6rem, 28vw, 7.25rem); }
+  .discover-page .media-row--poster:not(.cinematic-media-row) .media-row-card-slot { width: clamp(6rem, 28vw, 7.25rem); }
+  .discover-page .media-row--ranked .cinematic-row-track > .media-row-card-slot { width: clamp(6rem, 28vw, 7.25rem) !important; }
   html[data-runtime-platform="web"] .discover-page .media-row--ranked .media-row-card-slot > button {
-    --cinematic-special-height: clamp(8.25rem, 32vw, 9.25rem) !important;
-    --ranked-card-height: clamp(8.25rem, 32vw, 9.25rem) !important;
+    --cinematic-special-height: clamp(9rem, 41vw, 10rem) !important;
+    --ranked-card-height: clamp(9rem, 41vw, 10rem) !important;
   }
 }
 

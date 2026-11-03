@@ -808,8 +808,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   })
   expect(mobilePosterSpacing).not.toBeNull()
   expect(mobilePosterSpacing!.secondLeft).toBeGreaterThanOrEqual(mobilePosterSpacing!.firstRight)
-  expect(mobilePosterSpacing!.firstWidth).toBeGreaterThanOrEqual(80)
-  expect(mobilePosterSpacing!.firstWidth).toBeLessThanOrEqual(100)
+  expect(mobilePosterSpacing!.firstWidth).toBeGreaterThanOrEqual(100)
+  expect(mobilePosterSpacing!.firstWidth).toBeLessThanOrEqual(120)
   expect(mobilePosterSpacing!.firstHeight).toBeLessThanOrEqual(mobilePosterSpacing!.firstWidth * 2.4)
   const mobileTasteGrid = await page.locator('.discover-taste-picks').evaluate((grid) => {
     const cards = Array.from(grid.querySelectorAll<HTMLElement>('.discover-taste-pick'))
@@ -830,7 +830,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(mobileTasteGrid.firstColumnMatches).toBe(true)
   expect(mobileTasteGrid.secondBelowFirst).toBe(true)
   expect(mobileTasteGrid.scrollWidth).toBeGreaterThan(mobileTasteGrid.clientWidth)
-  expect(mobileTasteGrid.cardWidth).toBeLessThanOrEqual(90)
+  expect(mobileTasteGrid.cardWidth).toBeGreaterThanOrEqual(100)
+  expect(mobileTasteGrid.cardWidth).toBeLessThanOrEqual(120)
   expect(mobileTasteGrid.posterWidth).toBeGreaterThan(0)
   await page.locator('.discover-taste-picks').evaluate((grid) => { grid.scrollLeft = 100 })
   await expect.poll(() => page.locator('.discover-taste-picks').evaluate((grid) => grid.scrollLeft)).toBeGreaterThan(0)
@@ -1285,14 +1286,21 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.mouse.move(0, 0)
   const topTenShelf = page.locator('.discover-shelf').filter({ has: page.getByRole('heading', { name: 'Top 10 For You', exact: true }) })
   const topTenCard = topTenShelf.locator('.media-row--ranked .media-row-card-slot').first()
-  await expect.poll(() => topTenCard.locator('[data-hero-viewport]').evaluate((poster) => poster.getBoundingClientRect().width)).toBeLessThan(100)
+  await expect.poll(() => topTenCard.locator('[data-hero-viewport]').evaluate((poster) => poster.getBoundingClientRect().width)).toBeLessThan(120)
   const topTenCardMeasure = await topTenCard.evaluate((card) => {
     const button = card.querySelector<HTMLElement>('button')!
     const poster = button.querySelector<HTMLElement>('[data-hero-viewport]')!
     return { posterWidth: poster.getBoundingClientRect().width, rankedHeight: getComputedStyle(button).getPropertyValue('--ranked-card-height').trim() }
   })
-  expect(topTenCardMeasure.posterWidth, JSON.stringify(topTenCardMeasure)).toBeGreaterThanOrEqual(80)
-  expect(topTenCardMeasure.posterWidth, JSON.stringify(topTenCardMeasure)).toBeLessThanOrEqual(100)
+  expect(topTenCardMeasure.posterWidth, JSON.stringify(topTenCardMeasure)).toBeGreaterThanOrEqual(100)
+  expect(topTenCardMeasure.posterWidth, JSON.stringify(topTenCardMeasure)).toBeLessThanOrEqual(120)
+  const tastePickerMobileLayout = await page.locator('.discover-taste-picks').evaluate((grid) => ({
+    columns: getComputedStyle(grid).gridTemplateRows.split(' ').length,
+    posterWidth: grid.querySelector<HTMLElement>('.discover-taste-pick__poster')?.getBoundingClientRect().width ?? 0,
+  }))
+  expect(tastePickerMobileLayout.columns, 'mobile taste suggestions should stay in two horizontal rows').toBe(2)
+  expect(tastePickerMobileLayout.posterWidth, 'mobile taste posters should follow the roughly three-across reference scale').toBeGreaterThanOrEqual(100)
+  expect(tastePickerMobileLayout.posterWidth).toBeLessThanOrEqual(120)
   await topTenShelf.getByRole('button', { name: 'Open Top 10 For You catalog' }).click()
   await expect(page.locator('.catalog-page h1')).toHaveText('Top 10 For You')
   await expect(page.locator('.catalog-page').getByText('10 titles loaded', { exact: true })).toBeVisible()
