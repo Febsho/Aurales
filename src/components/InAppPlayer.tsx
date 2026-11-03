@@ -231,6 +231,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   const mediaProxySessionRef = useRef<{ url: string; expiresAt: number } | null>(null)
   const renewedMediaProxyUrlRef = useRef<string | null>(null)
   const conversionModesTriedRef = useRef<MediaConversionMode[]>([])
+  const conversionFatalErrorRef = useRef<string | null>(null)
   const conversionSequenceRunRef = useRef<number | null>(null)
   const conversionControllerRef = useRef<AbortController | null>(null)
   const workerConversionActiveRef = useRef(false)
@@ -383,6 +384,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     setConversionMessage('')
     setConversionBusy(false)
     conversionModesTriedRef.current = []
+    conversionFatalErrorRef.current = null
     conversionSequenceRunRef.current = null
     conversionOptionsCheckedRef.current = false
     conversionOutputFormatRef.current = null
@@ -1774,6 +1776,10 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       if (controller.signal.aborted) return false
       const message = error instanceof Error ? error.message : 'The media worker conversion failed.'
       setConversionMessage(message)
+      if (error instanceof MediaWorkerHttpError
+        && [400, 401, 403, 413].includes(error.status)) {
+        conversionFatalErrorRef.current = message
+      }
       if (conversionSequenceRunRef.current !== playbackRunRef.current) {
         setLoading(false)
         setError(message)
@@ -1797,6 +1803,11 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     while (candidate) {
       if (await convertWithWorkerRef.current(candidate)) return true
       if (playbackRun !== playbackRunRef.current) return false
+      if (conversionFatalErrorRef.current) {
+        setLoading(false)
+        setError(conversionFatalErrorRef.current)
+        return false
+      }
       candidate = nextPlaybackConversionAfterDecodeFailure(candidate)
       if (candidate && !hasMode(candidate)) candidate = null
       if (candidate) {
@@ -1884,6 +1895,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
             if (conversionSequenceRunRef.current === playbackRun) conversionSequenceRunRef.current = null
             return
           }
+          if (conversionFatalErrorRef.current) break
           // The worker's automatic ladder already tried remux, AAC-only, and
           // standard H.264. One lower mobile profile remains useful if the
           // standard encode itself could not be produced.
@@ -1898,7 +1910,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           }
         }
         if (!isCurrentRun()) return
-        const failed = `${message} Automatic conversion attempts failed. Pick another source or check the media worker logs.`
+        const failed = conversionFatalErrorRef.current
+          || `${message} Automatic conversion attempts failed. Pick another source or check the media worker logs.`
         setLoading(false)
         setError(failed)
         if (!refreshingLiveSnapshot) playbackStartupRef.current.onPlaybackError?.(failed, video.currentTime)
