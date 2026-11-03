@@ -842,6 +842,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.locator('#discover-genre-picks [role="status"]')).toContainText('Finding Action titles')
   await expect(page.getByText(/no titles found for action yet/i)).toBeVisible()
   await expect(page.locator('#discover-genre-picks .media-row-card-slot')).toHaveCount(0)
+  const emptyGenreMessage = page.getByText(/no titles found for action yet/i)
+  expect(await emptyGenreMessage.evaluate((message) => message.getBoundingClientRect().height), 'an empty genre should show its message without reserving a full poster-row gap').toBeLessThan(44)
 
   const surpriseButton = page.getByRole('button', { name: /surprise me/i })
   await expect(surpriseButton).toBeEnabled()
