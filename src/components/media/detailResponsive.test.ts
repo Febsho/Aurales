@@ -74,6 +74,8 @@ describe('cinematic detail responsive and scroll contracts', () => {
     expect(discoverSource).toContain('const catalogEntries = section.id === \'made-for-you\'\n        ? section.items.slice(0, 10)')
     expect(discoverSource).toContain('className="discover-spotlight discover-next-hero"')
     expect(discoverSource).toContain('Your Next Obsession')
+    expect(discoverSource).toContain('className="discover-tonight row-contain"')
+    expect(discoverSource).toContain('const chooseAnotherTonight = () =>')
     expect(discoverSource).not.toContain('Your Weekend Plan')
     expect(discoverSource).not.toContain('weekendPlanRecommendation')
     expect(discoverSource).toContain('The spotlight is an extra editorial recommendation, not one of the')

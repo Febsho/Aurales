@@ -473,6 +473,7 @@ export default function DiscoverPage() {
   const [tasteQuery, setTasteQuery] = useState('')
   const [bingeIndex, setBingeIndex] = useState(0)
   const [spotlightMenuOpen, setSpotlightMenuOpen] = useState(false)
+  const [tonightSelectionKey, setTonightSelectionKey] = useState<string | null>(null)
   const spotlightMenuRef = useRef<HTMLDivElement>(null)
   const spotlightMenuPopupRef = useRef<HTMLDivElement>(null)
   const spotlightMenuButtonRef = useRef<HTMLButtonElement>(null)
@@ -1345,6 +1346,10 @@ export default function DiscoverPage() {
       return true
     })
   }, [currentTrendingRanked, heroMediaKey, ranked])
+  // The inline Tonight card is a separate recommendation surface. It draws
+  // from public/popular candidates without sharing selection state with either
+  // the editorial Spotlight or the Surprise Me dialog.
+  const tonightRecommendation = pickerPool.find((entry) => mediaIdentity(entry.item) === tonightSelectionKey) ?? pickerPool[0]
   const pickerRecommendation = (pickerSelectionKey ? pickerPool.find((entry) => mediaIdentity(entry.item) === pickerSelectionKey) : undefined) || pickerPool[0]
   const pickerItem = pickerRecommendation?.item
   const pickerFrameId = pickerItem ? mediaIdentity(pickerItem) : null
@@ -1370,7 +1375,7 @@ export default function DiscoverPage() {
       .map((entry) => entry.item)
   }, [ranked, pickedIds, tasteQuery])
   const tastePickCandidates = useMemo(() => tastePickPool.slice(0, 10 + pickOffset), [tastePickPool, pickOffset])
-  useEffect(() => { setPickerSelectionKey(null); setPickerLogoError(false); setHeroLogoError(false) }, [tab, mode, discoveryQueryKey])
+  useEffect(() => { setPickerSelectionKey(null); setTonightSelectionKey(null); setPickerLogoError(false); setHeroLogoError(false) }, [tab, mode, discoveryQueryKey])
   useEffect(() => { setSpotlightSelectionKey(null) }, [tab, mode, discoveryQueryKey])
   useEffect(() => { setHeroLogoError(false) }, [heroItem?.id])
   useEffect(() => { setPickerLogoError(false) }, [pickerItem?.id])
@@ -1566,6 +1571,11 @@ export default function DiscoverPage() {
     const next = spotlightCandidates[nextIndex]
     if (next) setSpotlightSelectionKey(mediaIdentity(next.item))
   }
+  const chooseAnotherTonight = () => {
+    if (!tonightRecommendation || pickerPool.length < 2) return
+    const next = chooseSurpriseRecommendation(pickerPool, tonightRecommendation.item.id)
+    if (next) setTonightSelectionKey(mediaIdentity(next.item))
+  }
   const selectTastePick = (item: SearchResult) => {
     const id = mediaIdentity(item)
     if (pickedIds.includes(id) || pickedIds.length >= 3) return
@@ -1688,6 +1698,24 @@ export default function DiscoverPage() {
             const catalogItems = (section.catalogItems ?? section.items).map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
             return <DiscoveryReveal key={section.id}><div className="row-contain discover-shelf"><MediaRow title={title} items={items} showAllItems={catalogItems} layout={isTopTen ? 'ranked' : 'poster'} previewLimit={isTopTen ? 10 : undefined} renderAllPreviewItems={isTopTen} disableCinematic forceShowAll showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div></DiscoveryReveal>
           })}
+          {tonightRecommendation && <DiscoveryReveal><section className="discover-tonight row-contain" aria-labelledby="discover-tonight-title" data-active-title={tonightRecommendation.item.title}>
+            {tonightRecommendation.item.backdrop && <div key={tonightRecommendation.item.backdrop} className="discover-tonight__ambient" aria-hidden="true"><img src={tonightRecommendation.item.backdrop} alt="" loading="lazy" decoding="async" /></div>}
+            <div className="discover-tonight__intro"><h2 id="discover-tonight-title">Tonight</h2><p>Usually {formatWatchDuration(tasteProfile.preferredRuntimeMinutes || tonightRecommendation.runtimeMinutes || (tab === 'movies' ? 105 : 45))}</p></div>
+            <div key={`copy-${mediaIdentity(tonightRecommendation.item)}`} className="discover-tonight__copy">
+              <h3>{tonightRecommendation.item.title}</h3>
+              <p className="discover-tonight__meta">{[tonightRecommendation.item.year, tonightRecommendation.item.genres?.[0] || (tonightRecommendation.item.type === 'movie' ? 'Movie' : 'Series'), tonightRecommendation.item.rating != null ? `★ ${Number(tonightRecommendation.item.rating).toFixed(1)}` : undefined].filter(Boolean).join(' · ')}</p>
+              {tonightRecommendation.reasons[0] && <p className="discover-tonight__reason">{tonightRecommendation.reasons[0].label.replace(/\btaste\b/gi, 'preferences')}</p>}
+              <div className="discover-tonight__actions">
+                <button type="button" className="discover-tonight__play" onClick={() => openItemDetail(tonightRecommendation.item, true)}>▶ <span>Play</span></button>
+                <button type="button" onClick={() => openItemDetail(tonightRecommendation.item)}>Details</button>
+                <button type="button" onClick={chooseAnotherTonight} disabled={pickerPool.length < 2}><Shuffle size={15} aria-hidden="true" />Another option</button>
+              </div>
+            </div>
+            <div key={`poster-${mediaIdentity(tonightRecommendation.item)}`} className="discover-tonight__poster">
+              <img src={tonightRecommendation.item.poster} alt={`${tonightRecommendation.item.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
+              {tonightRecommendation.item.rating != null && <span>★ {Number(tonightRecommendation.item.rating).toFixed(1)}</span>}
+            </div>
+          </section></DiscoveryReveal>}
           {ranked.length > 0 && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
             <p className="discover-section-eyebrow">Refine your taste</p>
             <div className="discover-refine__heading">

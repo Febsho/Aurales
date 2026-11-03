@@ -581,6 +581,18 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(heroBackdrop).toHaveCSS('opacity', '1')
   await expect(page.getByRole('heading', { name: 'OR TRY', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Top 10 For You', exact: true })).toBeVisible()
+  const tonightCard = page.locator('.discover-tonight')
+  await expect(tonightCard).toBeVisible()
+  await expect(tonightCard.getByRole('heading', { name: 'Tonight', exact: true })).toBeVisible()
+  await expect(tonightCard.getByRole('button', { name: /Another option/ })).toBeEnabled()
+  expect(await tonightCard.getAttribute('data-active-title')).not.toBe(await obsessionCard.getAttribute('data-title'))
+  const discoverySurfaceOrder = await page.evaluate(() => {
+    const topTen = [...document.querySelectorAll<HTMLElement>('.discover-shelf h2')].find((heading) => heading.textContent?.trim() === 'Top 10 For You')
+    const tonight = document.querySelector<HTMLElement>('.discover-tonight')
+    const refine = document.querySelector<HTMLElement>('.discover-refine')
+    return Boolean(topTen && tonight && refine && topTen.compareDocumentPosition(tonight) & Node.DOCUMENT_POSITION_FOLLOWING && tonight.compareDocumentPosition(refine) & Node.DOCUMENT_POSITION_FOLLOWING)
+  })
+  expect(discoverySurfaceOrder, 'Tonight stays between public catalog shelves and taste refinement').toBe(true)
   const mobileDiscoveryLayout = await page.evaluate(() => {
     const rect = (selector: string) => {
       const element = document.querySelector<HTMLElement>(selector)
@@ -636,6 +648,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     return movingSurfaces.map((surface) => Boolean(surface?.getAnimations().length))
   })
   expect(mobileSpotlightMotion, 'mobile editorial changes should animate real grid items even though copy wrappers use display: contents').toEqual([true, true, true])
+  const tonightTitle = await tonightCard.getAttribute('data-active-title')
+  await tonightCard.getByRole('button', { name: /Another option/ }).click()
+  await expect.poll(() => tonightCard.getAttribute('data-active-title')).not.toBe(tonightTitle)
   await page.getByRole('button', { name: 'Not for me' }).click()
   await expect(page.locator('.discover-picker')).toHaveCount(0)
   const discoverySettings = page.getByRole('button', { name: 'Discovery settings' })

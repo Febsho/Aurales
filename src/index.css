@@ -6425,6 +6425,42 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-page * { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 .discover-section-eyebrow { margin: 0 0 .25rem !important; color: rgba(255,255,255,.5); font-size: .72rem; font-weight: 550; }
+.discover-tonight {
+  position: relative;
+  display: grid;
+  width: min(calc(100% - 2 * var(--discover-gutter, 1.5rem)), 74rem);
+  min-height: clamp(17rem, 26vw, 22rem);
+  grid-template-columns: minmax(0, 1fr) clamp(8rem, 15vw, 11rem);
+  grid-template-rows: auto 1fr;
+  align-items: end;
+  gap: .55rem 1rem;
+  margin: 1rem auto 1.6rem;
+  padding: clamp(1.1rem, 3vw, 2rem);
+  overflow: hidden;
+  isolation: isolate;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 1.2rem;
+  background: linear-gradient(115deg, #1a1a1f, #28272a);
+}
+.discover-tonight__ambient { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.discover-tonight__ambient::after { position: absolute; inset: 0; content: ''; background: linear-gradient(90deg, rgba(14,14,17,.9), rgba(14,14,17,.68) 55%, rgba(14,14,17,.42)), linear-gradient(0deg, rgba(14,14,17,.83), transparent 75%); }
+.discover-tonight__ambient img { width: 100%; height: 100%; object-fit: cover; opacity: .42; filter: saturate(.78); }
+.discover-tonight__intro, .discover-tonight__copy, .discover-tonight__poster { position: relative; z-index: 1; min-width: 0; }
+.discover-tonight__intro { grid-column: 1; grid-row: 1; align-self: start; }
+.discover-tonight__intro h2 { margin: 0; color: #fff; font-size: clamp(2.4rem, 5vw, 4rem); font-weight: 750; letter-spacing: -.055em; line-height: .98; }
+.discover-tonight__intro p { margin: .45rem 0 0; color: rgba(255,255,255,.7); font-size: clamp(.82rem, 1.2vw, 1rem); }
+.discover-tonight__copy { grid-column: 1; grid-row: 2; align-self: end; max-width: 50rem; animation: discover-spotlight-copy-enter .35s ease both; }
+.discover-tonight__copy h3 { display: -webkit-box; overflow: hidden; margin: 0 0 .35rem; color: #fff; font-size: clamp(1.15rem, 2.4vw, 1.75rem); font-weight: 700; letter-spacing: -.025em; line-height: 1.12; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.discover-tonight__meta, .discover-tonight__reason { margin: 0; color: rgba(255,255,255,.66); font-size: .82rem; line-height: 1.4; }
+.discover-tonight__reason { margin-top: .35rem; }
+.discover-tonight__actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .85rem; }
+.discover-tonight__actions button { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; gap: .45rem; padding: .55rem .9rem; border: 1px solid rgba(255,255,255,.17); border-radius: 999px; background: rgba(255,255,255,.1); color: #fff; font: inherit; font-size: .82rem; font-weight: 650; cursor: pointer; }
+.discover-tonight__actions button:hover { background: rgba(255,255,255,.18); }
+.discover-tonight__actions button:disabled { opacity: .45; cursor: not-allowed; }
+.discover-tonight__actions .discover-tonight__play { border-color: #fff; background: #fff; color: #111; }
+.discover-tonight__poster { grid-column: 2; grid-row: 1 / 3; align-self: center; aspect-ratio: 2 / 3; overflow: hidden; border: 1px solid rgba(255,255,255,.16); border-radius: .85rem; background: rgba(0,0,0,.35); box-shadow: 0 12px 32px rgba(0,0,0,.35); animation: discover-spotlight-poster-enter .42s ease both; }
+.discover-tonight__poster img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.discover-tonight__poster > span { position: absolute; right: .4rem; bottom: .4rem; padding: .2rem .4rem; border-radius: .4rem; background: rgba(0,0,0,.72); color: white; font-size: .72rem; font-weight: 700; }
 .discover-refine { width: min(calc(100% - 2 * var(--discover-gutter, 1.5rem)), 74rem); margin: 1.5rem auto 1.7rem; }
 .discover-refine__heading, .discover-genres__heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 .discover-refine__heading h2, .discover-genres__heading h2 { margin: 0; color: #fff; font-size: clamp(1.1rem, 2vw, 1.45rem); font-weight: 700; letter-spacing: -.025em; }
@@ -6688,6 +6724,15 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .discover-page .media-row-card-slot > button { transform: none !important; }
   .discover-page .media-row > div:first-child button[aria-label^="Scroll "] { width: 44px; height: 44px; flex: 0 0 44px; }
   .discover-page { --discover-gutter: .9rem; padding-bottom: calc(5.5rem + env(safe-area-inset-bottom)); }
+  .discover-tonight { width: calc(100% - 2 * var(--discover-gutter)); min-height: 17rem; grid-template-columns: minmax(0, 1fr) clamp(6.25rem, 25vw, 8rem); gap: .45rem .65rem; margin-block: .75rem 1.2rem; padding: .85rem; border-radius: 1rem; }
+  .discover-tonight__intro h2 { font-size: clamp(2rem, 10vw, 2.8rem); }
+  .discover-tonight__intro p { margin-top: .25rem; font-size: .75rem; }
+  .discover-tonight__copy h3 { font-size: clamp(1rem, 4.6vw, 1.3rem); }
+  .discover-tonight__meta, .discover-tonight__reason { font-size: .7rem; }
+  .discover-tonight__reason { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .discover-tonight__actions { gap: .35rem; margin-top: .55rem; }
+  .discover-tonight__actions button { min-height: 44px; padding: .45rem .58rem; font-size: .7rem; }
+  .discover-tonight__poster { border-radius: .65rem; }
   .discover-refine, .discover-genres, .discover-binge { width: calc(100% - 2 * var(--discover-gutter)); margin-inline: var(--discover-gutter); }
   .discover-taste-picks { grid-auto-columns: clamp(5rem, 20vw, 5.8rem); grid-template-rows: repeat(2, minmax(0, auto)); column-gap: .45rem; row-gap: .55rem; }
   .discover-taste-pick__title { max-width: 100%; font-size: .72rem; line-height: 1.15; }
