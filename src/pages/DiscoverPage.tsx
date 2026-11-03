@@ -1538,7 +1538,7 @@ export default function DiscoverPage() {
                     {heroLogo && !heroLogoError ? <img key={heroRecommendation.item.id} src={heroLogo} alt={heroRecommendation.item.title} draggable={false} onError={() => setHeroLogoError(true)} className="discover-spotlight__logo" /> : <h2 key={heroRecommendation.item.id}>{heroRecommendation.item.title}</h2>}
                     <div className="discover-spotlight__meta">
                       {heroRecommendation.item.year && <span>{heroRecommendation.item.year}</span>}
-                      <span>{heroRecommendation.runtimeMinutes ? formatWatchDuration(heroRecommendation.runtimeMinutes) : heroRecommendation.item.type === 'series' ? 'Series' : 'Movie'}</span>
+                      <span>{heroRecommendation.runtimeMinutes ? formatWatchDuration(heroRecommendation.runtimeMinutes) : isAnimeLike(heroRecommendation.item) ? 'Anime' : heroRecommendation.item.type === 'series' ? 'Series' : 'Movie'}</span>
                       {heroRecommendation.item.genres?.slice(0, 1).map((genre) => <span key={genre}>{genre}</span>)}
                       {heroRecommendation.item.rating != null && <span>★ {Number(heroRecommendation.item.rating).toFixed(1)}</span>}
                     </div>

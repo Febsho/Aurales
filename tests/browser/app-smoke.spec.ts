@@ -709,6 +709,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(seriesTimeOptions.getByRole('button', { name: 'Short Episodes' })).toHaveAttribute('aria-pressed', 'true')
   await expect.poll(() => runtimeFilterRequests.some((request) => request.path.endsWith('/discover/tv') && request.max === '30')).toBe(true)
   await contentTypeControls.getByRole('button', { name: 'Anime' }).click()
+  await expect(page.locator('.discover-next-hero .discover-spotlight__meta')).toContainText('Anime')
   const animeTimeOptions = page.getByRole('group', { name: 'Choose episode runtime' })
   await expect(animeTimeOptions.getByRole('button', { name: 'Short Episodes' })).toHaveAttribute('aria-pressed', 'true')
   await expect.poll(() => runtimeFilterRequests.some((request) => request.path.endsWith('/discover/tv') && request.max === '25' && request.language === 'ja')).toBe(true)
