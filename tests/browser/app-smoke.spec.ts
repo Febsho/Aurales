@@ -1108,9 +1108,13 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       const hero = document.querySelector<HTMLElement>('.discover-next-hero')!
       const copy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
       const poster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
+      const tonight = page.querySelector<HTMLElement>('.discover-tonight')!
+      const tonightCopy = tonight.querySelector<HTMLElement>('.discover-tonight__copy')!.getBoundingClientRect()
+      const tonightIntro = tonight.querySelector<HTMLElement>('.discover-tonight__intro')!.getBoundingClientRect()
+      const tonightPoster = tonight.querySelector<HTMLElement>('.discover-tonight__poster')!.getBoundingClientRect()
       const binge = page.querySelector<HTMLElement>('.discover-binge__feature')
       const contentSections = Array.from(page.querySelectorAll<HTMLElement>(
-        '.discover-next-hero, .discover-shelf, .discover-refine, .discover-genres, .discover-binge, .discover-time, .discover-more',
+        '.discover-next-hero, .discover-shelf, .discover-tonight, .discover-refine, .discover-genres, .discover-binge, .discover-time, .discover-more',
       )).map((section) => section.getBoundingClientRect())
       const time = page.querySelector<HTMLElement>('.discover-time')?.getBoundingClientRect()
       return {
@@ -1119,6 +1123,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         page: page.getBoundingClientRect().toJSON(),
         headingFontSize: Number.parseFloat(getComputedStyle(page.querySelector<HTMLElement>('.discover-page__heading h1')!).fontSize),
         heroHeight: hero.getBoundingClientRect().height,
+        tonightHeight: tonight.getBoundingClientRect().height,
+        tonightColumnsSeparated: tonightCopy.right <= tonightPoster.left + 1 && tonightIntro.right <= tonightPoster.left + 1,
+        tonightPosterInside: tonightPoster.left >= tonight.getBoundingClientRect().left && tonightPoster.right <= tonight.getBoundingClientRect().right,
         timeWidth: time?.width ?? 0,
         timeLeft: time?.left ?? 0,
         timeRight: time?.right ?? 0,
@@ -1140,6 +1147,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopBounds.headingFontSize, `Discovery heading should stay within its desktop type scale at ${width}px`).toBeLessThanOrEqual(44)
     expect(desktopBounds.heroHeight, `Discovery spotlight should retain its desktop composition at ${width}px`).toBeGreaterThanOrEqual(300)
     expect(desktopBounds.heroHeight, `Discovery spotlight should not dominate the desktop page at ${width}px`).toBeLessThanOrEqual(500)
+    expect(desktopBounds.tonightHeight, `Tonight should retain its editorial card layout at ${width}px`).toBeGreaterThanOrEqual(260)
+    expect(desktopBounds.tonightColumnsSeparated, `Tonight copy should not overlap its poster at ${width}px`).toBe(true)
+    expect(desktopBounds.tonightPosterInside, `Tonight poster should stay inside its card at ${width}px`).toBe(true)
     expect(desktopBounds.maxPosterCardRatio, `Discovery poster cards should follow their artwork height at ${width}px`).toBeLessThanOrEqual(2.4)
     if (width >= 900 && desktopBounds.bingeColumns > 0) expect(desktopBounds.bingeColumns, `binge feature should use a horizontal desktop composition at ${width}px`).toBe(2)
   }
