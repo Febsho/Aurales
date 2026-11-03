@@ -332,6 +332,16 @@ export interface DiscoverConfig {
   presetName?: string
 }
 
+/** Paginated TMDB source used to extend a computed Discovery catalog. */
+export interface DiscoveryCatalogContinuation {
+  configs: DiscoverConfig[]
+  tab: 'movies' | 'series' | 'anime'
+  genreIds?: number[]
+  maxPopularity?: number
+  minRating?: number
+  excludeIds?: string[]
+}
+
 export interface HomeRowConfig {
   id: string
   title: string

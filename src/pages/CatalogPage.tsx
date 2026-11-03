@@ -5,13 +5,28 @@ import { EmptyState } from '../components/ui'
 import { getAddonCatalog, getMockCatalog } from '../services/addons'
 import { useAppStore } from '../stores/appStore'
 import { useCatalogStore } from '../stores/catalogStore'
-import type { HomeRowConfig, SearchResult } from '../types'
+import type { DiscoveryCatalogContinuation, HomeRowConfig, SearchResult } from '../types'
 import { discoverTmdb, discoverTmdbWithCache, DISCOVER_ROW_LIMIT, DISCOVER_ROW_PAGES } from '../services/tmdb'
 import { getProviderListItems } from '../services/providerLists'
 import { SERVICE_PROVIDER_MAP } from './DiscoverPage'
 import WatchlistButton from '../components/WatchlistButton'
 import { dedupeMediaItems, mediaIdentity } from '../services/mediaPresentation'
 import { metadataTaskQueue, scheduleTask } from '../services/cache/backgroundTaskQueue'
+
+function matchesDiscoveryContinuation(item: SearchResult, continuation: DiscoveryCatalogContinuation): boolean {
+  const isAnime = Boolean(item.isAnime || (item.genreIds?.includes(16) && ['ja', 'zh', 'ko'].includes(item.originalLanguage || '')))
+  const matchesTab = continuation.tab === 'anime'
+    ? isAnime
+    : continuation.tab === 'movies'
+      ? item.type === 'movie' && !isAnime
+      : item.type === 'series' && !isAnime
+  if (!matchesTab || !item.poster) return false
+  if (continuation.genreIds?.length && !item.genreIds?.some((genreId) => continuation.genreIds!.includes(genreId))) return false
+  if (continuation.maxPopularity != null && (item.popularity == null || item.popularity >= continuation.maxPopularity)) return false
+  if (continuation.minRating != null && (item.rating == null || item.rating < continuation.minRating)) return false
+  if (continuation.excludeIds?.includes(mediaIdentity(item))) return false
+  return true
+}
 
 export default function CatalogPage() {
   const navigate = useNavigate()
@@ -140,13 +155,15 @@ export default function CatalogPage() {
     restoredRef.current = false
     loadMoreRef.current = null
 
-    const routeItems = (location.state as { showAllItems?: SearchResult[] } | null)?.showAllItems
+    const routeState = location.state as { showAllItems?: SearchResult[]; showAllContinuation?: DiscoveryCatalogContinuation } | null
+    const routeItems = routeState?.showAllItems
+    const routeContinuation = isTopTenCatalog ? undefined : routeState?.showAllContinuation
     // Computed Discovery sections have no backing HomeRowConfig. Their route
     // payload is the current, already-ranked catalog; on a fresh open it must
     // win over a stale cached snapshot. POP navigation still restores the
     // saved catalog and scroll position so returning from a detail page feels
     // continuous.
-    const hasFreshComputedItems = !row && navigationType === 'PUSH' && Array.isArray(routeItems) && routeItems.length > 0
+    const hasFreshComputedItems = navigationType === 'PUSH' && Array.isArray(routeItems) && routeItems.length > 0
     const cached = catalogGetCache(rowId)
     const restoredCache = !hasFreshComputedItems && cached && cached.items.length > 0
       ? isTopTenCatalog
@@ -184,14 +201,15 @@ export default function CatalogPage() {
     // Rows without a config (e.g. Discover's computed sections) pass their items
     // through navigation state — more reliable than the seeded cache alone
       const stateItems = routeItems
-      if (!row && stateItems && stateItems.length > 0) {
+      if (stateItems && stateItems.length > 0) {
         setItems(isTopTenCatalog ? stateItems.slice(0, 10) : stateItems)
-        setHasMore(false)
+        setHasMore(Boolean(routeContinuation))
+        pageRef.current = routeContinuation ? DISCOVER_ROW_PAGES : 0
         setLoading(false)
-        return
+        if (!routeContinuation) return
       }
 
-      if (!row) {
+      if (!row && !routeContinuation) {
         setLoading(false)
         return
       }
@@ -200,31 +218,33 @@ export default function CatalogPage() {
     // ─── Discover Row loading ───
     // A cached partial catalog can outlive its source row. Keep those items
     // visible, but do not fetch another page without its source configuration.
-    if (!row) {
+    if (!row && !routeContinuation) {
       setLoading(false)
       return
     }
 
-    if (row.sourceType === 'discover') {
-      if (!row.discoverConfig) {
-        setLoading(false)
-        return
-      }
+    const discoverConfigs = routeContinuation?.configs
+      ?? (row?.sourceType === 'discover' && row.discoverConfig ? [row.discoverConfig] : [])
+    if (discoverConfigs.length > 0) {
 
       let cancelled = false
-      let page = restoredCache ? Math.max(1, restoredCache.page) : 1
+      let page = restoredCache
+        ? Math.max(1, restoredCache.page)
+        : routeContinuation && hasFreshComputedItems ? DISCOVER_ROW_PAGES + 1 : 1
       let loadingPage = false
       let canLoadMore = true
-      const maxResults = row.discoverConfig.maxResults && row.discoverConfig.maxResults > 0
-        ? row.discoverConfig.maxResults
+      const maxResults = discoverConfigs[0]?.maxResults && discoverConfigs[0].maxResults > 0
+        ? discoverConfigs[0].maxResults
         : undefined
+      const exhaustedSources = new Set<number>()
+      const excludedContinuationIds = new Set(routeContinuation?.excludeIds ?? [])
       // Keep a stable identity across later metadata enrichment. TMDB results
       // can gain an IMDb ID after their first paint, which changes the normal
       // cross-provider identity from TMDB to IMDb for the same title.
       const pageIdentity = (item: SearchResult) => item.tmdbId != null
         ? `${item.type}:tmdb:${item.tmdbId}`
         : mediaIdentity(item)
-      const seenPageIdentities = new Set((restoredCache?.items || []).map(pageIdentity))
+      const seenPageIdentities = new Set((restoredCache?.items || (hasFreshComputedItems ? routeItems : []) || []).map(pageIdentity))
       let loadedResultCount = seenPageIdentities.size
       let scrollFrame = 0
       const scrollRoot = document.querySelector('main') || document.documentElement
@@ -241,10 +261,20 @@ export default function CatalogPage() {
         try {
           const isFirst = page === 1
           const requestedPage = page
-          const results = isFirst
-            ? await discoverTmdbWithCache(row.discoverConfig!, `catalog-${rowId}-p${page}`)
-            : await discoverTmdb(row.discoverConfig!, page)
+          const activeSourceIndexes = discoverConfigs.map((_, index) => index).filter((index) => !exhaustedSources.has(index))
+          const sourceResults = isFirst && discoverConfigs.length === 1
+            ? [await discoverTmdbWithCache(discoverConfigs[0]!, `catalog-${rowId}-p${page}`)]
+            : await Promise.all(activeSourceIndexes.map((index) => discoverTmdb(discoverConfigs[index]!, page)))
           if (cancelled) return
+          sourceResults.forEach((sourceItems, index) => {
+            const sourceIndex = isFirst && discoverConfigs.length === 1 ? 0 : activeSourceIndexes[index]!
+            const sourcePageLimit = isFirst && discoverConfigs.length === 1 ? DISCOVER_ROW_LIMIT : 20
+            if (sourceItems.length < sourcePageLimit) exhaustedSources.add(sourceIndex)
+          })
+          const rawResults = sourceResults.flat()
+          const results = routeContinuation
+            ? rawResults.filter((item) => matchesDiscoveryContinuation(item, { ...routeContinuation, excludeIds: [...excludedContinuationIds] }))
+            : rawResults
 
           // TMDB already gives us everything required to render a useful card.
           // Do not keep the whole catalog behind secondary metadata lookups.
@@ -286,7 +316,7 @@ export default function CatalogPage() {
           if (maxResults && loadedResultCount >= maxResults) {
             canLoadMore = false
             setHasMore(false)
-          } else if (results.length === 0 || results.length < (isFirst ? DISCOVER_ROW_LIMIT : 20)) {
+          } else if (exhaustedSources.size >= discoverConfigs.length) {
             canLoadMore = false
             setHasMore(false)
           } else {
@@ -322,7 +352,7 @@ export default function CatalogPage() {
       }
 
       loadMoreRef.current = () => loadNextPage(false)
-      if (restoredCache) scheduleScrollCheck()
+      if (restoredCache || (routeContinuation && hasFreshComputedItems)) scheduleScrollCheck()
       else loadNextPage(true).then(() => { if (!cancelled) scheduleScrollCheck() })
       scrollRoot.addEventListener('scroll', scheduleScrollCheck, { passive: true })
 
@@ -332,6 +362,11 @@ export default function CatalogPage() {
         loadMoreRef.current = null
         scrollRoot.removeEventListener('scroll', scheduleScrollCheck)
       }
+    }
+
+    if (!row) {
+      setLoading(false)
+      return
     }
 
     if (row.sourceType === 'trakt' || row.sourceType === 'pmdb' || row.sourceType === 'pmdb-picks' || row.sourceType === 'mdblist' || row.sourceType === 'anilist' || row.sourceType === 'jellyfin' || row.sourceType === 'webdav') {

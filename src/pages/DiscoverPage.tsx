@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Info, RefreshCw, RotateCcw, Search, Settings, Shuffle, ThumbsDown, X } from 'lucide-react'
-import type { DiscoverConfig, SearchResult, WatchProgress } from '../types'
+import type { DiscoverConfig, DiscoveryCatalogContinuation, SearchResult, WatchProgress } from '../types'
 import { discoverTmdbPageWithCache, discoverTmdbWithCache, getTmdbPerson, getTrendingTmdb, tmdbProvider } from '../services/tmdb'
 import MediaRow from '../components/MediaRow'
 import MediaCard from '../components/MediaCard'
@@ -672,12 +672,13 @@ export default function DiscoverPage() {
     refreshNonce,
     reportGenreLoading,
   )
+  const hiddenGemsConfig = makeConfig(contentType, 'vote_average.desc', preferences, {
+    voteAverageMin: Math.max(7.2, minRating),
+    voteCountMin: tab === 'anime' ? 80 : 120,
+    ...animeOverrides,
+  })
   const hiddenGems = useDiscoverRow(
-    makeConfig(contentType, 'vote_average.desc', preferences, {
-      voteAverageMin: Math.max(7.2, minRating),
-      voteCountMin: tab === 'anime' ? 80 : 120,
-      ...animeOverrides
-    }),
+    hiddenGemsConfig,
     `discover-gems-${tab}-${discoveryQueryKey}`,
     !hasDailySnapshot,
     refreshNonce,
@@ -978,14 +979,22 @@ export default function DiscoverPage() {
   // additional runtime request, so a browser-only session can use whichever
   // source is available without blocking the main Discovery feed.
   const hasDiscoveryItems = tabRanked.length > 0 || currentTrendingRanked.length > 0
+  const timeTonightConfig = makeConfig(contentType, 'popularity.desc', preferences, {
+    runtimeMin: selectedRuntimeBucket.min,
+    runtimeMax: selectedRuntimeBucket.max,
+    voteAverageMin: Math.max(6, minRating),
+    voteCountMin: tab === 'anime' ? 50 : 100,
+    ...animeOverrides,
+  })
+  const timeTonightAnimeMovieConfig = makeConfig('movie', 'popularity.desc', preferences, {
+    runtimeMin: selectedRuntimeBucket.min,
+    runtimeMax: selectedRuntimeBucket.max,
+    voteAverageMin: Math.max(6, minRating),
+    voteCountMin: 50,
+    ...animeOverrides,
+  })
   const timeTonight = useDiscoverRow(
-    makeConfig(contentType, 'popularity.desc', preferences, {
-      runtimeMin: selectedRuntimeBucket.min,
-      runtimeMax: selectedRuntimeBucket.max,
-      voteAverageMin: Math.max(6, minRating),
-      voteCountMin: tab === 'anime' ? 50 : 100,
-      ...animeOverrides,
-    }),
+    timeTonightConfig,
     `discover-time-${tab}-${selectedRuntimeBucket.id}-${discoveryQueryKey}`,
     hasDiscoveryItems,
     refreshNonce,
@@ -993,13 +1002,7 @@ export default function DiscoverPage() {
     false,
   )
   const timeTonightAnimeMovies = useDiscoverRow(
-    makeConfig('movie', 'popularity.desc', preferences, {
-      runtimeMin: selectedRuntimeBucket.min,
-      runtimeMax: selectedRuntimeBucket.max,
-      voteAverageMin: Math.max(6, minRating),
-      voteCountMin: 50,
-      ...animeOverrides,
-    }),
+    timeTonightAnimeMovieConfig,
     `discover-time-anime-movies-${selectedRuntimeBucket.id}-${discoveryQueryKey}`,
     tab === 'anime' && hasDiscoveryItems,
     refreshNonce,
@@ -1769,7 +1772,7 @@ export default function DiscoverPage() {
             </>
           </DiscoveryReveal>}
           {viewState === 'error' && <div className="mx-6 mb-8 grid min-h-72 place-items-center rounded-3xl border border-white/10 bg-white/[.03] p-8 text-center"><div><h2 className="text-xl font-black">Recommendations are unavailable</h2><p className="mt-2 max-w-md text-sm text-white/60">Cached discovery data was not available and recommendation sources could not be loaded. Check your network or TMDB settings.</p><button onClick={() => window.location.reload()} className="mt-5 rounded-full bg-white px-5 py-2 font-bold text-black">Retry</button></div></div>}
-          {viewState === 'content' && trendingSection && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--trending"><MediaRow title="OR TRY" items={trendingSection.items.map((entry) => entry.item)} showAllItems={trendingSection.catalogItems?.map((entry) => entry.item)} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-trending-this-week?title=${encodeURIComponent('OR TRY')}`} /></div></DiscoveryReveal>}
+          {viewState === 'content' && trendingSection && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--trending"><MediaRow title="OR TRY" items={trendingSection.items.map((entry) => entry.item)} showAllItems={trendingSection.catalogItems?.map((entry) => entry.item)} showAllContinuation={{ configs: [makeConfig(contentType, 'popularity.desc', preferences, animeOverrides)], tab, excludeIds: [...(heroMediaKey ? [heroMediaKey] : []), ...visiblePersonalizedSections.flatMap((section) => section.items.map((entry) => mediaIdentity(entry.item)))] }} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-trending-this-week?title=${encodeURIComponent('OR TRY')}`} /></div></DiscoveryReveal>}
           {(tabRanked.length > 0 || currentTrendingRanked.length > 0) && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
             <p className="discover-section-eyebrow">Refine your taste</p>
             <div className="discover-refine__heading">
@@ -1807,8 +1810,12 @@ export default function DiscoverPage() {
             // recommendation engine exposes a larger backing catalog.
             const sourceCatalogItems = isPersonalGenre ? prioritizeLiveTrendsWithin(currentTrendingRanked, section.catalogItems ?? section.items) : section.catalogItems ?? section.items
             const catalogItems = sourceCatalogItems.map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
+            const personalGenreId = isPersonalGenre ? Number(section.id.slice('because-genre-'.length)) : undefined
+            const continuation: DiscoveryCatalogContinuation | undefined = isTopTen ? undefined : isPersonalGenre && Number.isFinite(personalGenreId)
+              ? { configs: [makeConfig(contentType, 'popularity.desc', preferences, { ...animeOverrides, includeGenres: [...(tab === 'anime' ? ['16'] : []), String(personalGenreId)], genreMatchMode: tab === 'anime' ? 'AND' : 'OR', voteAverageMin: Math.max(6.5, minRating), voteCountMin: tab === 'anime' ? 50 : 150 })], tab, genreIds: [personalGenreId!] }
+              : undefined
             const eyebrow = isPersonalGenre ? `Because you love ${genreTitle.toLocaleLowerCase()}` : undefined
-            return <DiscoveryReveal key={section.id}><div className={`row-contain discover-shelf${isPersonalGenre ? ' discover-shelf--personal-genre' : ''}`}><MediaRow title={title} headerEyebrow={eyebrow} items={items} showAllItems={catalogItems} layout={isTopTen ? 'ranked' : 'poster'} previewLimit={isTopTen ? 10 : undefined} renderAllPreviewItems={isTopTen} disableCinematic forceShowAll showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div></DiscoveryReveal>
+            return <DiscoveryReveal key={section.id}><div className={`row-contain discover-shelf${isPersonalGenre ? ' discover-shelf--personal-genre' : ''}`}><MediaRow title={title} headerEyebrow={eyebrow} items={items} showAllItems={catalogItems} showAllContinuation={continuation} layout={isTopTen ? 'ranked' : 'poster'} previewLimit={isTopTen ? 10 : undefined} renderAllPreviewItems={isTopTen} disableCinematic forceShowAll showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div></DiscoveryReveal>
           })}
           {viewState === 'content' && activeSimilaritySection && activeSimilarityTitle && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--personal-seed">
             <MediaRow
@@ -1836,6 +1843,7 @@ export default function DiscoverPage() {
                 </div>}
                 items={timeTonightItems}
                 showAllItems={timeTonightCatalogItems}
+                showAllContinuation={{ configs: tab === 'anime' ? [timeTonightConfig, timeTonightAnimeMovieConfig] : [timeTonightConfig], tab }}
                 layout="poster"
                 disableCinematic
                 showAllPath={`/catalog/discover-time-${tab}-${selectedRuntimeBucket.id}-${discoveryQueryKey}?title=${encodeURIComponent('How Much Time Tonight?')}`}
@@ -1864,7 +1872,7 @@ export default function DiscoverPage() {
             </div>
             <div id="discover-genre-picks" ref={genrePicksRef} className="discover-genre-picks" aria-live="polite">
               {selectedGenreId != null && genreLoading && genreSelectionItems.length === 0 && <p className="discover-genre-picks__loading" role="status">Finding {genreMap[selectedGenreId] || 'genre'} titles…</p>}
-              {selectedGenreId != null && genreSelectionItems.length > 0 && <MediaRow title={`${genreMap[selectedGenreId] || 'Genre'} Picks`} items={genreSelectionItems} showAllItems={genreSelectionItems} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${genreRowId}?title=${encodeURIComponent(`${genreMap[selectedGenreId] || 'Genre'} Picks`)}`} />}
+              {selectedGenreId != null && genreSelectionItems.length > 0 && <MediaRow title={`${genreMap[selectedGenreId] || 'Genre'} Picks`} items={genreSelectionItems} showAllItems={genreSelectionItems} showAllContinuation={{ configs: [makeConfig(contentType, 'popularity.desc', preferences, { ...animeOverrides, includeGenres: [...(tab === 'anime' ? ['16'] : []), String(selectedGenreId)], genreMatchMode: tab === 'anime' ? 'AND' : 'OR', voteAverageMin: Math.max(6, minRating), voteCountMin: tab === 'anime' ? 50 : 100 })], tab, genreIds: [selectedGenreId] }} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${genreRowId}?title=${encodeURIComponent(`${genreMap[selectedGenreId] || 'Genre'} Picks`)}`} />}
               {selectedGenreId != null && genreSelectionItems.length === 0 && !genreLoading && <p className="discover-genre-picks__empty">No titles found for {genreMap[selectedGenreId] || 'this genre'} yet. Try another genre.</p>}
             </div>
           </section></DiscoveryReveal>
@@ -1897,11 +1905,11 @@ export default function DiscoverPage() {
               <div className="discover-editorial-tabs" role="group" aria-label="Choose a mood">{DISCOVERY_MOODS.map((mood) => <button key={mood.id} type="button" aria-pressed={activeDiscoveryMood.id === mood.id} onClick={() => setSelectedDiscoveryMoodId(mood.id)}>{mood.label}</button>)}</div>
             </div>
             {moodItems.length > 0
-              ? <MediaRow title={`${activeDiscoveryMood.label} Picks`} items={moodItems} showAllItems={moodCatalogItems} layout="poster" disableCinematic forceShowAll showAllPath={`/catalog/discover-mood-${tab}-${activeDiscoveryMood.id}-${discoveryQueryKey}?title=${encodeURIComponent(`${activeDiscoveryMood.label} Picks`)}`} />
+              ? <MediaRow title={`${activeDiscoveryMood.label} Picks`} items={moodItems} showAllItems={moodCatalogItems} showAllContinuation={{ configs: [makeConfig(contentType, 'popularity.desc', preferences, { ...animeOverrides, includeGenres: [...(tab === 'anime' ? ['16'] : []), ...activeDiscoveryMood.genres.map(String)], genreMatchMode: tab === 'anime' ? 'AND' : 'OR' })], tab, genreIds: [...activeDiscoveryMood.genres] }} layout="poster" disableCinematic forceShowAll showAllPath={`/catalog/discover-mood-${tab}-${activeDiscoveryMood.id}-${discoveryQueryKey}?title=${encodeURIComponent(`${activeDiscoveryMood.label} Picks`)}`} />
               : <p className="discover-editorial-empty" role="status">No titles found for this mood yet.</p>}
           </section></DiscoveryReveal>}
-          {bigScreenItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--big-screen"><MediaRow title="Made for the Big Screen" headerEyebrow="Best in widescreen" items={bigScreenItems} showAllItems={bigScreenCatalogItems} layout="poster" disableCinematic showAllPath={`/catalog/discover-big-screen-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Made for the Big Screen')}`} /></div></DiscoveryReveal>}
-          {hiddenGemItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--gems"><MediaRow title="Hidden Gems" headerEyebrow="Highly rated, waiting for you" items={hiddenGemItems} showAllItems={hiddenGemCatalogItems} layout="poster" disableCinematic showAllPath={`/catalog/discover-hidden-gems-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Hidden Gems')}`} /></div></DiscoveryReveal>}
+          {bigScreenItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--big-screen"><MediaRow title="Made for the Big Screen" headerEyebrow="Best in widescreen" items={bigScreenItems} showAllItems={bigScreenCatalogItems} showAllContinuation={{ configs: [makeConfig(contentType, 'popularity.desc', preferences, animeOverrides)], tab, excludeIds: [...(heroMediaKey ? [heroMediaKey] : []), ...visiblePersonalizedSections.flatMap((section) => section.items.slice(0, 10).map((entry) => mediaIdentity(entry.item))), ...(trendingSection?.items.map((entry) => mediaIdentity(entry.item)) ?? [])] }} layout="poster" disableCinematic showAllPath={`/catalog/discover-big-screen-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Made for the Big Screen')}`} /></div></DiscoveryReveal>}
+          {hiddenGemItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--gems"><MediaRow title="Hidden Gems" headerEyebrow="Highly rated, waiting for you" items={hiddenGemItems} showAllItems={hiddenGemCatalogItems} showAllContinuation={{ configs: [hiddenGemsConfig], tab, maxPopularity: 35, minRating: hiddenGemsConfig.voteAverageMin }} layout="poster" disableCinematic showAllPath={`/catalog/discover-hidden-gems-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Hidden Gems')}`} /></div></DiscoveryReveal>}
           {newLibraryItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--recent"><MediaRow title="New in Your Library" headerEyebrow="Just arrived in your library" items={newLibraryItems} showAllItems={newLibraryCatalogItems} layout="poster" disableCinematic showAllPath={`/catalog/discover-new-library-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('New in Your Library')}`} /></div></DiscoveryReveal>}
           {viewState === 'content' && <DiscoveryReveal><section className="discover-more row-contain" aria-labelledby="discover-more-title">
             <div className="discover-more__heading"><div><p className="discover-section-eyebrow">More popular picks</p><h2 id="discover-more-title">Keep Exploring</h2></div><span>{moreToDiscover.length ? `${moreToDiscover.length} titles loaded` : 'Fresh titles load as you scroll'}</span></div>

@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import type { SearchResult } from '../types'
+import type { DiscoveryCatalogContinuation, SearchResult } from '../types'
 import MediaCard from './MediaCard'
 import { useAppStore } from '../stores/appStore'
 import { dedupeMediaItems, mediaIdentity } from '../services/mediaPresentation'
 import { getTmdbCardMetadata } from '../services/tmdb'
 import RatingsStrip from './RatingsStrip'
 import { warmCachedImages } from '../services/imageCache'
-import { applySearchResultArt, resolveBetterPoster } from '../services/artwork'
+import { applySearchResultArt } from '../services/artwork'
 import { getShelfView, rememberShelfView, routeViewKey } from '../services/sessionViewState'
 import { isMobileWebViewport } from '../platform/mobileWeb'
 import { getMediaRowScrollTarget } from './mediaRowScroll'
@@ -25,6 +25,7 @@ interface MediaRowProps {
   layout?: 'poster' | 'ranked' | 'feature' | 'landscape' | 'list'
   showAllPath?: string
   showAllItems?: SearchResult[]
+  showAllContinuation?: DiscoveryCatalogContinuation
   forceShowAll?: boolean
   /** Use a section-specific preview size instead of the profile-wide row count. */
   previewLimit?: number
@@ -100,7 +101,7 @@ function FixedShelfDetails({ item }: { item: SearchResult }) {
   )
 }
 
-function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, forceShowAll = false, previewLimit, renderAllPreviewItems = false, disableArtOverride = false, disableTrailerPreview = false, headerLeftControls, headerRightControls, headerEyebrow, headerBottomControls, cinematicExpand = true, disableCinematic = false }: MediaRowProps) {
+function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, showAllContinuation, forceShowAll = false, previewLimit, renderAllPreviewItems = false, disableArtOverride = false, disableTrailerPreview = false, headerLeftControls, headerRightControls, headerEyebrow, headerBottomControls, cinematicExpand = true, disableCinematic = false }: MediaRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
   const location = useLocation()
@@ -226,10 +227,17 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
     const element = scrollRef.current
     if (!element) return
     const fillViewport = () => {
-      if (element.clientWidth > 0 && element.scrollWidth <= element.clientWidth + 1) {
-        setRenderedCount((count) => count < rowItems.length
-          ? Math.min(rowItems.length, count + CARD_RENDER_BATCH)
-          : count)
+      if (element.clientWidth <= 0 || rowItems.length <= renderedCount) return
+      const firstCard = element.firstElementChild as HTMLElement | null
+      const cardWidth = firstCard?.getBoundingClientRect().width || 0
+      // A zero-width card can occur while a shelf is entering the page or
+      // during mobile browser chrome changes. Never recursively render the
+      // entire catalog trying to make scrollWidth exceed clientWidth.
+      if (cardWidth <= 0) return
+      const gap = Number.parseFloat(getComputedStyle(element).columnGap) || 0
+      const needed = Math.ceil((element.clientWidth + gap) / (cardWidth + gap)) + 1
+      if (needed > renderedCount) {
+        setRenderedCount(Math.min(rowItems.length, needed))
       }
     }
     fillViewport()
@@ -246,21 +254,16 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
     // after the first interaction/paint budget. Starting every shelf's full
     // artwork queue 150 ms after mount competed with scroll image decoding.
     const warm = () => {
-      // Resolve Better Posters before deciding which URLs to warm. This keeps
-      // an idle prefetch from filling the normal-poster cache only to replace
-      // it later, while the resolver's global in-flight map deduplicates cards
-      // and shelves that reach the same title at once.
       // Never prefetch the complete artwork set for a shelf. A single card
       // can have poster, backdrop and logo files at original resolution;
       // warming all three for two batches made scrolling decode hundreds of
       // megabytes that were never visible. The rendered cards load their own
       // poster lazily, so warm only the next visible card image.
       const warmItems = rowItems.slice(0, INITIAL_RENDERED_CARDS)
-      void Promise.all(disableArtOverride ? [] : warmItems.map((item) => resolveBetterPoster(item)))
-        .then(() => warmCachedImages(warmItems.map((item) => {
-          const displayed = disableArtOverride ? item : applySearchResultArt(item)
-          return displayed.poster || displayed.backdrop
-        })))
+      void warmCachedImages(warmItems.map((item) => {
+        const displayed = disableArtOverride ? item : applySearchResultArt(item)
+        return displayed.poster || displayed.backdrop
+      }))
     }
     const idleWindow = window as Window & {
       requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number
@@ -275,7 +278,10 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
   }, [rowItems, disableArtOverride])
   // Pass the full row along so catalogs without a backing config (e.g. Discover
   // sections) can render everything even when the seeded cache is unavailable
-  const openShowAll = () => { if (showAllPath) navigate(showAllPath, { state: { showAllItems: showAllItems || visibleItems } }) }
+  const openShowAll = () => {
+    if (!showAllPath) return
+    navigate(showAllPath, { state: { showAllItems: showAllItems || visibleItems, showAllContinuation } })
+  }
   const titleHeading = showAllPath ? (
     <button onClick={openShowAll} aria-label={`Open ${title} catalog`} className="group/title flex min-w-0 items-center gap-1.5 cursor-pointer focus-ring rounded-lg" title="Open full list">
       <h2 className="truncate text-xl font-bold tracking-tight text-white/95 transition-colors group-hover/title:text-white">{title}</h2>

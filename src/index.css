@@ -6521,8 +6521,8 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-refine__search input::placeholder { color: rgba(255,255,255,.48); }
 .discover-refine__reset { display: inline-flex; min-height: 2.65rem; align-items: center; gap: .5rem; padding: .5rem .9rem; border: 1px solid rgba(255,255,255,.15); border-radius: .75rem; background: rgba(255,255,255,.05); color: rgba(255,255,255,.78); font-size: .82rem; font-weight: 600; cursor: pointer; }
 .discover-taste-picks__empty { grid-column: 1 / -1; margin: .25rem 0; color: rgba(255,255,255,.58); font-size: .85rem; }
-.discover-binge { margin: 1rem var(--discover-gutter) 1.8rem; }
-.discover-binge__heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-bottom: .75rem; padding-inline: 1rem; }
+.discover-binge { box-sizing: border-box; width: min(calc(100% - 2 * var(--discover-gutter)), 90rem); margin: 1rem auto 1.8rem; }
+.discover-binge__heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-bottom: .75rem; }
 .discover-binge__heading h2 { margin: 0; color: #fff; font-size: clamp(1.1rem, 2vw, 1.45rem); font-weight: 700; letter-spacing: -.025em; }
 .discover-binge__heading > span { color: rgba(255,255,255,.48); font-size: .75rem; }
 .discover-endcap { display: grid; justify-items: center; gap: .65rem; padding: 1.5rem var(--discover-gutter, 1.5rem) 2.25rem; text-align: center; }
@@ -6603,8 +6603,8 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-binge__main-poster small { bottom: 2rem; }
 @media (min-width: 900px) {
   .discover-binge__feature {
-    min-height: clamp(18rem, 27vw, 21rem);
-    grid-template-columns: minmax(15rem, .7fr) minmax(0, 1.3fr);
+    min-height: clamp(17rem, 24vw, 20rem);
+    grid-template-columns: minmax(16rem, .78fr) minmax(0, 1.22fr);
     align-items: center;
     gap: clamp(1.1rem, 2.5vw, 2rem);
     padding: clamp(1rem, 2vw, 1.5rem);
@@ -6616,11 +6616,11 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     flex-direction: column;
     justify-content: center;
   }
-  .discover-binge__copy h3 { max-width: 24rem; font-size: clamp(1.3rem, 2vw, 1.55rem); line-height: 1.15; }
-  .discover-binge__actions { gap: .55rem; margin-top: .8rem; }
+  .discover-binge__copy h3 { max-width: 28rem; font-size: clamp(1.35rem, 1.8vw, 1.75rem); line-height: 1.15; }
+  .discover-binge__actions { gap: .55rem; margin-top: 1rem; }
   .discover-binge__copy button { min-height: 2.8rem; padding-inline: 1rem; font-size: .82rem; }
   .discover-binge__gallery {
-    height: clamp(15rem, 22vw, 19rem);
+    height: clamp(14rem, 19vw, 18rem);
     grid-column: 2;
     grid-row: 1;
     grid-template-columns: minmax(8rem, .62fr) minmax(0, 1.38fr);
