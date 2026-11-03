@@ -6438,6 +6438,18 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-seed-tabs button[aria-pressed="true"] { border-color: rgba(255,255,255,.24); background: rgba(255,255,255,.15); color: #fff; }
 .discover-seed-tabs button:active { transform: scale(.98); }
 .discover-seed-tabs button:focus-visible { outline: 2px solid rgba(255,255,255,.9); outline-offset: 2px; }
+.discover-editorial-heading { display: flex; min-width: 0; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: .5rem 1rem; margin: 1.1rem var(--discover-gutter, 1.5rem) .65rem; }
+.discover-editorial-heading h2 { margin: 0; color: #fff; font-size: clamp(1.05rem, 1.65vw, 1.4rem); font-weight: 700; letter-spacing: -.025em; }
+.discover-editorial-tabs { display: flex; max-width: 100%; gap: .4rem; overflow-x: auto; overscroll-behavior-x: contain; padding: .15rem .05rem .25rem; scrollbar-width: none; }
+.discover-editorial-tabs::-webkit-scrollbar { display: none; }
+.discover-editorial-tabs button { display: inline-flex; min-width: 0; min-height: 44px; flex: 0 0 auto; align-items: center; justify-content: center; padding: .4rem .75rem; border: 1px solid rgba(255,255,255,.1); border-radius: 999px; background: rgba(255,255,255,.055); color: rgba(255,255,255,.62); font: inherit; font-size: .72rem; font-weight: 600; white-space: nowrap; cursor: pointer; transition: background .18s ease, color .18s ease, border-color .18s ease, transform .18s ease; }
+.discover-editorial-tabs button[aria-pressed="true"] { border-color: rgba(255,255,255,.24); background: rgba(255,255,255,.15); color: #fff; }
+.discover-editorial-tabs button:active { transform: scale(.98); }
+.discover-editorial-tabs button:focus-visible { outline: 2px solid rgba(255,255,255,.9); outline-offset: 2px; }
+.discover-time { width: 100%; margin-block: .8rem 1.2rem; }
+.discover-editorial-empty { margin: .5rem var(--discover-gutter, 1.5rem) 1rem; color: rgba(255,255,255,.55); font-size: .82rem; }
+.discover-shelf--big-screen, .discover-shelf--gems, .discover-shelf--moods, .discover-shelf--recent { margin-block: .9rem 1.2rem; }
+.discover-shelf--big-screen .media-row--feature .media-row-card-slot { min-width: clamp(16rem, 28vw, 25rem); }
 .discover-page .media-row { margin-bottom: .9rem !important; }
 .discover-page .media-row > div:first-child { margin-bottom: .5rem !important; }
 .discover-page .media-row > div:first-child h2 { font-size: clamp(.95rem, 1.25vw, 1.15rem) !important; }
@@ -6632,6 +6644,12 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-colors__heading > span { font-size: .68rem; }
   .discover-colors__filters { gap: .35rem; margin-block: .55rem .4rem; }
   .discover-colors__filters button { min-height: 44px; padding-inline: .65rem; font-size: .72rem; }
+  .discover-editorial-heading { align-items: flex-start; flex-direction: column; gap: .45rem; margin-block: .8rem .45rem; }
+  .discover-editorial-heading h2 { font-size: 1.08rem; }
+  .discover-editorial-tabs { width: 100%; gap: .35rem; }
+  .discover-editorial-tabs button { min-height: 40px; padding-inline: .65rem; font-size: .68rem; }
+  .discover-time { margin-block: .65rem .95rem; }
+  .discover-shelf--big-screen, .discover-shelf--gems, .discover-shelf--moods, .discover-shelf--recent { margin-block: .65rem .9rem; }
   .discover-genres__grid { gap: .5rem; margin-block: .65rem .8rem; }
   .discover-genres__grid button { flex-basis: min(44vw, 11rem); min-height: 6rem; padding: .75rem; border-radius: .8rem; }
   .discover-genres__grid button > span { font-size: .88rem; }

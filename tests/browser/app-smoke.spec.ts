@@ -368,6 +368,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     } as typeof IntersectionObserver
   })
   const tmdbRequestPaths = new Set<string>()
+  const runtimeFilters: string[] = []
   const continuationPages = new Set<number>()
   const animeContinuationResponses: string[] = []
   let animeMovieContinuationFailuresRemaining = 0
@@ -375,6 +376,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.route('https://api.themoviedb.org/**', async (route) => {
     const requestUrl = new URL(route.request().url())
     tmdbRequestPaths.add(requestUrl.pathname)
+    const runtimeFilter = [requestUrl.searchParams.get('with_runtime.gte'), requestUrl.searchParams.get('with_runtime.lte')].join('-')
+    if (runtimeFilter !== '-') runtimeFilters.push(runtimeFilter)
     if (/^\/3\/trending\/(movie|tv)\/week$/.test(requestUrl.pathname)) {
       const weeklyType = requestUrl.pathname.includes('/movie/') ? 'movie' : 'series'
       const results = Array.from({ length: 8 }, (_, index) => ({
@@ -640,7 +643,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const topTenTop = topTenHeading!.y
   expect(obsessionTop).toBeLessThan(trendingTop)
   expect(trendingTop).toBeLessThan(topTenTop)
-  await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toBeVisible()
+  await expect(page.locator('.discover-shelf--recent img[alt="Recently Added Library Fixture"]')).toBeVisible()
   await expect(heroSpotlight.getByRole('button', { name: 'Details' })).toBeVisible()
   const firstSpotlightTitle = await obsessionCard.getAttribute('data-title')
   expect(firstSpotlightTitle).not.toBeNull()
@@ -680,8 +684,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.getByRole('heading', { name: 'Top 10 For You', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Drama Picks', exact: true })).toHaveCount(0)
   await expect(page.locator('.discover-shelf--personal-genre')).toHaveCount(0)
-  await expect(page.locator('.discover-shelf--big-screen')).toHaveCount(0)
-  await expect(page.locator('.discover-shelf--gems, .discover-shelf--recent, .discover-shelf--top-rated')).toHaveCount(0)
+  await expect(page.locator('.discover-shelf--big-screen')).toHaveCount(1)
+  await expect(page.locator('.discover-shelf--recent')).toHaveCount(1)
+  await expect(page.locator('.discover-shelf--gems, .discover-shelf--top-rated')).toHaveCount(0)
   await expect.poll(() => tmdbRequestPaths.has('/3/discover/tv')).toBe(true)
   await expect(page.getByRole('heading', { name: 'Your Next Binge', exact: true })).toBeVisible()
   await expect.poll(() => tmdbRequestPaths.has('/3/trending/tv/week')).toBe(true)
@@ -769,20 +774,26 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   })
   expect(pickerBeforeShelves, 'the broad public recommendations should lead into the taste picker').toBe(true)
   await expect(page.getByRole('heading', { name: 'Your Genres' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Moods for Tonight' })).toHaveCount(0)
-  await expect(page.locator('.discover-moods, .discover-color, .discover-time, .discover-calendar, .discover-shelf--big-screen')).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: 'Sunday Night Moods' })).toHaveCount(0)
+  await expect(page.locator('.discover-time')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Made for the Big Screen' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Sunday Night Moods' })).toBeVisible()
+  await expect(page.getByRole('group', { name: 'Choose a watch duration' }).getByRole('button')).toHaveCount(3)
+  await expect(page.getByRole('group', { name: 'Choose a mood' }).getByRole('button')).toHaveCount(3)
+  const runtimeControls = page.getByRole('group', { name: 'Choose a watch duration' })
+  await runtimeControls.getByRole('button', { name: 'Under 90 Minutes' }).click()
+  await expect(runtimeControls.getByRole('button', { name: 'Under 90 Minutes' })).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => runtimeFilters.includes('1-89')).toBe(true)
   await expect(page.getByRole('heading', { name: 'Pick by Colour' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toBeVisible()
   await contentTypeControls.getByRole('button', { name: 'Anime', exact: true }).click()
   await expect(page.locator('.discover-next-hero .discover-spotlight__meta')).toContainText('Anime')
   await contentTypeControls.getByRole('button', { name: 'Movies', exact: true }).click()
   const discoveryFlow = await page.locator('.discover-page').evaluate((root) => {
     const headings = Array.from(root.querySelectorAll<HTMLElement>('h2, h3')).map((heading) => heading.textContent?.trim() || '')
-    const referenceOrder = ['Your Genres', 'Your Next Binge']
+    const referenceOrder = ['How Much Time Tonight?', 'Made for the Big Screen', 'Your Next Binge', 'Sunday Night Moods', 'New in Your Library', 'Your Genres']
     return referenceOrder.filter((title) => headings.includes(title)).map((title) => headings.indexOf(title))
   })
-  expect(discoveryFlow.every((position, index) => index === 0 || position > discoveryFlow[index - 1]!), 'the retained Discovery features should follow the reference flow from genres into binge picks').toBe(true)
+  expect(discoveryFlow.every((position, index) => index === 0 || position > discoveryFlow[index - 1]!), 'the restored editorial shelves should follow the order shown in the reference flow').toBe(true)
   await expect(page.locator('.discover-taste-pick')).toHaveCount(10)
   await expect(page.getByText(/Daily picks\s*·\s*US\s*·\s*6\+ rating/i)).toHaveCount(0)
   const mobileTabLayout = await page.locator('.discover-page__tabs button').evaluateAll((buttons) => buttons.map((button) => {
@@ -964,7 +975,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(bingeFeature.locator('.discover-binge__copy')).toHaveCSS('animation-name', 'discover-binge-content-enter')
   await expect(bingeFeature.locator('.discover-binge__art img')).toHaveCSS('animation-name', 'discover-binge-art-enter')
   await page.getByRole('button', { name: 'Movies', exact: true }).click()
-  await expect(page.locator('.discover-shelf--big-screen')).toHaveCount(0)
+  await expect(page.locator('.discover-shelf--big-screen')).toHaveCount(1)
   await expect(page.locator('.discover-page .show-all-card')).toHaveCount(0)
   await page.locator('.discover-spotlight').first().scrollIntoViewIfNeeded()
   const discoveryLayout = await page.evaluate(() => {
@@ -1311,7 +1322,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(fullOrTryOrder.slice(0, 5), 'the full OR TRY catalog should use the same fresh, popularity-sorted entries as its shelf').toEqual(visibleOrTryOrder.slice(0, 5))
   await page.goBack()
   await expect(page.locator('.discover-page')).toBeVisible()
-  await expect(page.locator('.discover-shelf--recent')).toHaveCount(0)
+  await expect(page.locator('.discover-shelf--recent')).toHaveCount(1)
   // TMDB interactive requests retry once; fail both attempts to exercise a
   // true partial response, then let the user's explicit retry succeed.
   animeMovieContinuationFailuresRemaining = 2
