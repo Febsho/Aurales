@@ -1184,7 +1184,44 @@ export default function DiscoverPage() {
       algorithmVersion: DISCOVERY_ALGORITHM_VERSION,
     })
   }, [activity.recent, berlinDateKey, dailySnapshotKey, initialWaitComplete, liveRanked, recommendationSourcesReady, setRankedSnapshot, snapshotIsValid])
-  const personalizedSections = useMemo(() => generateDiscoverySections(shelfRanked, tasteProfile, mode, 5, rankingNow), [shelfRanked, tasteProfile, mode, rankingNow])
+  const personalizedSections = useMemo(() => {
+    const sections = generateDiscoverySections(shelfRanked, tasteProfile, mode, 5, rankingNow)
+    if (mode !== 'for-you') return sections
+
+    const topTen = sections.find((section) => section.id === 'made-for-you')
+    if (!topTen) return sections
+
+    // Daily personalized snapshots should not make Top 10 stale while the
+    // current weekly feed has already refreshed. Promote two fresh trends into
+    // the editorial Top 10, then let the separate OR TRY shelf continue with
+    // the remaining titles. Keep the Spotlight out of both shelves.
+    const freshTrendPicks = currentTrendingRanked
+      .filter((entry) => mediaIdentity(entry.item) !== heroMediaKey)
+      .slice(0, 2)
+    if (!freshTrendPicks.length) return sections
+    const promotedKeys = new Set(freshTrendPicks.map((entry) => mediaIdentity(entry.item)))
+    const mergeTopTen = (items: typeof topTen.items) => {
+      const seen = new Set<string>()
+      return [...freshTrendPicks, ...items].filter((entry) => {
+        const key = mediaIdentity(entry.item)
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      }).slice(0, 10)
+    }
+
+    return sections
+      .map((section) => {
+        if (section.id === 'made-for-you') {
+          return { ...section, items: mergeTopTen(section.items), catalogItems: mergeTopTen(section.catalogItems ?? section.items) }
+        }
+        if (section.id === 'trending-this-week') return section
+        const items = section.items.filter((entry) => !promotedKeys.has(mediaIdentity(entry.item)))
+        const catalogItems = section.catalogItems?.filter((entry) => !promotedKeys.has(mediaIdentity(entry.item)))
+        return { ...section, items, catalogItems }
+      })
+      .filter((section) => section.id === 'made-for-you' || section.id === 'trending-this-week' || section.items.length >= 5)
+  }, [currentTrendingRanked, heroMediaKey, mode, rankingNow, shelfRanked, tasteProfile])
   const visiblePersonalizedSections = useMemo(
     () => personalizedSections.filter((section) => !['hidden-gems', 'new', 'top-rated'].includes(section.id)),
     [personalizedSections],

@@ -617,6 +617,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const editorialTopTenShelf = page.locator('.discover-shelf').filter({ has: page.getByRole('heading', { name: 'Top 10 For You', exact: true }) })
   await expect(page.locator('.discover-shelf--trending').getByText(firstSpotlightTitle!, { exact: true })).toHaveCount(0)
   await expect(editorialTopTenShelf.getByText(firstSpotlightTitle!, { exact: true })).toHaveCount(0)
+  const promotedTrendTitles = await editorialTopTenShelf.locator('img').evaluateAll((images) => images.map((image) => image.getAttribute('alt') || '').filter((title) => /^Weekly trend \d+$/.test(title)))
+  expect(promotedTrendTitles.length, 'Top 10 should include fresh weekly trends while keeping the editorial Spotlight separate').toBeGreaterThan(0)
   await page.getByRole('button', { name: 'Not for me' }).click()
   await expect(page.locator('.discover-picker')).toHaveCount(0)
   const discoverySettings = page.getByRole('button', { name: 'Discovery settings' })
