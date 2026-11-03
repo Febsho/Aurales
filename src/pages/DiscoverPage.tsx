@@ -1118,7 +1118,12 @@ export default function DiscoverPage() {
         setMoreToDiscover(moreToDiscoverItemsRef.current)
       }
       const hasActiveSources = sources.some(({ type }) => !moreToDiscoverExhaustedRef.current[type])
-      moreToDiscoverStatusRef.current = hadPageErrors ? 'error' : !appended.length && hasActiveSources ? 'paused' : hasActiveSources ? 'idle' : 'done'
+      // Keep the endless catalog moving when a provider page contains only
+      // duplicates or entries excluded by the active tab/preferences. Returning
+      // to idle recreates the sentinel observer, which immediately requests the
+      // next page while it remains near the viewport. The provider's page limit
+      // still ends the sequence, and actual request failures remain retryable.
+      moreToDiscoverStatusRef.current = hadPageErrors ? 'error' : hasActiveSources ? 'idle' : 'done'
       setMoreToDiscoverStatus(moreToDiscoverStatusRef.current)
     } catch {
       if (moreToDiscoverScopeRef.current === requestScope) {

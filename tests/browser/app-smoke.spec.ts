@@ -1583,16 +1583,14 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(continuationPages).toContain(4)
   await moreSentinel.scrollIntoViewIfNeeded()
   await expect.poll(() => continuationPages.has(5), { timeout: 10_000 }).toBe(true)
-  const continueExploring = page.getByRole('button', { name: 'Continue exploring' })
-  await expect(continueExploring).toBeVisible()
-  await page.waitForTimeout(500)
-  expect(continuationPages).not.toContain(6)
-  await continueExploring.click()
+  // Page 5 repeats page 4. The endless feed should transparently skip the
+  // duplicate page and fetch the next page without an extra user click.
   await expect.poll(() => continuationPages.has(6), { timeout: 10_000 }).toBe(true)
   await expect(continuedGrid.locator('img[alt^="More discovery after gap"]')).toHaveCount(8)
   await moreSentinel.scrollIntoViewIfNeeded()
   await expect.poll(() => continuationPages.has(7), { timeout: 10_000 }).toBe(true)
   await expect(continuedGrid.locator('img[alt^="More discovery after pause"]')).toHaveCount(8)
+  await expect(page.getByRole('button', { name: 'Continue exploring' })).toHaveCount(0)
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.mouse.move(0, 0)
