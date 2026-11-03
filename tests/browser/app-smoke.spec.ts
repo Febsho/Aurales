@@ -1287,8 +1287,13 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.locator('.discover-binge__main-poster')).toBeVisible()
   await expect(page.locator('.discover-binge__alternatives button')).toHaveCount(4)
   await expect(page.locator('.discover-binge__alternatives button[aria-label="Details for Weekly trend 2"] small')).toHaveCount(0)
+  await expect(page.locator('.discover-binge__copy')).toHaveCSS('animation-name', 'none')
+  await expect(page.locator('.discover-binge__art img')).toHaveCSS('animation-name', 'none')
   await page.locator('.discover-binge').scrollIntoViewIfNeeded()
   await expect.poll(() => page.locator('.discover-binge').evaluate((element) => element.parentElement?.getAttribute('data-revealed'))).toBe('true')
+  await expect(page.locator('.discover-binge__copy')).toHaveCSS('animation-name', 'discover-binge-content-enter')
+  await expect(page.locator('.discover-binge__gallery')).toHaveCSS('animation-name', 'discover-binge-content-enter')
+  await expect(page.locator('.discover-binge__art img')).toHaveCSS('animation-name', 'discover-binge-art-enter')
   const bingeGalleryLayout = await page.locator('.discover-binge__gallery').evaluate((gallery) => {
     const main = gallery.querySelector<HTMLElement>('.discover-binge__main-poster')!.getBoundingClientRect()
     const alternatives = gallery.querySelector<HTMLElement>('.discover-binge__alternatives')!.getBoundingClientRect()
@@ -1586,9 +1591,15 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     animation: getComputedStyle(hero).animationName,
     artworkAnimation: getComputedStyle(hero.querySelector('.discover-spotlight__ambient img')!).animationName,
     transitionDuration: getComputedStyle(hero.querySelector('.discover-spotlight__poster img')!).transitionDuration,
+    bingeCopyAnimation: getComputedStyle(document.querySelector<HTMLElement>('.discover-binge__copy')!).animationName,
+    bingeGalleryAnimation: getComputedStyle(document.querySelector<HTMLElement>('.discover-binge__gallery')!).animationName,
+    bingeArtworkAnimation: getComputedStyle(document.querySelector<HTMLElement>('.discover-binge__art img')!).animationName,
   }))
   expect(reducedMotionStyle.animation).toBe('none')
   expect(reducedMotionStyle.artworkAnimation).toBe('none')
+  expect(reducedMotionStyle.bingeCopyAnimation).toBe('none')
+  expect(reducedMotionStyle.bingeGalleryAnimation).toBe('none')
+  expect(reducedMotionStyle.bingeArtworkAnimation).toBe('none')
   expect(parseFloat(reducedMotionStyle.transitionDuration)).toBeLessThanOrEqual(.00001)
   await expect(trendingShelf.locator('.media-row-card-slot').last()).toHaveCSS('animation-delay', '0s')
   await page.emulateMedia({ reducedMotion: 'no-preference' })
