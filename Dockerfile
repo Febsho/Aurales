@@ -46,6 +46,7 @@ FROM debian:bookworm-slim AS worker-runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
+    && ffmpeg -hide_banner -filters 2>&1 | awk '$2 == "zscale" { zscale=1 } $2 == "tonemap" { tonemap=1 } END { exit !(zscale && tonemap) }' \
     && useradd --system --home-dir /var/lib/aurales --create-home --shell /usr/sbin/nologin aurales
 COPY --from=worker-build /app/media-worker/target/release/aurales-media-worker /usr/local/bin/aurales-media-worker
 ENV AURALES_MEDIA_BIND=0.0.0.0:8188 \

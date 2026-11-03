@@ -158,6 +158,7 @@ struct FfmpegCapabilities {
     video_hardware_encoder: Option<&'static str>,
     mp4_output: bool,
     hls_output: bool,
+    hdr_tone_mapping: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -299,6 +300,7 @@ struct CapabilitiesResponse {
     audio_transcode: bool,
     video_transcode: bool,
     mobile_safe_video_transcode: bool,
+    hdr_tone_mapping: bool,
     conversion_timeout_seconds: u64,
 }
 
@@ -588,6 +590,21 @@ async fn validate_ffmpeg(path: &PathBuf) -> Result<FfmpegCapabilities, String> {
         String::from_utf8_lossy(&muxers.stdout),
         String::from_utf8_lossy(&muxers.stderr)
     );
+    let filters = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new(path)
+            .args(["-hide_banner", "-filters"])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| "FFmpeg filter discovery timed out".to_string())?
+    .map_err(|error| format!("Could not query FFmpeg filters: {error}"))?;
+    let filter_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&filters.stdout),
+        String::from_utf8_lossy(&filters.stderr)
+    );
     let has_muxer = |target: &str| {
         muxer_output.lines().any(|line| {
             line.split_whitespace()
@@ -610,6 +627,15 @@ async fn validate_ffmpeg(path: &PathBuf) -> Result<FfmpegCapabilities, String> {
             }),
         mp4_output: has_muxer("mp4"),
         hls_output: has_muxer("hls") && has_muxer("mpegts"),
+        hdr_tone_mapping: ffmpeg_filter_available(&filter_output, "zscale")
+            && ffmpeg_filter_available(&filter_output, "tonemap"),
+    })
+}
+
+fn ffmpeg_filter_available(filters: &str, name: &str) -> bool {
+    filters.lines().any(|line| {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        fields.len() >= 3 && fields[1] == name
     })
 }
 
@@ -907,6 +933,7 @@ async fn capabilities(State(state): State<AppState>, headers: HeaderMap) -> Resp
                 && caps.audio_aac
                 && (caps.video_h264 || caps.video_hardware_encoder.is_some())
         }),
+        hdr_tone_mapping: ffmpeg.is_some_and(|caps| caps.hdr_tone_mapping),
         conversion_timeout_seconds: max_conversion_runtime_seconds(),
     })
     .into_response()
@@ -1378,6 +1405,10 @@ async fn run_media_conversion(
                 } else {
                     Vec::new()
                 };
+            let tone_map_hdr = mobile_compatibility
+                && output_format == ConversionOutputFormat::Mp4
+                && state.ffmpeg_caps.is_some_and(|caps| caps.hdr_tone_mapping)
+                && source_contains_hdr_video(&source_info);
             // Let FFmpeg inspect the actual container and streams. Each attempt maps
             // the real streams and validates the target container; the mode reported
             // to the client is the first conversion that FFmpeg can produce.
@@ -1413,6 +1444,7 @@ async fn run_media_conversion(
                             mobile_compatibility,
                             source_audio_track_count,
                             &preferred_audio_track_indices,
+                            tone_map_hdr,
                         )
                         .await
                         {
@@ -1460,6 +1492,7 @@ async fn run_media_conversion(
                         mobile_compatibility,
                         source_audio_track_count,
                         &preferred_audio_track_indices,
+                        tone_map_hdr,
                     )
                     .await?;
                     Ok((bytes, mode, output_path.clone(), audio_tracks_reduced))
@@ -1701,6 +1734,7 @@ async fn transcode_local_output_using_encoder(
         false,
         None,
         &[],
+        false,
     )
     .await
 }
@@ -1715,6 +1749,7 @@ async fn transcode_local_output_using_encoder_with_audio_policy(
     mobile_compatibility: bool,
     audio_track_index: Option<usize>,
     preferred_audio_track_indices: &[usize],
+    tone_map_hdr: bool,
 ) -> Result<u64, ()> {
     let mut command = tokio::process::Command::new(ffmpeg);
     command
@@ -1791,37 +1826,25 @@ async fn transcode_local_output_using_encoder_with_audio_policy(
         }
         ConversionMode::H264Aac | ConversionMode::H264AacLow | ConversionMode::H264AacCompat => {
             if mode == ConversionMode::H264AacCompat {
-                command.args([
-                    "-vf",
-                    "scale=w='if(gte(iw,ih),min(720,iw),min(480,iw))':h='if(gte(iw,ih),min(480,ih),min(720,ih))':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=fps='if(gt(source_fps,0),min(source_fps,30),30)'",
-                    "-profile:v",
-                    "baseline",
-                    "-level:v",
-                    "3.0",
-                ]);
+                command
+                    .arg("-vf")
+                    .arg(h264_video_filter(mode, tone_map_hdr).ok_or(())?)
+                    .args(["-profile:v", "baseline", "-level:v", "3.0"]);
             } else if mode == ConversionMode::H264AacLow {
-                command.args([
-                    "-vf",
-                    "scale=w='if(gte(iw,ih),min(1280,iw),min(720,iw))':h='if(gte(iw,ih),min(720,ih),min(1280,ih))':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=fps='if(gt(source_fps,0),min(source_fps,30),30)'",
-                    "-profile:v",
-                    "baseline",
-                    "-level:v",
-                    "3.1",
-                ]);
+                command
+                    .arg("-vf")
+                    .arg(h264_video_filter(mode, tone_map_hdr).ok_or(())?)
+                    .args(["-profile:v", "baseline", "-level:v", "3.1"]);
             } else if output_format == ConversionOutputFormat::Mp4 || mobile_compatibility {
                 // Keep mobile fallback output within Level 4.2 frame-size
                 // limits, including HLS, square and portrait sources.
-                command.args([
-                    "-vf",
-                    "scale=w='if(gte(iw,ih),min(1920,iw),min(1080,iw))':h='if(gte(iw,ih),min(1080,ih),min(1920,ih))':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=fps='if(gt(source_fps,0),min(source_fps,60),30)'",
+                command
+                    .arg("-vf")
+                    .arg(h264_video_filter(mode, tone_map_hdr).ok_or(())?)
                     // H.264 Level 4.2 tops out at 522,240 macroblocks per
                     // second. The fps filter caps high-frame-rate sources
                     // without depending on the newer -fpsmax output option.
-                    "-profile:v",
-                    "baseline",
-                    "-level:v",
-                    "4.2",
-                ]);
+                    .args(["-profile:v", "baseline", "-level:v", "4.2"]);
             }
             if let Some(encoder) = hardware_encoder {
                 command.args([
@@ -1836,6 +1859,18 @@ async fn transcode_local_output_using_encoder_with_audio_policy(
             }
             command.args(["-profile:a", "aac_low", "-ac", "2"]);
         }
+    }
+    if tone_map_hdr {
+        command.args([
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-colorspace",
+            "bt709",
+            "-color_range",
+            "tv",
+        ]);
     }
     if output_format == ConversionOutputFormat::Mp4 {
         command.args(["-movflags", "+faststart", "-f", "mp4"]);
@@ -1891,6 +1926,7 @@ async fn transcode_conversion_candidate(
     mobile_compatibility: bool,
     source_audio_track_count: usize,
     preferred_audio_track_indices: &[usize],
+    tone_map_hdr: bool,
 ) -> Result<(u64, bool), ()> {
     if let Ok(bytes) = transcode_conversion_with_encoder_fallback(
         ffmpeg,
@@ -1902,6 +1938,7 @@ async fn transcode_conversion_candidate(
         mobile_compatibility,
         None,
         preferred_audio_track_indices,
+        tone_map_hdr,
     )
     .await
     {
@@ -1932,6 +1969,7 @@ async fn transcode_conversion_candidate(
             mobile_compatibility,
             Some(audio_track_index),
             preferred_audio_track_indices,
+            tone_map_hdr,
         )
         .await
         {
@@ -1986,6 +2024,37 @@ fn audio_language_preference_rank(language: &str, preferences: &[String]) -> Opt
         .position(|preference| canonical(preference) == language)
 }
 
+fn source_contains_hdr_video(source_info: &Value) -> bool {
+    source_info
+        .get("streams")
+        .and_then(Value::as_array)
+        .is_some_and(|streams| {
+            streams.iter().any(|stream| {
+                stream.get("codec_type").and_then(Value::as_str) == Some("video")
+                    && stream
+                        .get("color_transfer")
+                        .and_then(Value::as_str)
+                        .is_some_and(|transfer| matches!(transfer, "smpte2084" | "arib-std-b67"))
+            })
+        })
+}
+
+fn h264_video_filter(mode: ConversionMode, tone_map_hdr: bool) -> Option<String> {
+    let scale_filter = match mode {
+        ConversionMode::H264AacCompat => "scale=w='if(gte(iw,ih),min(720,iw),min(480,iw))':h='if(gte(iw,ih),min(480,ih),min(720,ih))':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=fps='if(gt(source_fps,0),min(source_fps,30),30)'",
+        ConversionMode::H264AacLow => "scale=w='if(gte(iw,ih),min(1280,iw),min(720,iw))':h='if(gte(iw,ih),min(720,ih),min(1280,ih))':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=fps='if(gt(source_fps,0),min(source_fps,30),30)'",
+        ConversionMode::H264Aac => "scale=w='if(gte(iw,ih),min(1920,iw),min(1080,iw))':h='if(gte(iw,ih),min(1080,ih),min(1920,ih))':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=fps='if(gt(source_fps,0),min(source_fps,60),30)'",
+        _ => return None,
+    };
+    if tone_map_hdr {
+        Some(format!(
+            "zscale=transfer=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=transfer=bt709:primaries=bt709:matrix=bt709:range=tv,{scale_filter}"
+        ))
+    } else {
+        Some(scale_filter.to_owned())
+    }
+}
+
 fn ordered_audio_track_indices(source_info: &Value, preferences: &[String]) -> Vec<usize> {
     if preferences.is_empty() {
         return Vec::new();
@@ -2023,6 +2092,7 @@ async fn transcode_conversion_with_encoder_fallback(
     mobile_compatibility: bool,
     audio_track_index: Option<usize>,
     preferred_audio_track_indices: &[usize],
+    tone_map_hdr: bool,
 ) -> Result<u64, ()> {
     if let Some(encoder) = hardware_encoder {
         match transcode_local_output_using_encoder_with_audio_policy(
@@ -2035,6 +2105,7 @@ async fn transcode_conversion_with_encoder_fallback(
             mobile_compatibility,
             audio_track_index,
             preferred_audio_track_indices,
+            tone_map_hdr,
         )
         .await
         {
@@ -2052,6 +2123,7 @@ async fn transcode_conversion_with_encoder_fallback(
         mobile_compatibility,
         audio_track_index,
         preferred_audio_track_indices,
+        tone_map_hdr,
     )
     .await;
     if result.is_err() {
@@ -2073,7 +2145,7 @@ async fn probe_local_media(ffmpeg: &FsPath, input_path: &FsPath) -> Result<Value
                 "-protocol_whitelist",
                 "file,pipe,crypto,data",
                 "-show_entries",
-                "format=format_name:stream=index,codec_type,codec_name,profile,width,height,sample_rate,channels:stream_tags=language,title:stream_disposition=forced",
+                "format=format_name:stream=index,codec_type,codec_name,profile,width,height,sample_rate,channels,color_transfer,color_primaries,color_space:stream_tags=language,title:stream_disposition=forced",
                 "-of",
                 "json",
             ])
@@ -2112,6 +2184,9 @@ async fn probe_local_media(ffmpeg: &FsPath, input_path: &FsPath) -> Result<Value
                 "height",
                 "sample_rate",
                 "channels",
+                "color_transfer",
+                "color_primaries",
+                "color_space",
             ] {
                 if let Some(value) = stream.get(key).filter(|value| !value.is_null()) {
                     info.insert(key.to_owned(), value.clone());
@@ -8202,6 +8277,7 @@ mod tests {
                 video_hardware_encoder: None,
                 mp4_output: true,
                 hls_output: true,
+                hdr_tone_mapping: false,
             })),
             vec![
                 ConversionMode::Remux,
@@ -8216,6 +8292,7 @@ mod tests {
                 video_hardware_encoder: Some("h264_videotoolbox"),
                 mp4_output: true,
                 hls_output: true,
+                hdr_tone_mapping: false,
             })),
             vec![
                 ConversionMode::Remux,
@@ -8256,6 +8333,27 @@ mod tests {
             ordered_audio_track_indices(&european_languages, &["ro".to_owned(), "hu".to_owned()]),
             vec![1, 0]
         );
+    }
+
+    #[test]
+    fn hdr_detection_and_tone_mapping_require_supported_filters() {
+        let hdr = serde_json::json!({"streams": [{"codec_type": "video", "color_transfer": "smpte2084"}]});
+        let hlg = serde_json::json!({"streams": [{"codec_type": "video", "color_transfer": "arib-std-b67"}]});
+        let sdr =
+            serde_json::json!({"streams": [{"codec_type": "video", "color_transfer": "bt709"}]});
+        assert!(source_contains_hdr_video(&hdr));
+        assert!(source_contains_hdr_video(&hlg));
+        assert!(!source_contains_hdr_video(&sdr));
+        assert!(ffmpeg_filter_available(
+            " ..C zscale V->V\n .S tonemap V->V",
+            "zscale"
+        ));
+        assert!(!ffmpeg_filter_available(" ..C scale V->V", "zscale"));
+        let tone_mapped = h264_video_filter(ConversionMode::H264Aac, true).unwrap();
+        assert!(tone_mapped.starts_with("zscale=transfer=linear:npl=100,format=gbrpf32le,tonemap="));
+        assert!(h264_video_filter(ConversionMode::H264AacCompat, false)
+            .unwrap()
+            .starts_with("scale="));
     }
 
     #[tokio::test]
@@ -8347,6 +8445,7 @@ mod tests {
             true,
             audio_count,
             &preferred_order,
+            false,
         )
         .await
         .expect("preferred audio order should produce a mobile MP4");
@@ -8384,6 +8483,97 @@ mod tests {
         tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 
+    #[tokio::test]
+    async fn hdr_mobile_transcode_outputs_bt709_when_zscale_is_available() {
+        let ffmpeg = PathBuf::from("ffmpeg");
+        let filters = tokio::process::Command::new(&ffmpeg)
+            .args(["-hide_banner", "-filters"])
+            .output()
+            .await;
+        let Ok(filters) = filters else { return };
+        let filters = format!(
+            "{}{}",
+            String::from_utf8_lossy(&filters.stdout),
+            String::from_utf8_lossy(&filters.stderr)
+        );
+        if !ffmpeg_filter_available(&filters, "zscale")
+            || !ffmpeg_filter_available(&filters, "tonemap")
+        {
+            eprintln!("Skipping HDR FFmpeg integration: zscale or tonemap filter is not installed");
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "aurales-hdr-mobile-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let input = dir.join("pq-source.mkv");
+        let output = dir.join("sdr-mobile.mp4");
+        let generated = tokio::process::Command::new(&ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x180:rate=24:duration=1",
+                "-c:v",
+                "mpeg4",
+                "-q:v",
+                "3",
+                "-pix_fmt",
+                "yuv420p",
+                "-color_primaries",
+                "bt2020",
+                "-color_trc",
+                "smpte2084",
+                "-colorspace",
+                "bt2020nc",
+            ])
+            .arg(&input)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            generated.status.success(),
+            "failed to prepare tagged PQ fixture"
+        );
+        let source_info = probe_local_media(&ffmpeg, &input).await.unwrap();
+        assert!(source_contains_hdr_video(&source_info));
+        let audio_count = source_info["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|stream| stream["codec_type"] == "audio")
+            .count();
+        transcode_conversion_candidate(
+            &ffmpeg,
+            &input,
+            &output,
+            ConversionMode::H264Aac,
+            None,
+            ConversionOutputFormat::Mp4,
+            true,
+            audio_count,
+            &[],
+            true,
+        )
+        .await
+        .expect("HDR source should transcode to mobile MP4");
+        let output_info = probe_local_media(&ffmpeg, &output).await.unwrap();
+        assert!(output_info["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|stream| {
+                stream["codec_type"] == "video" && stream["color_transfer"] == "bt709"
+            }));
+        tokio::fs::remove_dir_all(dir).await.unwrap();
+    }
+
     #[test]
     fn conversion_output_formats_are_checked_independently() {
         let capabilities = Some(FfmpegCapabilities {
@@ -8392,6 +8582,7 @@ mod tests {
             video_hardware_encoder: None,
             mp4_output: true,
             hls_output: false,
+            hdr_tone_mapping: false,
         });
         assert!(conversion_output_available(
             capabilities,

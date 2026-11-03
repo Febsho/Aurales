@@ -20,6 +20,7 @@ export interface MediaWorkerCapabilities {
   audioTranscode: boolean
   videoTranscode: boolean
   mobileSafeVideoTranscode?: boolean
+  hdrToneMapping?: boolean
   conversionTimeoutSeconds?: number
 }
 
