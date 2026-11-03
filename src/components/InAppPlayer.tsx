@@ -999,6 +999,11 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           showControlsTemporarily()
           return
         }
+        if (getPlatformCapabilities(video).platform === 'web'
+          && getMediaWorkerConfig()
+          && requestWorkerConversionRef.current?.(video)) {
+          return
+        }
         const message = 'The browser could not start this stream. Check that the source URL is still valid, then choose another source if playback does not begin.'
         setPaused(true)
         setError(message)
