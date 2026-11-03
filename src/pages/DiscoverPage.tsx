@@ -430,6 +430,7 @@ export default function DiscoverPage() {
   const [similarReadyScope, setSimilarReadyScope] = useState('')
   const [connectedReadyScope, setConnectedReadyScope] = useState('')
   const [selectedGenreId, setSelectedGenreId] = useState<number | null>(null)
+  const [selectedSimilaritySectionId, setSelectedSimilaritySectionId] = useState<string | null>(null)
   const [tasteQuery, setTasteQuery] = useState('')
   const [bingeIndex, setBingeIndex] = useState(0)
   const [selectedPosterColor, setSelectedPosterColor] = useState<PosterColorGroup | 'all'>('all')
@@ -1139,12 +1140,19 @@ export default function DiscoverPage() {
       })
       .filter((section) => section.id === 'made-for-you' || section.id === 'trending-this-week' || section.items.length >= 5)
   }, [currentTrendingRanked, heroMediaKey, mode, rankingNow, shelfRanked, tasteProfile])
+  const similaritySections = useMemo(
+    () => personalizedSections.filter((section) => section.id.startsWith('because-favorited') || section.id.startsWith('because-watched')),
+    [personalizedSections],
+  )
+  const activeSimilaritySection = similaritySections.find((section) => section.id === selectedSimilaritySectionId) || similaritySections[0]
+  const activeSimilarityTitle = activeSimilaritySection?.title
+    .replace(/^Because You (?:Favorited|Watched) /i, '')
+    .replace(/\s+\(\d{4}\)$/, '')
   const visiblePersonalizedSections = useMemo(
-    // The redesigned Discovery surface keeps its recommendation content in
-    // the independent Spotlight, OR TRY and Top 10. Legacy per-library rows
-    // (Because You Watched/Favorited/Love...) fragment that editorial flow;
-    // library signals still feed ranking and the Top 10 without adding rows.
-    () => personalizedSections.filter((section) => section.id === 'made-for-you'),
+    // Keep only the video-led editorial shelves: Top 10 plus the strongest
+    // taste-genre row. Library-based similarity is presented as one compact,
+    // selectable seed rail immediately below instead of several old rows.
+    () => personalizedSections.filter((section) => section.id === 'made-for-you' || section.id.startsWith('because-genre-')),
     [personalizedSections],
   )
   // The public weekly trend feed powers the reference's OR TRY shelf. It is
@@ -1547,6 +1555,7 @@ export default function DiscoverPage() {
       </div>
 
       <>
+          {viewState === 'content' && <DiscoveryReveal><DiscoveryCalendarRow watchProgress={watchProgress} traktConnected={traktConnected} simklConnected={simklConnected} anilistConnected={anilistConnected} mdblistApiKey={mdblistApiKey} /></DiscoveryReveal>}
 
           {viewState === 'content' && heroRecommendation && <DiscoveryReveal>
             <>
@@ -1584,16 +1593,35 @@ export default function DiscoverPage() {
           </DiscoveryReveal>}
           {viewState === 'error' && <div className="mx-6 mb-8 grid min-h-72 place-items-center rounded-3xl border border-white/10 bg-white/[.03] p-8 text-center"><div><h2 className="text-xl font-black">Recommendations are unavailable</h2><p className="mt-2 max-w-md text-sm text-white/60">Cached discovery data was not available and recommendation sources could not be loaded. Check your network or TMDB settings.</p><button onClick={() => window.location.reload()} className="mt-5 rounded-full bg-white px-5 py-2 font-bold text-black">Retry</button></div></div>}
           {viewState === 'content' && trendingSection && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--trending"><MediaRow title="OR TRY" items={trendingSection.items.map((entry) => entry.item)} showAllItems={trendingSection.catalogItems?.map((entry) => entry.item)} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-trending-this-week?title=${encodeURIComponent('OR TRY')}`} /></div></DiscoveryReveal>}
-          {viewState === 'content' && <DiscoveryReveal><DiscoveryCalendarRow watchProgress={watchProgress} traktConnected={traktConnected} simklConnected={simklConnected} anilistConnected={anilistConnected} mdblistApiKey={mdblistApiKey} /></DiscoveryReveal>}
           {visiblePersonalizedSections.filter((section) => section.id !== 'trending-this-week').map((section) => {
-            const title = section.id === 'made-for-you' ? (mode === 'for-you' ? 'Top 10 For You' : section.title) : section.title.replace(/\s+for you$/i, '')
             const isTopTen = section.id === 'made-for-you'
-            const items = section.items.map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
+            const isPersonalGenre = section.id.startsWith('because-genre-')
+            const genreTitle = isPersonalGenre ? section.title.replace(/^Because You Love /i, '') : ''
+            const title = isTopTen ? (mode === 'for-you' ? 'Top 10 For You' : section.title) : isPersonalGenre ? `${genreTitle} Picks` : section.title.replace(/\s+for you$/i, '')
+            const items = (isTopTen ? section.items : isPersonalGenre ? sortRecommendationsByPopularity(section.items) : section.items).map((entry) => entry.item).slice(0, isTopTen || isPersonalGenre ? 10 : undefined)
             // A Top 10 catalog must stay a ten-title collection even when the
             // recommendation engine exposes a larger backing catalog.
-            const catalogItems = (section.catalogItems ?? section.items).map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
-            return <DiscoveryReveal key={section.id}><div className="row-contain discover-shelf"><MediaRow title={title} items={items} showAllItems={catalogItems} layout={isTopTen ? 'ranked' : 'poster'} previewLimit={isTopTen ? 10 : undefined} renderAllPreviewItems={isTopTen} disableCinematic forceShowAll showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div></DiscoveryReveal>
+            const sourceCatalogItems = isPersonalGenre ? sortRecommendationsByPopularity(section.catalogItems ?? section.items) : section.catalogItems ?? section.items
+            const catalogItems = sourceCatalogItems.map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
+            const eyebrow = isPersonalGenre ? `Because you love ${genreTitle.toLocaleLowerCase()}` : undefined
+            return <DiscoveryReveal key={section.id}><div className={`row-contain discover-shelf${isPersonalGenre ? ' discover-shelf--personal-genre' : ''}`}><MediaRow title={title} headerEyebrow={eyebrow} items={items} showAllItems={catalogItems} layout={isTopTen ? 'ranked' : 'poster'} previewLimit={isTopTen ? 10 : undefined} renderAllPreviewItems={isTopTen} disableCinematic forceShowAll showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div></DiscoveryReveal>
           })}
+          {viewState === 'content' && activeSimilaritySection && activeSimilarityTitle && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--personal-seed">
+            <MediaRow
+              title={activeSimilarityTitle}
+              headerEyebrow={activeSimilaritySection.id.startsWith('because-favorited') ? 'Because you favorited' : 'Because you watched'}
+              headerBottomControls={<div className="discover-seed-tabs" role="group" aria-label="Recommendation seeds">{similaritySections.map((section) => {
+                const seedTitle = section.title.replace(/^Because You (?:Favorited|Watched) /i, '').replace(/\s+\(\d{4}\)$/, '')
+                return <button key={section.id} type="button" aria-pressed={section.id === activeSimilaritySection.id} onClick={() => setSelectedSimilaritySectionId(section.id)}>{seedTitle}</button>
+              })}</div>}
+              items={sortRecommendationsByPopularity(activeSimilaritySection.items).map((entry) => entry.item)}
+              showAllItems={sortRecommendationsByPopularity(activeSimilaritySection.catalogItems ?? activeSimilaritySection.items).map((entry) => entry.item)}
+              layout="poster"
+              disableCinematic
+              forceShowAll
+              showAllPath={`/catalog/discover-section-${tab}-${activeSimilaritySection.id}?title=${encodeURIComponent(`Because you ${activeSimilaritySection.id.startsWith('because-favorited') ? 'favorited' : 'watched'} ${activeSimilarityTitle}`)}`}
+            />
+          </div></DiscoveryReveal>}
           {ranked.length > 0 && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
             <p className="discover-section-eyebrow">Refine your taste</p>
             <div className="discover-refine__heading">

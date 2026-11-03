@@ -6428,6 +6428,16 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 @keyframes discover-picker-sheet-enter { from { opacity: .5; transform: translateY(1.5rem); } to { opacity: 1; transform: translateY(0); } }
 @keyframes discover-picker-sheet-exit { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(1rem); } }
 .discover-shelf { width: 100%; }
+.discover-media-row-heading { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: .12rem; }
+.discover-media-row-heading > span { max-width: 100%; overflow: hidden; color: rgba(255,255,255,.48); font-size: .68rem; font-weight: 550; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
+.discover-media-row-heading h2 { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.discover-media-row-subcontrols { min-width: 0; margin: -.45rem 1.5rem .65rem; }
+.discover-seed-tabs { display: flex; max-width: 100%; gap: .4rem; overflow-x: auto; overscroll-behavior-x: contain; padding: .15rem .05rem .25rem; scrollbar-width: none; }
+.discover-seed-tabs::-webkit-scrollbar { display: none; }
+.discover-seed-tabs button { display: inline-flex; min-width: 0; min-height: 40px; flex: 0 0 auto; align-items: center; padding: .4rem .75rem; overflow: hidden; border: 1px solid rgba(255,255,255,.1); border-radius: 999px; background: rgba(255,255,255,.055); color: rgba(255,255,255,.62); font: inherit; font-size: .72rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; transition: background .18s ease, color .18s ease, border-color .18s ease, transform .18s ease; }
+.discover-seed-tabs button[aria-pressed="true"] { border-color: rgba(255,255,255,.24); background: rgba(255,255,255,.15); color: #fff; }
+.discover-seed-tabs button:active { transform: scale(.98); }
+.discover-seed-tabs button:focus-visible { outline: 2px solid rgba(255,255,255,.9); outline-offset: 2px; }
 .discover-page .media-row { margin-bottom: .9rem !important; }
 .discover-page .media-row > div:first-child { margin-bottom: .5rem !important; }
 .discover-page .media-row > div:first-child h2 { font-size: clamp(.95rem, 1.25vw, 1.15rem) !important; }
@@ -6520,6 +6530,40 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-more__sentinel { display: flex; min-height: 3.5rem; align-items: center; justify-content: center; gap: .55rem; padding: 1rem; color: rgba(255,255,255,.5); font-size: .8rem; text-align: center; }
 .discover-more__sentinel button { min-height: 44px; padding: .55rem 1rem; border: 1px solid rgba(255,255,255,.15); border-radius: 999px; background: rgba(255,255,255,.08); color: #fff; font: inherit; font-weight: 650; cursor: pointer; }
 .discover-more__spinner { width: 1rem; height: 1rem; border: 2px solid rgba(255,255,255,.25); border-top-color: rgba(255,255,255,.9); border-radius: 50%; animation: discover-loading-spin .75s linear infinite; }
+.discover-calendar { box-sizing: border-box; width: min(calc(100% - 2 * var(--discover-gutter, 1.5rem)), 90rem); min-width: 0; margin: .6rem auto .9rem; }
+.discover-calendar__heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .55rem; }
+.discover-calendar__heading h2 { margin: 0; color: #fff; font-size: clamp(1rem, 1.8vw, 1.2rem); font-weight: 700; }
+.discover-calendar__heading p { margin: .15rem 0 0; color: rgba(255,255,255,.47); font-size: .7rem; }
+.discover-calendar__actions { display: flex; flex: 0 0 auto; gap: .35rem; }
+.discover-calendar__actions button, .discover-calendar__open { min-height: 44px; padding: .45rem .8rem; border: 1px solid rgba(255,255,255,.1); border-radius: 999px; background: rgba(255,255,255,.045); color: rgba(255,255,255,.7); font: inherit; font-size: .72rem; font-weight: 650; white-space: nowrap; cursor: pointer; transition: background .18s ease, color .18s ease, border-color .18s ease; }
+.discover-calendar__actions button[aria-pressed="true"] { border-color: rgba(255,255,255,.2); background: rgba(255,255,255,.14); color: #fff; }
+.discover-calendar__items { display: flex; gap: .65rem; overflow-x: auto; overscroll-behavior-x: contain; padding: .1rem 0 .35rem; scrollbar-width: none; scroll-snap-type: x proximity; }
+.discover-calendar__items::-webkit-scrollbar { display: none; }
+.discover-calendar__item { display: flex; width: clamp(6.2rem, 9vw, 7.8rem); min-width: 0; flex: 0 0 auto; flex-direction: column; gap: .18rem; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; scroll-snap-align: start; animation: discover-calendar-item-in .3s cubic-bezier(.2,.75,.25,1) both; }
+.discover-calendar__item:nth-child(2) { animation-delay: 25ms; }
+.discover-calendar__item:nth-child(3) { animation-delay: 50ms; }
+.discover-calendar__item:nth-child(4) { animation-delay: 75ms; }
+.discover-calendar__item:nth-child(5) { animation-delay: 100ms; }
+.discover-calendar__item:nth-child(6) { animation-delay: 125ms; }
+.discover-calendar__item:nth-child(7) { animation-delay: 150ms; }
+.discover-calendar__item:nth-child(8) { animation-delay: 175ms; }
+.discover-calendar__item:focus-visible, .discover-calendar__actions button:focus-visible, .discover-calendar__open:focus-visible { outline: 2px solid rgba(255,255,255,.9); outline-offset: 3px; }
+.discover-calendar__item:active { transform: scale(.985); }
+.discover-calendar__open:hover, .discover-calendar__actions button:hover { background: rgba(255,255,255,.1); color: #fff; }
+.discover-calendar__open:active, .discover-calendar__actions button:active { transform: scale(.98); }
+.discover-calendar__item:hover .discover-calendar__poster { border-color: rgba(255,255,255,.28); }
+.discover-calendar__item:hover .discover-calendar__title { color: #fff; }
+.discover-calendar__item:hover .discover-calendar__poster img { transform: scale(1.035); }
+@keyframes discover-calendar-item-in { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
+.discover-calendar__poster { position: relative; display: block; width: 100%; aspect-ratio: 16 / 10; overflow: hidden; border: 1px solid rgba(255,255,255,.1); border-radius: .7rem; background: rgba(255,255,255,.06); }
+.discover-calendar__poster img { width: 100%; height: 100%; object-fit: cover; transition: transform .22s ease; }
+.discover-calendar__poster small { position: absolute; right: .3rem; bottom: .3rem; padding: .18rem .35rem; border-radius: .35rem; background: rgba(0,0,0,.72); color: white; font-size: .58rem; font-weight: 700; }
+.discover-calendar__title, .discover-calendar__subtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.discover-calendar__title { color: rgba(255,255,255,.82); font-size: .7rem; font-weight: 650; }
+.discover-calendar__subtitle { color: rgba(255,255,255,.48); font-size: .64rem; }
+.discover-calendar__empty { margin: .35rem 0; color: rgba(255,255,255,.48); font-size: .72rem; }
+.discover-calendar__open { margin-top: .2rem; }
+.discover-calendar__open span { margin-left: .3rem; font-size: 1.1rem; }
 .discover-binge__feature { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: .7rem; overflow: hidden; padding: 1rem; border: 1px solid rgba(255,255,255,.1); border-radius: 1.2rem; background: linear-gradient(110deg, rgba(28,28,33,.98), rgba(28,28,33,.72)); }
 .discover-binge__art { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
 .discover-binge__art::after { position: absolute; inset: 0; content: ''; background: linear-gradient(180deg, rgba(17,17,20,.76), rgba(17,17,20,.88)); }

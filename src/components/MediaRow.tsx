@@ -35,6 +35,8 @@ interface MediaRowProps {
   showRank?: boolean
   headerLeftControls?: React.ReactNode
   headerRightControls?: React.ReactNode
+  headerEyebrow?: string
+  headerBottomControls?: React.ReactNode
   /** Set false to keep cinematic cards at poster size (no landscape expansion on focus). */
   cinematicExpand?: boolean
   /** Render standard-sized cards even when the app-wide theme is cinematic. */
@@ -98,7 +100,7 @@ function FixedShelfDetails({ item }: { item: SearchResult }) {
   )
 }
 
-function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, forceShowAll = false, previewLimit, renderAllPreviewItems = false, disableArtOverride = false, disableTrailerPreview = false, headerLeftControls, headerRightControls, cinematicExpand = true, disableCinematic = false }: MediaRowProps) {
+function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, forceShowAll = false, previewLimit, renderAllPreviewItems = false, disableArtOverride = false, disableTrailerPreview = false, headerLeftControls, headerRightControls, headerEyebrow, headerBottomControls, cinematicExpand = true, disableCinematic = false }: MediaRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
   const location = useLocation()
@@ -140,7 +142,9 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
     const element = scrollRef.current
     if (!element) return
     const maxScroll = Math.max(0, element.scrollWidth - element.clientWidth)
-    const next = { left: element.scrollLeft > 1, right: element.scrollLeft < maxScroll - 1 }
+    // iOS Safari can leave a fractional 1–2 px remainder after scroll-snap.
+    // Treat that as the edge so the arrow does not invite a no-op tap.
+    const next = { left: element.scrollLeft > 2, right: element.scrollLeft < maxScroll - 2 }
     setScrollEdges((current) => current.left === next.left && current.right === next.right ? current : next)
   }, [])
 
@@ -272,6 +276,12 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
   // Pass the full row along so catalogs without a backing config (e.g. Discover
   // sections) can render everything even when the seeded cache is unavailable
   const openShowAll = () => { if (showAllPath) navigate(showAllPath, { state: { showAllItems: showAllItems || visibleItems } }) }
+  const titleHeading = showAllPath ? (
+    <button onClick={openShowAll} aria-label={`Open ${title} catalog`} className="group/title flex min-w-0 items-center gap-1.5 cursor-pointer focus-ring rounded-lg" title="Open full list">
+      <h2 className="truncate text-xl font-bold tracking-tight text-white/95 transition-colors group-hover/title:text-white">{title}</h2>
+      <svg className="h-4 w-4 shrink-0 text-white/45 transition-all duration-200 group-hover/title:text-white/80 group-hover/title:translate-x-0.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+    </button>
+  ) : <h2 className="text-xl font-bold tracking-tight text-white/95">{title}</h2>
   const renderMoreCards = useCallback((element: HTMLDivElement) => {
     if (renderedCount >= rowItems.length) return
     // Grow only when the user approaches the rendered edge. This preserves
@@ -335,7 +345,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
       <div className="flex items-center justify-between px-6 mb-4">
         <div className="flex items-center gap-2.5">
           {headerLeftControls}
-          {showAllPath ? (
+          {headerEyebrow ? <div className="discover-media-row-heading"><span>{headerEyebrow}</span>{titleHeading}</div> : showAllPath ? (
             <button
               onClick={openShowAll}
               aria-label={`Open ${title} catalog`}
@@ -377,6 +387,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
           </div>
         </div>
       </div>
+      {headerBottomControls && <div className="discover-media-row-subcontrols">{headerBottomControls}</div>}
       <div
         ref={scrollRef}
         data-media-row-track

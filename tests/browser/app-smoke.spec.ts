@@ -566,6 +566,11 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.getByRole('heading', { name: /^Because You / })).toHaveCount(0)
   const calendar = page.locator('.discover-calendar')
   await expect(calendar).toHaveCount(0)
+  const personalizedSeedShelf = page.locator('.discover-shelf--personal-seed')
+  await expect(personalizedSeedShelf).toBeVisible({ timeout: 15_000 })
+  await expect(personalizedSeedShelf.locator('.discover-media-row-heading > span')).toHaveText('Because you favorited')
+  await expect(personalizedSeedShelf.locator('.discover-media-row-heading h2')).toHaveText('Recently Added Library Fixture')
+  await expect(personalizedSeedShelf.locator('.discover-seed-tabs button[aria-pressed="true"]')).toHaveText('Recently Added Library Fixture')
   await expect(page.getByRole('heading', { name: 'Continue Watching', exact: true })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
   const obsessionLayout = await heroSpotlight.evaluate((card) => {
