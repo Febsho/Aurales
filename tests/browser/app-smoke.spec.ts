@@ -959,6 +959,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       document: document.documentElement.scrollWidth,
       controlsWidth: document.querySelector<HTMLElement>('.discover-page__controls')!.getBoundingClientRect().width,
       tabsWidth: tabs.getBoundingClientRect().width,
+      modesWidth: modes.getBoundingClientRect().width,
+      controlsSameRow: Math.abs((tabs.getBoundingClientRect().top + tabs.getBoundingClientRect().bottom) / 2 - (modes.getBoundingClientRect().top + modes.getBoundingClientRect().bottom) / 2) <= 2 && modes.getBoundingClientRect().left >= tabs.getBoundingClientRect().right - 1,
       headingFits: contained(heading),
       tabsFit: contained(tabs),
       modesFit: contained(modes),
@@ -997,7 +999,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(discoveryLayout!.document).toBeLessThanOrEqual(discoveryLayout!.viewport + 1)
   expect(discoveryLayout!.headingFits).toBe(true)
   expect(discoveryLayout!.tabsFit).toBe(true)
-  expect(discoveryLayout!.tabsWidth).toBeGreaterThanOrEqual(discoveryLayout!.controlsWidth - 1)
+  expect(discoveryLayout!.tabsWidth + discoveryLayout!.modesWidth).toBeLessThanOrEqual(discoveryLayout!.controlsWidth + 1)
+  expect(discoveryLayout!.tabsWidth).toBeGreaterThanOrEqual(160)
+  expect(discoveryLayout!.controlsSameRow, `Discovery tabs and actions should share one aligned row: ${JSON.stringify(discoveryLayout)}`).toBe(true)
   expect(discoveryLayout!.modesFit).toBe(true)
   expect(discoveryLayout!.surpriseHeight).toBeGreaterThanOrEqual(44)
   await page.locator('.app-scroll-root').evaluate((root) => root.scrollTo({ top: 0, behavior: 'instant' }))
@@ -1061,7 +1065,10 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     const desktopBounds = await page.evaluate(() => {
       const viewport = document.documentElement.clientWidth
       const page = document.querySelector<HTMLElement>('.discover-page')!
-      const hero = document.querySelector<HTMLElement>('.discover-next-hero')!
+      const controls = page.querySelector<HTMLElement>('.discover-page__controls')!.getBoundingClientRect()
+      const tabs = page.querySelector<HTMLElement>('.discover-page__tabs')!.getBoundingClientRect()
+      const modes = page.querySelector<HTMLElement>('.discover-page__modes')!.getBoundingClientRect()
+      const hero = page.querySelector<HTMLElement>('.discover-next-hero')!
       const copy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
       const poster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
       const binge = page.querySelector<HTMLElement>('.discover-binge__feature')
@@ -1073,6 +1080,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         documentWidth: document.documentElement.scrollWidth,
         page: page.getBoundingClientRect().toJSON(),
         headingFontSize: Number.parseFloat(getComputedStyle(page.querySelector<HTMLElement>('.discover-page__heading h1')!).fontSize),
+        controlsSameRow: Math.abs((tabs.top + tabs.bottom) / 2 - (modes.top + modes.bottom) / 2) <= 2 && modes.left >= tabs.right - 1,
+        controlsInside: controls.left <= tabs.left && controls.right >= modes.right,
         heroHeight: hero.getBoundingClientRect().height,
         sectionsInside: contentSections.every((bounds) => bounds.left >= -1 && bounds.right <= viewport + 1),
         sectionsStacked: contentSections.every((bounds, index) => index === 0 || bounds.height === 0 || contentSections[index - 1]!.height === 0 || contentSections[index - 1]!.bottom <= bounds.top + 1),
@@ -1086,6 +1095,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopBounds.page.right, `Discovery exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
     expect(desktopBounds.sectionsInside, `a Discovery section exceeds the viewport at ${width}px`).toBe(true)
     expect(desktopBounds.sectionsStacked, `Discovery sections overlap at ${width}px`).toBe(true)
+    expect(desktopBounds.controlsSameRow, `Discovery tabs and actions should share one aligned row at ${width}px`).toBe(true)
+    expect(desktopBounds.controlsInside, `Discovery tabs and actions should fit the control rail at ${width}px`).toBe(true)
     expect(desktopBounds.heroColumnsSeparated, `hero copy overlaps its poster at ${width}px`).toBe(true)
     expect(desktopBounds.headingFontSize, `Discovery heading should stay within its desktop type scale at ${width}px`).toBeGreaterThanOrEqual(28)
     expect(desktopBounds.headingFontSize, `Discovery heading should stay within its desktop type scale at ${width}px`).toBeLessThanOrEqual(44)
@@ -1100,6 +1111,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     const desktopBounds = await page.evaluate(() => {
       const viewport = document.documentElement.clientWidth
       const page = document.querySelector<HTMLElement>('.discover-page')!
+      const controls = page.querySelector<HTMLElement>('.discover-page__controls')!.getBoundingClientRect()
+      const tabs = page.querySelector<HTMLElement>('.discover-page__tabs')!.getBoundingClientRect()
+      const modes = page.querySelector<HTMLElement>('.discover-page__modes')!.getBoundingClientRect()
       const hero = document.querySelector<HTMLElement>('.discover-next-hero')!
       const contentSections = Array.from(page.querySelectorAll<HTMLElement>(
         '.discover-next-hero, .discover-shelf, .discover-refine, .discover-genres, .discover-binge, .discover-more',
@@ -1112,6 +1126,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         documentWidth: document.documentElement.scrollWidth,
         page: page.getBoundingClientRect().toJSON(),
         headingFontSize: Number.parseFloat(getComputedStyle(page.querySelector<HTMLElement>('.discover-page__heading h1')!).fontSize),
+        controlsSameRow: Math.abs((tabs.top + tabs.bottom) / 2 - (modes.top + modes.bottom) / 2) <= 2 && modes.left >= tabs.right - 1,
+        controlsInside: controls.left <= tabs.left && controls.right >= modes.right,
         heroHeight: hero.getBoundingClientRect().height,
         heroAnimation: getComputedStyle(hero).animationName,
         shelfCardTransition: shelfCard ? getComputedStyle(shelfCard).transitionProperty : '',
@@ -1126,6 +1142,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopBounds.page.right, `Tauri Discovery exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
     expect(desktopBounds.sectionsInside, `a Tauri Discovery section exceeds the viewport at ${width}px`).toBe(true)
     expect(desktopBounds.sectionsStacked, `Tauri Discovery sections overlap at ${width}px`).toBe(true)
+    expect(desktopBounds.controlsSameRow, `Tauri Discovery tabs and actions should share one aligned row at ${width}px`).toBe(true)
+    expect(desktopBounds.controlsInside, `Tauri Discovery tabs and actions should fit the control rail at ${width}px`).toBe(true)
     expect(desktopBounds.heroColumnsSeparated, `Tauri hero copy overlaps its poster at ${width}px`).toBe(true)
     expect(desktopBounds.heroAnimation, `Tauri editorial spotlight should animate at ${width}px`).not.toBe('none')
     expect(desktopBounds.shelfCardTransition, `Tauri shelf cards should keep their focus transitions at ${width}px`).toContain('transform')
