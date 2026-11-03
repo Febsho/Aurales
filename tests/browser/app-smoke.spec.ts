@@ -548,7 +548,31 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         genre_ids: [18, 35, 53, 27, 80, 9648, 878, 10765, 10759, 10751, 10762, 14],
         original_language: 'en',
       }))
-      : requestedPage > 4 && isUnfilteredMoviePage ? [] : Array.from({ length: 40 }, (_, index) => ({
+      : requestedPage === 5 && isUnfilteredMoviePage ? Array.from({ length: 20 }, (_, index) => ({
+        id: 83000 + index,
+        title: `More discovery fixture ${index + 1}`,
+        name: `More discovery fixture ${index + 1}`,
+        poster_path: '/more-discovery-fixture-poster.jpg',
+        release_date: '2026-05-01',
+        vote_average: 8.5,
+        vote_count: 900,
+        popularity: 240 - index,
+        genre_ids: [18, 35, 53, 27, 80, 9648, 878, 10765, 10759, 10751, 10762, 14],
+        original_language: 'en',
+      }))
+      : requestedPage === 6 && isUnfilteredMoviePage ? Array.from({ length: 8 }, (_, index) => ({
+        id: 84000 + index,
+        title: `More discovery after gap ${index + 1}`,
+        name: `More discovery after gap ${index + 1}`,
+        poster_path: '/more-discovery-fixture-poster.jpg',
+        release_date: '2026-05-01',
+        vote_average: 8.5,
+        vote_count: 1200,
+        popularity: 200 - index,
+        genre_ids: [18, 35, 53, 27, 80, 9648, 878, 10765, 10759, 10751, 10762, 14],
+        original_language: 'en',
+      }))
+      : requestedPage > 6 && isUnfilteredMoviePage ? [] : Array.from({ length: 40 }, (_, index) => ({
       id: 81000 + index,
       title: `Discovery fixture ${index + 1}`,
       name: `Discovery fixture ${index + 1}`,
@@ -563,7 +587,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       genre_ids: [18, 35, 53, 27, 80, 9648, 878, 10765, 10759, 10751, 10762, 14],
       original_language: 'en',
     }))
-    await route.fulfill({ json: { page: requestedPage, total_pages: isUnfilteredMoviePage ? 4 : 1, total_results: results.length, results } })
+    await route.fulfill({ json: { page: requestedPage, total_pages: isUnfilteredMoviePage ? 6 : 1, total_results: results.length, results } })
   })
   await page.route('https://image.tmdb.org/**', (route) => route.fulfill({ headers: { 'Access-Control-Allow-Origin': '*' }, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 3"><rect width="2" height="3" fill="#777"/></svg>' }))
 
@@ -1387,9 +1411,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.emulateMedia({ reducedMotion: 'no-preference' })
 
   const moreToDiscover = page.getByRole('heading', { name: 'Keep Exploring', exact: true })
+  const moreSentinel = page.locator('.discover-more__sentinel')
   await moreToDiscover.scrollIntoViewIfNeeded()
   await expect(moreToDiscover).toBeVisible()
-  const moreSentinel = page.locator('.discover-more__sentinel')
   await moreSentinel.scrollIntoViewIfNeeded()
   const appScrollRoot = page.locator('.app-scroll-root')
   for (let attempt = 0; attempt < 5 && !continuationPages.has(4); attempt += 1) {
@@ -1412,6 +1436,15 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(continuedArtworkTitles).not.toContain(heroTitle)
   expect(continuedArtworkTitles.some((title) => /^Weekly trend \d+$/.test(title))).toBe(false)
   expect(continuationPages).toContain(4)
+  await moreSentinel.scrollIntoViewIfNeeded()
+  await expect.poll(() => continuationPages.has(5), { timeout: 10_000 }).toBe(true)
+  const continueExploring = page.getByRole('button', { name: 'Continue exploring' })
+  await expect(continueExploring).toBeVisible()
+  await page.waitForTimeout(500)
+  expect(continuationPages).not.toContain(6)
+  await continueExploring.click()
+  await expect.poll(() => continuationPages.has(6), { timeout: 10_000 }).toBe(true)
+  await expect(continuedGrid.locator('img[alt^="More discovery after gap"]')).toHaveCount(8)
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.mouse.move(0, 0)

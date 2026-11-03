@@ -458,11 +458,11 @@ export default function DiscoverPage() {
   const posterColorCacheRef = useRef<Record<string, PosterColorGroup>>({})
   const unavailablePosterColorsRef = useRef(new Set<string>())
   const [moreToDiscover, setMoreToDiscover] = useState<SearchResult[]>([])
-  const [moreToDiscoverStatus, setMoreToDiscoverStatus] = useState<'idle' | 'loading' | 'error' | 'done'>('idle')
+  const [moreToDiscoverStatus, setMoreToDiscoverStatus] = useState<'idle' | 'loading' | 'error' | 'paused' | 'done'>('idle')
   const moreToDiscoverSentinelRef = useRef<HTMLDivElement>(null)
   const moreToDiscoverScopeRef = useRef('')
   const moreToDiscoverItemsRef = useRef<SearchResult[]>([])
-  const moreToDiscoverStatusRef = useRef<'idle' | 'loading' | 'error' | 'done'>('idle')
+  const moreToDiscoverStatusRef = useRef<'idle' | 'loading' | 'error' | 'paused' | 'done'>('idle')
   const moreToDiscoverLoadingRef = useRef(false)
   const moreToDiscoverPagesRef = useRef({ movie: 3, series: 3 })
   const moreToDiscoverExhaustedRef = useRef({ movie: false, series: false })
@@ -1042,7 +1042,7 @@ export default function DiscoverPage() {
   // full-page error state.
   const viewState = discoveryViewState(tabRanked.length, initialWaitComplete, currentTrendingRanked.length)
   const loadMoreDiscovery = useCallback(async () => {
-    if (moreToDiscoverLoadingRef.current || moreToDiscoverStatusRef.current === 'done' || moreToDiscoverStatusRef.current === 'error') return
+    if (moreToDiscoverLoadingRef.current || moreToDiscoverStatusRef.current === 'done' || moreToDiscoverStatusRef.current === 'error' || moreToDiscoverStatusRef.current === 'paused') return
     const requestScope = `${tab}:${discoveryQueryKey}`
     if (moreToDiscoverScopeRef.current !== requestScope) return
 
@@ -1116,7 +1116,7 @@ export default function DiscoverPage() {
         setMoreToDiscover(moreToDiscoverItemsRef.current)
       }
       const hasActiveSources = sources.some(({ type }) => !moreToDiscoverExhaustedRef.current[type])
-      moreToDiscoverStatusRef.current = hadPageErrors ? 'error' : hasActiveSources ? 'idle' : 'done'
+      moreToDiscoverStatusRef.current = hadPageErrors ? 'error' : !appended.length && hasActiveSources ? 'paused' : hasActiveSources ? 'idle' : 'done'
       setMoreToDiscoverStatus(moreToDiscoverStatusRef.current)
     } catch {
       if (moreToDiscoverScopeRef.current === requestScope) {
@@ -1901,6 +1901,7 @@ export default function DiscoverPage() {
             <div ref={moreToDiscoverSentinelRef} className="discover-more__sentinel" aria-live="polite" role="status">
               {moreToDiscoverStatus === 'loading' && <><span className="discover-more__spinner" aria-hidden="true" />Loading more popular titles…</>}
               {moreToDiscoverStatus === 'idle' && <span>Keep scrolling for more titles</span>}
+              {moreToDiscoverStatus === 'paused' && <button type="button" onClick={() => { moreToDiscoverStatusRef.current = 'idle'; setMoreToDiscoverStatus('idle'); void loadMoreDiscovery() }}>Continue exploring</button>}
               {moreToDiscoverStatus === 'error' && <button type="button" onClick={() => { moreToDiscoverStatusRef.current = 'idle'; setMoreToDiscoverStatus('idle'); void loadMoreDiscovery() }}>Retry loading titles</button>}
               {moreToDiscoverStatus === 'done' && <span>You’re all caught up for now</span>}
             </div>
