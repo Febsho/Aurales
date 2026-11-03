@@ -464,7 +464,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         title: `Weekly trend ${index + 1}`,
         name: `Weekly trend ${index + 1}`,
         poster_path: `/weekly-trend-${index + 1}.jpg`,
-        backdrop_path: '/weekly-trend-backdrop.jpg',
+        backdrop_path: `/weekly-trend-backdrop-${index + 1}.jpg`,
         overview: 'A current weekly-trending test title.',
         release_date: '2026-05-01',
         first_air_date: '2026-05-01',
@@ -861,7 +861,12 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(pickerBeforeShelves, 'the broad public recommendations should lead into the taste picker').toBe(true)
   await expect(page.getByRole('heading', { name: 'Your Genres' })).toBeVisible()
   const fantasyGenreTile = page.locator('.discover-genres__grid button').filter({ hasText: 'Fantasy' }).first()
-  await expect.poll(() => fantasyGenreTile.evaluate((tile) => tile.style.backgroundImage)).toContain('weekly-trend-backdrop.jpg')
+  const spotlightTitle = await page.locator('.discover-next-hero').getAttribute('data-title')
+  expect(spotlightTitle).toMatch(/^Weekly trend \d+$/)
+  const spotlightTrendIndex = Number(spotlightTitle!.match(/\d+/)?.[0])
+  await expect.poll(() => fantasyGenreTile.evaluate((tile) => tile.style.backgroundImage)).toMatch(/weekly-trend-backdrop-\d+\.jpg/)
+  const fantasyGenreBackdrop = await fantasyGenreTile.evaluate((tile) => tile.style.backgroundImage)
+  expect(fantasyGenreBackdrop).not.toContain(`weekly-trend-backdrop-${spotlightTrendIndex}.jpg`)
   await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toBeVisible()
   const timeTonightRail = page.locator('.discover-time .media-row')
   await expect(timeTonightRail).toBeVisible()
