@@ -6618,8 +6618,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-binge__main-poster:hover img, .discover-binge__alternatives button:hover img { transform: scale(1.035); }
 .discover-binge__alternatives { display: grid; min-width: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: .55rem; }
 .discover-binge__alternatives button { aspect-ratio: 2 / 3; }
-.discover-binge__main-poster span, .discover-binge__alternatives button span { position: absolute; right: 0; bottom: 0; left: 0; padding: 1.2rem .45rem .35rem; overflow: hidden; background: linear-gradient(transparent, rgba(0,0,0,.84)); font-size: .72rem; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.discover-binge__main-poster span { font-size: .82rem; }
 .discover-binge__main-poster small, .discover-binge__alternatives button small { position: absolute; right: .35rem; bottom: 1.65rem; padding: .1rem .3rem; border-radius: .35rem; background: rgba(0,0,0,.62); font-size: .67rem; font-weight: 700; }
 .discover-binge__main-poster small { bottom: 2rem; }
 @media (min-width: 1120px) {
@@ -6724,7 +6722,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-binge__copy button { min-height: 44px; padding-inline: .7rem; font-size: .72rem; }
   .discover-binge__gallery { grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: .45rem; }
   .discover-binge__alternatives { gap: .4rem; }
-  .discover-binge__main-poster span, .discover-binge__alternatives button span { padding: 1rem .3rem .25rem; font-size: .62rem; }
   .discover-binge__main-poster small, .discover-binge__alternatives button small { right: .25rem; bottom: 1.45rem; font-size: .6rem; }
   .discover-binge__main-poster small { bottom: 1.7rem; }
   .discover-calendar { margin-block: .35rem .7rem; }

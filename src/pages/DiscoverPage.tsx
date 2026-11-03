@@ -1904,13 +1904,11 @@ export default function DiscoverPage() {
               {activeBingeItem && <div key={`gallery-${mediaIdentity(activeBingeItem)}`} className="discover-binge__gallery" aria-label="Binge recommendations">
                 <button className="discover-binge__main-poster" type="button" onClick={() => openItemDetail(activeBingeItem)} aria-label={`Details for ${activeBingeItem.title}`}>
                   <img key={activeBingeItem.poster} className="discover-artwork-enter" src={activeBingeItem.poster} alt={`${activeBingeItem.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
-                  <span>{activeBingeItem.title}</span>
                   {activeBingeRating && <small>★ {activeBingeRating}</small>}
                 </button>
                 <div className="discover-binge__alternatives">
                   {bingeRecommendations.filter((item) => mediaIdentity(item) !== mediaIdentity(activeBingeItem)).slice(0, 4).map((item) => <button key={mediaIdentity(item)} type="button" onClick={() => openItemDetail(item)} aria-label={`Details for ${item.title}`}>
                     <img key={item.poster} className="discover-artwork-enter" src={item.poster} alt={`${item.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
-                    <span>{item.title}</span>
                     {formatDiscoveryRating(item.rating) && <small>★ {formatDiscoveryRating(item.rating)}</small>}
                   </button>)}
                 </div>
