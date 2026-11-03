@@ -1757,6 +1757,32 @@ export default function DiscoverPage() {
           </DiscoveryReveal>}
           {viewState === 'error' && <div className="mx-6 mb-8 grid min-h-72 place-items-center rounded-3xl border border-white/10 bg-white/[.03] p-8 text-center"><div><h2 className="text-xl font-black">Recommendations are unavailable</h2><p className="mt-2 max-w-md text-sm text-white/60">Cached discovery data was not available and recommendation sources could not be loaded. Check your network or TMDB settings.</p><button onClick={() => window.location.reload()} className="mt-5 rounded-full bg-white px-5 py-2 font-bold text-black">Retry</button></div></div>}
           {viewState === 'content' && trendingSection && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--trending"><MediaRow title="OR TRY" items={trendingSection.items.map((entry) => entry.item)} showAllItems={trendingSection.catalogItems?.map((entry) => entry.item)} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-trending-this-week?title=${encodeURIComponent('OR TRY')}`} /></div></DiscoveryReveal>}
+          {tabRanked.length > 0 && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
+            <p className="discover-section-eyebrow">Refine your taste</p>
+            <div className="discover-refine__heading">
+              <h2 id="discover-refine-title">Pick Three You Like</h2>
+              <div className="discover-refine__progress" aria-label={`${pickedIds.length} of 3 titles selected`}>
+                {[0, 1, 2].map((index) => <span key={index} className={index < pickedIds.length ? 'is-complete' : ''} />)}
+                <span className="discover-refine__count">{pickedIds.length < 3 ? `${3 - pickedIds.length} more to go` : 'Taste tuned'}</span>
+              </div>
+            </div>
+            <div className="discover-refine__tools">
+              <label className="discover-refine__search"><Search size={16} aria-hidden="true"/><input type="search" value={tasteQuery} onChange={(event) => { setTasteQuery(event.target.value); setPickOffset(0) }} placeholder="Search titles" aria-label="Search titles to refine recommendations" /></label>
+              {tastePickCandidates.length < tastePickPool.length && pickedIds.length < 3 && <button className="discover-refine__more" type="button" onClick={() => setPickOffset((current) => current + 10)}><RefreshCw size={16} aria-hidden="true"/> <span>More choices</span></button>}
+              {pickedIds.length > 0 && <button className="discover-refine__reset" type="button" onClick={resetTastePicks}><RotateCcw size={16} aria-hidden="true"/> <span>Start over</span></button>}
+            </div>
+            <div className="discover-taste-picks">
+              {tastePickCandidates.map((item) => {
+                const id = mediaIdentity(item)
+                return <button key={id} type="button" className="discover-taste-pick" onClick={() => selectTastePick(item)} disabled={pickedIds.length >= 3} aria-label={`Choose ${item.title}`}>
+                  <span className="discover-taste-pick__poster">{item.poster && <img key={item.poster} className="discover-artwork-enter" src={item.poster} alt="" loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />}{item.rating != null && <span className="discover-taste-pick__rating">★ {Number(item.rating).toFixed(1)}</span>}</span>
+                  <span className="discover-taste-pick__title">{item.title}</span>
+                  <span className="discover-taste-pick__year">{item.year || (item.isAnime ? 'Anime' : item.type === 'series' ? 'Series' : 'Movie')}</span>
+                </button>
+              })}
+              {tastePickCandidates.length === 0 && <p className="discover-taste-picks__empty">No matching titles. Try another search.</p>}
+            </div>
+          </section></DiscoveryReveal>}
           <DiscoveryReveal><DiscoveryCalendarRow watchProgress={watchProgress} traktConnected={traktConnected} simklConnected={simklConnected} anilistConnected={anilistConnected} mdblistApiKey={mdblistApiKey} /></DiscoveryReveal>
           {visiblePersonalizedSections.filter((section) => section.id !== 'trending-this-week').map((section) => {
             const isTopTen = section.id === 'made-for-you'
@@ -1810,32 +1836,6 @@ export default function DiscoverPage() {
                 <p className="discover-editorial-empty" role="status">{timeTonightLoading ? 'Finding popular titles that fit…' : 'No titles found for this time yet.'}</p>
               </section>}
           </div></DiscoveryReveal>}
-          {tabRanked.length > 0 && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
-            <p className="discover-section-eyebrow">Refine your taste</p>
-            <div className="discover-refine__heading">
-              <h2 id="discover-refine-title">Pick Three You Like</h2>
-              <div className="discover-refine__progress" aria-label={`${pickedIds.length} of 3 titles selected`}>
-                {[0, 1, 2].map((index) => <span key={index} className={index < pickedIds.length ? 'is-complete' : ''} />)}
-                <span className="discover-refine__count">{pickedIds.length < 3 ? `${3 - pickedIds.length} more to go` : 'Taste tuned'}</span>
-              </div>
-            </div>
-            <div className="discover-refine__tools">
-              <label className="discover-refine__search"><Search size={16} aria-hidden="true"/><input type="search" value={tasteQuery} onChange={(event) => { setTasteQuery(event.target.value); setPickOffset(0) }} placeholder="Search titles" aria-label="Search titles to refine recommendations" /></label>
-              {tastePickCandidates.length < tastePickPool.length && pickedIds.length < 3 && <button className="discover-refine__more" type="button" onClick={() => setPickOffset((current) => current + 10)}><RefreshCw size={16} aria-hidden="true" /> <span>More choices</span></button>}
-              {pickedIds.length > 0 && <button className="discover-refine__reset" type="button" onClick={resetTastePicks}><RotateCcw size={16} aria-hidden="true" /> <span>Start over</span></button>}
-            </div>
-            <div className="discover-taste-picks">
-              {tastePickCandidates.map((item) => {
-                const id = mediaIdentity(item)
-                return <button key={id} type="button" className="discover-taste-pick" onClick={() => selectTastePick(item)} disabled={pickedIds.length >= 3} aria-label={`Choose ${item.title}`}>
-                  <span className="discover-taste-pick__poster">{item.poster && <img key={item.poster} className="discover-artwork-enter" src={item.poster} alt="" loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />}{item.rating != null && <span className="discover-taste-pick__rating">★ {Number(item.rating).toFixed(1)}</span>}</span>
-                  <span className="discover-taste-pick__title">{item.title}</span>
-                  <span className="discover-taste-pick__year">{item.year || (item.isAnime ? 'Anime' : item.type === 'series' ? 'Series' : 'Movie')}</span>
-                </button>
-              })}
-              {tastePickCandidates.length === 0 && <p className="discover-taste-picks__empty">No matching titles. Try another search.</p>}
-            </div>
-          </section></DiscoveryReveal>}
           {viewState === 'content' && colorPreviewItems.length >= 3 && <DiscoveryReveal><section className="discover-colors row-contain" aria-labelledby="discover-colors-title">
             <div className="discover-colors__heading"><div><p className="discover-section-eyebrow">Browse by poster colour</p><h2 id="discover-colors-title">Pick by Colour</h2></div><span>Popular titles, grouped by their artwork</span></div>
             <div className="discover-colors__filters" role="group" aria-label="Poster colour">

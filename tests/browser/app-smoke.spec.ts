@@ -788,14 +788,16 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.getByRole('heading', { name: 'Top 10 For You', exact: true })).toBeVisible()
   await expect(page.locator('.discover-tonight')).toHaveCount(0)
   const discoverySurfaceOrder = await page.evaluate(() => {
+    const trending = [...document.querySelectorAll<HTMLElement>('.discover-shelf h2')].find((heading) => heading.textContent?.trim() === 'OR TRY')
     const topTen = [...document.querySelectorAll<HTMLElement>('.discover-shelf h2')].find((heading) => heading.textContent?.trim() === 'Top 10 For You')
     const obsession = document.querySelector<HTMLElement>('.discover-next-hero')
     const refine = document.querySelector<HTMLElement>('.discover-refine')
-    return Boolean(obsession && topTen && refine
-      && obsession.compareDocumentPosition(topTen) & Node.DOCUMENT_POSITION_FOLLOWING
-      && topTen.compareDocumentPosition(refine) & Node.DOCUMENT_POSITION_FOLLOWING)
+    return Boolean(obsession && trending && topTen && refine
+      && obsession.compareDocumentPosition(trending) & Node.DOCUMENT_POSITION_FOLLOWING
+      && trending.compareDocumentPosition(refine) & Node.DOCUMENT_POSITION_FOLLOWING
+      && refine.compareDocumentPosition(topTen) & Node.DOCUMENT_POSITION_FOLLOWING)
   })
-  expect(discoverySurfaceOrder, 'the editorial spotlight leads into public catalogs and taste refinement').toBe(true)
+  expect(discoverySurfaceOrder, 'the editorial spotlight leads into OR TRY, the video-led taste picker, and the full catalog shelves').toBe(true)
   const mobileDiscoveryLayout = await page.evaluate(() => {
     const rect = (selector: string) => {
       const element = document.querySelector<HTMLElement>(selector)
@@ -957,12 +959,15 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       && (trend.compareDocumentPosition(topTen) & Node.DOCUMENT_POSITION_FOLLOWING))
   })
   expect(trendingRailOrder, `the independent editorial pick should lead into OR TRY and Top 10 (headings: ${await page.locator('.discover-shelf h2').allTextContents()})`).toBe(true)
-  const pickerBeforeShelves = await page.evaluate(() => {
+  const pickerOrder = await page.evaluate(() => {
     const picker = document.querySelector('#discover-refine-title')
+    const trend = Array.from(document.querySelectorAll('.discover-shelf h2')).find((heading) => heading.textContent?.trim() === 'OR TRY')
     const topTen = Array.from(document.querySelectorAll('.discover-shelf h2')).find((heading) => heading.textContent?.trim() === 'Top 10 For You')
-    return Boolean(picker && topTen && (topTen.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING))
+    return Boolean(picker && trend && topTen
+      && (trend.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING)
+      && (picker.compareDocumentPosition(topTen) & Node.DOCUMENT_POSITION_FOLLOWING))
   })
-  expect(pickerBeforeShelves, 'the broad public recommendations should lead into the taste picker').toBe(true)
+  expect(pickerOrder, 'the taste picker should follow the weekly trending rail and precede deeper catalog shelves').toBe(true)
   await expect(page.getByRole('heading', { name: 'Your Genres' })).toBeVisible()
   const fantasyGenreTile = page.locator('.discover-genres__grid button').filter({ hasText: 'Fantasy' }).first()
   const spotlightTitle = await page.locator('.discover-next-hero').getAttribute('data-title')
@@ -1005,10 +1010,10 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await contentTypeControls.getByRole('button', { name: 'Movies', exact: true }).click()
   const discoveryFlow = await page.locator('.discover-page').evaluate((root) => {
     const headings = Array.from(root.querySelectorAll<HTMLElement>('h2, h3')).map((heading) => heading.textContent?.trim() || '')
-    const referenceOrder = ['Your Next Obsession', 'OR TRY', 'Top 10 For You', 'How Much Time Tonight?', 'Pick Three You Like', 'Pick by Colour', 'Your Genres', 'Your Next Binge', 'Sunday Night Moods', 'Made for the Big Screen', 'Hidden Gems', 'New in Your Library', 'Keep Exploring']
+    const referenceOrder = ['Your Next Obsession', 'OR TRY', 'Pick Three You Like', 'Top 10 For You', 'How Much Time Tonight?', 'Pick by Colour', 'Your Genres', 'Your Next Binge', 'Sunday Night Moods', 'Made for the Big Screen', 'Hidden Gems', 'New in Your Library', 'Keep Exploring']
     return referenceOrder.filter((title) => headings.includes(title)).map((title) => headings.indexOf(title))
   })
-  expect(discoveryFlow.every((position, index) => index === 0 || position > discoveryFlow[index - 1]!), 'Discovery shelves should follow the order shown in the reference video').toBe(true)
+  expect(discoveryFlow.every((position, index) => index === 0 || position > discoveryFlow[index - 1]!), 'the taste picker should stay near the Tonight recommendations before the deeper catalog shelves').toBe(true)
   await expect(page.locator('.discover-taste-pick')).toHaveCount(10)
   const tastePickTitles = await page.locator('.discover-taste-pick__title').allTextContents()
   const tasteSpotlightTitle = await page.locator('.discover-next-hero').getAttribute('data-title')
