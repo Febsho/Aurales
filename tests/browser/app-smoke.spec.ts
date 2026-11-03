@@ -945,8 +945,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(trendingTop).toBeLessThan(topTenTop)
   expect(topTenTop).toBeLessThan(mobileDiscoveryLayout.timeTonight!.y)
   expect(mobileDiscoveryLayout.timeTonight!.y).toBeLessThan(mobileDiscoveryLayout.tastePicker!.y)
-  await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toBeVisible()
-  await expect(page.locator('.discover-shelf--recent')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toHaveCount(0)
+  await expect(page.locator('.discover-shelf--recent')).toHaveCount(0)
   await expect(heroSpotlight.getByRole('button', { name: 'Details' })).toBeVisible()
   const firstSpotlightTitle = await obsessionCard.getAttribute('data-title')
   expect(firstSpotlightTitle).not.toBeNull()
@@ -989,7 +989,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.getByRole('heading', { name: 'Drama Picks', exact: true })).toHaveCount(0)
   await expect(page.locator('.discover-shelf--personal-genre')).toHaveCount(0)
   await expect(page.locator('.discover-shelf--big-screen')).toBeVisible()
-  await expect(page.locator('.discover-shelf--recent')).toBeVisible()
+  await expect(page.locator('.discover-shelf--recent')).toHaveCount(0)
   await expect(page.locator('.discover-shelf--gems')).toBeVisible()
   await expect(page.locator('.discover-shelf--top-rated')).toHaveCount(0)
   await expect.poll(() => tmdbRequestPaths.has('/3/discover/tv')).toBe(true)
@@ -1137,7 +1137,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.locator('.discover-time')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Made for the Big Screen' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Hidden Gems', exact: true })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Sunday Night Moods' })).toBeVisible()
   await expect(page.getByRole('group', { name: 'Choose a watch duration' }).getByRole('button')).toHaveCount(3)
   await expect(page.getByRole('group', { name: 'Choose a mood' }).getByRole('button')).toHaveCount(3)
@@ -1152,7 +1152,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await contentTypeControls.getByRole('button', { name: 'Movies', exact: true }).click()
   const discoveryFlow = await page.locator('.discover-page').evaluate((root) => {
     const headings = Array.from(root.querySelectorAll<HTMLElement>('h2, h3')).map((heading) => heading.textContent?.trim() || '')
-    const referenceOrder = ['Your Next Obsession', 'OR TRY', 'Top 10 For You', 'How Much Time Tonight?', 'Pick Three You Like', 'Pick by Colour', 'Your Genres', 'Your Next Binge', 'Sunday Night Moods', 'Made for the Big Screen', 'Hidden Gems', 'New in Your Library', 'Keep Exploring']
+    const referenceOrder = ['Your Next Obsession', 'OR TRY', 'Top 10 For You', 'How Much Time Tonight?', 'Pick Three You Like', 'Pick by Colour', 'Your Genres', 'Your Next Binge', 'Sunday Night Moods', 'Made for the Big Screen', 'Hidden Gems', 'Keep Exploring']
     return referenceOrder.filter((title) => headings.includes(title)).map((title) => headings.indexOf(title))
   })
   expect(discoveryFlow.every((position, index) => index === 0 || position > discoveryFlow[index - 1]!), 'the taste picker should stay near the Tonight recommendations before the deeper catalog shelves').toBe(true)
@@ -1726,7 +1726,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(fullOrTryOrder.slice(0, 5), 'the full OR TRY catalog should use the same fresh, popularity-sorted entries as its shelf').toEqual(visibleOrTryOrder.slice(0, 5))
   await page.goBack()
   await expect(page.locator('.discover-page')).toBeVisible()
-  await expect(page.locator('.discover-shelf--recent')).toBeVisible()
+  await expect(page.locator('.discover-shelf--recent')).toHaveCount(0)
   // TMDB interactive requests retry once; fail both attempts to exercise a
   // true partial response, then let the user's explicit retry succeed.
   animeMovieContinuationFailuresRemaining = 2
@@ -1849,7 +1849,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
   await expect(page.getByRole('heading', { name: 'Sunday Night Moods' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Made for the Big Screen' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Hidden Gems', exact: true })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toHaveCount(0)
 
   const trendingShelf = page.locator('.discover-shelf--trending')
   const trendingTrack = trendingShelf.locator('[data-media-row-track]')
