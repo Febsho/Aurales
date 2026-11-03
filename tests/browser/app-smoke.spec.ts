@@ -737,6 +737,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect.poll(() => editorialTopTenShelf.locator('img').evaluateAll((images) => images.filter((image) => /^Weekly trend \d+$/.test(image.getAttribute('alt') || '')).length)).toBeGreaterThan(0)
   const promotedTrendTitles = await editorialTopTenShelf.locator('img').evaluateAll((images) => images.map((image) => image.getAttribute('alt') || '').filter((title) => /^Weekly trend \d+$/.test(title)))
   expect(promotedTrendTitles.length, 'Top 10 should reserve three places for fresh weekly trends while keeping the editorial Spotlight separate').toBe(3)
+  const promotedTrendPositions = promotedTrendTitles.map((title) => Number(title.match(/\d+/)?.[0]))
+  expect(promotedTrendPositions, 'the current weekly picks in Top 10 should follow public popularity order').toEqual([...promotedTrendPositions].sort((left, right) => left - right))
   const mobileSpotlight = page.locator('.discover-next-hero')
   const mobileSpotlightTitle = await mobileSpotlight.getAttribute('data-title')
   await mobileSpotlight.getByRole('button', { name: /Another option/ }).click()
