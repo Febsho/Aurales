@@ -446,6 +446,7 @@ export default function DiscoverPage() {
 
   const [feedback, setFeedback] = useState<RecommendationFeedback[]>(() => loadRecommendationFeedback())
   const [trendingSnapshot, setTrendingSnapshot] = useState<{ scope: string; items: SearchResult[] }>({ scope: '', items: [] })
+  const [bingeTrending, setBingeTrending] = useState<SearchResult[]>([])
   const [similarCandidates, setSimilarCandidates] = useState<RecommendationCandidate[]>([])
   const [watchedTasteMetadata, setWatchedTasteMetadata] = useState<NonNullable<import('../services/discovery/types').DiscoveryActivity['tasteMetadata']>>([])
   const [connectedActivity, setConnectedActivity] = useState<{ items: SearchResult[]; progress: import('../types').WatchProgress[]; ratings: Array<{item:SearchResult;rating:number}>; watchlist:DatedLibraryItem[]; rewatches:SearchResult[]; bingeItems:SearchResult[] }>({ items:[], progress:[], ratings:[], watchlist:[], rewatches:[], bingeItems:[] })
@@ -639,6 +640,17 @@ export default function DiscoverPage() {
       .finally(() => { if (!cancelled) setTrendingReadyScope(trendingScope) })
     return () => { cancelled = true }
   }, [contentType, trendingScope])
+  useEffect(() => {
+    let cancelled = false
+    if (tab !== 'movies') {
+      setBingeTrending([])
+      return () => { cancelled = true }
+    }
+    getTrendingTmdb('series', 'week')
+      .then((items) => { if (!cancelled) setBingeTrending(items.map(applySearchResultArt)) })
+      .catch(() => { if (!cancelled) setBingeTrending([]) })
+    return () => { cancelled = true }
+  }, [tab])
   const topRated = useDiscoverRow(
     makeConfig(contentType, 'vote_average.desc', preferences, {
       voteCountMin: tab === 'anime' ? 150 : 500,
@@ -1188,9 +1200,14 @@ export default function DiscoverPage() {
   const bingeRecommendations = useMemo(() => {
     const bingeRanked = tab === 'movies'
       ? rankCandidates(
-        bingeSeries
-          .filter((item) => item.type === 'series' && !isAnimeLike(item) && candidatePassesPrefs(item, prefs))
-          .map((item) => recommendationCandidate(item, 'tmdb-discover')),
+        [
+          ...bingeTrending
+            .filter((item) => item.type === 'series' && !isAnimeLike(item) && candidatePassesPrefs(item, prefs))
+            .map((item) => recommendationCandidate(item, 'tmdb-trending')),
+          ...bingeSeries
+            .filter((item) => item.type === 'series' && !isAnimeLike(item) && candidatePassesPrefs(item, prefs))
+            .map((item) => recommendationCandidate(item, 'tmdb-discover')),
+        ],
         tasteProfile,
         activity,
         feedback,
@@ -1212,7 +1229,7 @@ export default function DiscoverPage() {
         return true
       })
       .slice(0, 5)
-  }, [activity, bingeSeries, feedback, impressions, mode, prefs, rankingNow, ranked, tab, tasteProfile])
+  }, [activity, bingeSeries, bingeTrending, feedback, impressions, mode, prefs, rankingNow, ranked, tab, tasteProfile])
   const activeBingeItem = bingeRecommendations.length ? bingeRecommendations[bingeIndex % bingeRecommendations.length] : undefined
   const pickerPool = useMemo(() => {
     const seen = new Set<string>()
