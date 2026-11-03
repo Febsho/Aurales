@@ -239,12 +239,14 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   const workerLiveSnapshotRef = useRef(false)
   const workerLiveSnapshotActiveRef = useRef(false)
   const lastWorkerConversionModeRef = useRef<Exclude<MediaConversionMode, 'auto'> | null>(null)
+  const workerDecodeFallbackPendingRef = useRef(false)
   const workerPlaybackDescriptionRef = useRef<string | null>(null)
   const conversionOptionsCheckedRef = useRef(false)
   const conversionOutputFormatRef = useRef<MediaConversionOutputFormat | null>(null)
   const workerConversionTimeoutMsRef = useRef(2 * 60 * 60 * 1000)
   const requestWorkerConversionRef = useRef<((video: HTMLVideoElement, canPlayHls?: boolean) => boolean) | null>(null)
   const retryWorkerConversionRef = useRef<((video: HTMLVideoElement) => boolean) | null>(null)
+  const retryWorkerDecodeFallbackRef = useRef<((video: HTMLVideoElement) => boolean) | null>(null)
   const [paused, setPaused] = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
@@ -374,6 +376,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     workerPlaybackResumeRef.current = false
     workerLiveSnapshotRef.current = false
     workerLiveSnapshotActiveRef.current = false
+    workerDecodeFallbackPendingRef.current = false
     setLiveSnapshotEnded(false)
     lastWorkerConversionModeRef.current = null
     updateConversionModes([])
@@ -560,20 +563,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           }
         } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
           if (workerConversionActiveRef.current) {
-            const lastMode = lastWorkerConversionModeRef.current
-            const nextMode = lastMode ? nextPlaybackConversionAfterDecodeFailure(lastMode) : null
-            if (nextMode && conversionModesRef.current.includes(nextMode) && !conversionModesTriedRef.current.includes(nextMode)) {
-              setLoading(true)
-              setPlayerNotice(nextMode === 'audioAac'
-                ? 'The browser rejected the remuxed HLS stream. Trying AAC audio while keeping the video unchanged…'
-                : nextMode === 'h264AacLow'
-                  ? 'The browser rejected standard H.264. Trying a smaller 720p/30 H.264 stream…'
-                  : nextMode === 'h264AacCompat'
-                    ? 'The browser rejected 720p H.264. Trying 480p/30 Baseline H.264…'
-                  : 'Audio-only HLS conversion was not enough. Trying H.264/AAC video encoding now…')
-              void convertWithWorkerFallback(nextMode)
-              return
-            }
+            if (retryWorkerDecodeFallbackRef.current?.(video)) return
             setError('The browser could not decode the converted HLS stream after the available strategies. This codec or profile may not be supported on this browser and device.')
             setLoading(false)
             return
@@ -1827,6 +1817,32 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     return false
   }
 
+  const retryWorkerDecodeFallback = (video: HTMLVideoElement): boolean => {
+    if (!workerConversionActiveRef.current) return false
+    if (videoRef.current !== video) return true
+    if (workerDecodeFallbackPendingRef.current) return true
+    const lastMode = lastWorkerConversionModeRef.current
+    const nextMode = lastMode ? nextPlaybackConversionAfterDecodeFailure(lastMode) : null
+    if (!nextMode
+      || !conversionModesRef.current.includes(nextMode)
+      || conversionModesTriedRef.current.includes(nextMode)) return false
+    workerDecodeFallbackPendingRef.current = true
+    setLoading(true)
+    setError('')
+    setPlayerNotice(nextMode === 'audioAac'
+      ? 'The browser rejected stream copy. Trying AAC audio while keeping the video unchanged…'
+      : nextMode === 'h264AacLow'
+        ? 'The browser rejected standard H.264. Trying a smaller 720p/30 H.264 stream…'
+        : nextMode === 'h264AacCompat'
+          ? 'The browser rejected 720p H.264. Trying 480p/30 Baseline H.264…'
+          : 'The previous conversion did not match this decoder. Trying H.264/AAC video encoding…')
+    void convertWithWorkerFallback(nextMode).finally(() => {
+      workerDecodeFallbackPendingRef.current = false
+    })
+    return true
+  }
+  retryWorkerDecodeFallbackRef.current = retryWorkerDecodeFallback
+
   const requestWorkerConversion = (video: HTMLVideoElement, canPlayHls?: boolean) => {
     if (!getMediaWorkerConfig()) return false
     const playbackRun = playbackRunRef.current
@@ -2120,6 +2136,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
                 showControlsTemporarily()
                 return
               }
+              if (retryWorkerDecodeFallbackRef.current?.(event.currentTarget)) return
               setLoading(false)
               setPaused(true)
               setError('The browser could not start the prepared stream. Tap Play to retry or choose another source.')
@@ -2200,21 +2217,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           }
           const unsupportedMedia = video?.error?.code === 3 || video?.error?.code === 4
           if (video && unsupportedMedia && workerConversionActiveRef.current) {
-            const lastMode = lastWorkerConversionModeRef.current
-            const nextMode = lastMode ? nextPlaybackConversionAfterDecodeFailure(lastMode) : null
-            if (nextMode && conversionModes.includes(nextMode) && !conversionModesTriedRef.current.includes(nextMode)) {
-              setLoading(true)
-              setError('The browser could not decode the prepared stream. Trying the next playback strategy…')
-              setPlayerNotice(nextMode === 'audioAac'
-                ? 'Stream copy was not browser-decodable. Trying AAC audio while keeping the video unchanged…'
-                : nextMode === 'h264AacLow'
-                  ? 'The browser rejected standard H.264. Trying a smaller 720p/30 H.264 stream…'
-                  : nextMode === 'h264AacCompat'
-                    ? 'The browser rejected 720p H.264. Trying 480p/30 Baseline H.264…'
-                  : 'Audio-only conversion was not enough. Trying H.264/AAC video encoding now…')
-              void convertWithWorkerFallback(nextMode)
-              return
-            }
+            if (retryWorkerDecodeFallbackRef.current?.(video)) return
             const message = 'The browser could not decode the prepared stream after the available playback strategies. The source may use an unsupported codec or profile, including some HEVC, VP9, AV1, HDR, or Dolby Vision combinations.'
             setLoading(false)
             setPaused(true)
