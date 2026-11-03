@@ -137,7 +137,14 @@ export async function createMediaSession(url: string, signal?: AbortSignal, requ
     credentials: workerCredentials(config),
     body: JSON.stringify({ url, headers: validatePlaybackRequestHeaders(requestHeaders) }),
   }, 10_000, signal)
-  if (!response.ok) throw new Error(workerError(response.status))
+  if (!response.ok) {
+    let errorCode: string | undefined
+    if (response.status === 403 || response.status === 429 || response.status === 503) {
+      const body = await response.clone().json().catch(() => null) as { error?: unknown } | null
+      if (typeof body?.error === 'string') errorCode = body.error
+    }
+    throw new MediaWorkerHttpError(response.status, errorCode)
+  }
   const data = await response.json() as { url?: unknown; expiresAt?: unknown }
   if (typeof data.url !== 'string' || typeof data.expiresAt !== 'number' || !Number.isFinite(data.expiresAt)) {
     throw new Error('Media worker returned an invalid playback session.')
