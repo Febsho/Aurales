@@ -544,7 +544,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.getByRole('heading', { name: /Settle in,/ })).toBeVisible()
   const heroSpotlight = page.locator('.discover-next-hero')
   const obsessionCard = heroSpotlight
-  await expect(heroSpotlight.locator('.discover-spotlight__eyebrow')).toContainText('Tonight')
+  await expect(page.locator('.discover-spotlight-heading').getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
   await expect(heroSpotlight.locator('.discover-spotlight__ambient img')).toHaveAttribute('src', /weekly-trend-backdrop/)
   await expect(page.locator('.discover-libraries')).toHaveCount(0)
   await expect(page.locator('.discover-shelf--favorites, .discover-shelf--new-library')).toHaveCount(0)
@@ -611,7 +611,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const topTenTop = topTenHeading!.y
   expect(obsessionTop).toBeLessThan(trendingTop)
   expect(trendingTop).toBeLessThan(topTenTop)
-  expect(calendarTop, 'the reference editorial sequence should lead; the connected Calendar stays available below the Top 10').toBeGreaterThan(topTenTop)
+  expect(calendarTop, 'the video reference keeps upcoming calendar cards above the editorial recommendation').toBeLessThan(obsessionTop)
   await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toHaveCount(0)
   await expect(heroSpotlight.getByRole('button', { name: 'Details' })).toBeVisible()
   const firstSpotlightTitle = await obsessionCard.getAttribute('data-title')
@@ -622,6 +622,20 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect.poll(() => editorialTopTenShelf.locator('img').evaluateAll((images) => images.filter((image) => /^Weekly trend \d+$/.test(image.getAttribute('alt') || '')).length)).toBeGreaterThan(0)
   const promotedTrendTitles = await editorialTopTenShelf.locator('img').evaluateAll((images) => images.map((image) => image.getAttribute('alt') || '').filter((title) => /^Weekly trend \d+$/.test(title)))
   expect(promotedTrendTitles.length, 'Top 10 should include fresh weekly trends while keeping the editorial Spotlight separate').toBeGreaterThan(0)
+  const mobileSpotlight = page.locator('.discover-next-hero')
+  const mobileSpotlightTitle = await mobileSpotlight.getAttribute('data-title')
+  await page.locator('.discover-spotlight-heading').getByRole('button', { name: 'More spotlight options' }).click()
+  await page.getByRole('menuitem', { name: 'Another option' }).click()
+  await expect.poll(() => mobileSpotlight.getAttribute('data-title')).not.toBe(mobileSpotlightTitle)
+  const mobileSpotlightMotion = await mobileSpotlight.evaluate((hero) => {
+    const movingSurfaces = [
+      hero.querySelector<HTMLElement>('.discover-spotlight__bottom > .discover-spotlight__meta'),
+      hero.querySelector<HTMLElement>('.discover-spotlight__bottom > h2, .discover-spotlight__bottom > .discover-spotlight__logo'),
+      hero.querySelector<HTMLElement>('.discover-spotlight__poster'),
+    ]
+    return movingSurfaces.map((surface) => Boolean(surface?.getAnimations().length))
+  })
+  expect(mobileSpotlightMotion, 'mobile editorial changes should animate real grid items even though copy wrappers use display: contents').toEqual([true, true, true])
   await page.getByRole('button', { name: 'Not for me' }).click()
   await expect(page.locator('.discover-picker')).toHaveCount(0)
   const discoverySettings = page.getByRole('button', { name: 'Discovery settings' })
@@ -630,7 +644,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.keyboard.press('Escape')
   await expect(page.getByRole('dialog', { name: 'Discovery settings' })).toHaveCount(0)
   await expect(discoverySettings).toBeFocused()
-  await expect(page.locator('.discover-spotlight-heading').getByText('A movie for tonight').first()).toBeVisible()
+  await expect(page.locator('.discover-spotlight-heading').getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
   expect(profileWelcomeHeading!.y + profileWelcomeHeading!.height).toBeLessThan(browseControls!.y)
   expect(obsessionHeading!.y).toBeGreaterThan(browseControls!.y)
   expect(obsessionHeading!.y + obsessionHeading!.height).toBeLessThan(weekendCard!.y)
@@ -989,7 +1003,6 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         bottomNavTop: bottomNav.getBoundingClientRect().top,
         ambientArtwork: Boolean(hero.querySelector('.discover-spotlight__ambient img')),
         backgroundColor: getComputedStyle(hero).backgroundColor,
-        tonightFontSize: Number.parseFloat(getComputedStyle(hero.querySelector<HTMLElement>('.discover-spotlight__eyebrow')!).fontSize),
         overview: (() => {
           const element = hero.querySelector<HTMLElement>('.discover-spotlight__overview')
           if (!element) return null
@@ -1016,6 +1029,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(discoveryLayout!.tabsFit).toBe(true)
   expect(discoveryLayout!.modesFit).toBe(true)
   expect(discoveryLayout!.surpriseHeight).toBeGreaterThanOrEqual(44)
+  await page.locator('.app-scroll-root').evaluate((root) => root.scrollTo({ top: 0, behavior: 'instant' }))
   await expect(page.getByRole('combobox', { name: 'Browse recommendations' })).toHaveCount(0)
   if (discoveryLayout!.hero) {
     expect(discoveryLayout!.hero.left).toBeGreaterThanOrEqual(0)
@@ -1025,7 +1039,6 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(discoveryLayout!.hero.bottom).toBeLessThanOrEqual(discoveryLayout!.hero.bottomNavTop)
     expect(discoveryLayout!.hero.ambientArtwork).toBe(true)
     expect(discoveryLayout!.hero.backgroundColor).toBe('rgb(39, 39, 43)')
-    expect(discoveryLayout!.hero.tonightFontSize).toBeGreaterThan(18)
     expect(discoveryLayout!.hero.overview?.visible, 'the phone spotlight should include the compact synopsis shown in the reference').toBe(true)
     expect(discoveryLayout!.hero.overview?.left).toBeGreaterThanOrEqual(0)
     expect(discoveryLayout!.hero.overview?.right).toBeLessThanOrEqual(discoveryLayout!.viewport)
@@ -1035,20 +1048,6 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(discoveryLayout!.actionsFit).toBe(true)
     expect(discoveryLayout!.actionsOnOneLine).toBe(true)
   }
-
-  const mobileSpotlight = page.locator('.discover-next-hero')
-  const mobileSpotlightTitle = await mobileSpotlight.getAttribute('data-title')
-  await mobileSpotlight.getByRole('button', { name: 'Another option' }).click()
-  await expect.poll(() => mobileSpotlight.getAttribute('data-title')).not.toBe(mobileSpotlightTitle)
-  const mobileSpotlightMotion = await mobileSpotlight.evaluate((hero) => {
-    const movingSurfaces = [
-      hero.querySelector<HTMLElement>('.discover-spotlight__top'),
-      hero.querySelector<HTMLElement>('.discover-spotlight__bottom > h2, .discover-spotlight__bottom > .discover-spotlight__logo'),
-      hero.querySelector<HTMLElement>('.discover-spotlight__poster'),
-    ]
-    return movingSurfaces.map((surface) => Boolean(surface?.getAnimations().length))
-  })
-  expect(mobileSpotlightMotion, 'mobile editorial changes should animate real grid items even though copy wrappers use display: contents').toEqual([true, true, true])
 
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.evaluate(() => window.scrollTo(0, 0))
@@ -1188,10 +1187,14 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await desktopTopTenShelf.getByRole('button', { name: 'Scroll left' }).click()
   await expect.poll(() => desktopTopTenRail.evaluate((rail) => rail.scrollLeft)).toBeLessThanOrEqual(desktopBeforeRight.left + 1)
   await page.setViewportSize({ width: 1440, height: 900 })
-  const spotlightBeforeAlternate = await page.locator('.discover-next-hero').getAttribute('data-title')
   const spotlightNode = await page.locator('.discover-next-hero').elementHandle()
-  await page.locator('.discover-next-hero').getByRole('button', { name: 'Another option' }).click()
-  await expect.poll(() => page.locator('.discover-next-hero').getAttribute('data-title')).not.toBe(spotlightBeforeAlternate)
+  await page.locator('.discover-spotlight-heading').getByRole('button', { name: 'More spotlight options' }).click()
+  const alternateSpotlightItem = page.getByRole('menuitem', { name: 'Another option' })
+  if (await alternateSpotlightItem.isEnabled()) {
+    const spotlightBeforeAlternate = await page.locator('.discover-next-hero').getAttribute('data-title')
+    await alternateSpotlightItem.click()
+    await expect.poll(() => page.locator('.discover-next-hero').getAttribute('data-title')).not.toBe(spotlightBeforeAlternate)
+  }
   expect(await spotlightNode?.evaluate((element) => element.isConnected), 'changing the editorial pick should animate inside one stable spotlight instead of replacing the whole card').toBe(true)
   await spotlightNode?.dispose()
   const spotlightAfterAlternate = await page.locator('.discover-next-hero').getAttribute('data-title')

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Info, RefreshCw, RotateCcw, Search, Settings, Shuffle, ThumbsDown, X } from 'lucide-react'
+import { Info, MoreHorizontal, RefreshCw, RotateCcw, Search, Settings, Shuffle, ThumbsDown, X } from 'lucide-react'
 import type { DiscoverConfig, SearchResult, WatchProgress } from '../types'
 import { discoverTmdbPageWithCache, discoverTmdbWithCache, getTmdbPerson, getTrendingTmdb, tmdbProvider } from '../services/tmdb'
 import MediaRow from '../components/MediaRow'
@@ -471,6 +471,8 @@ export default function DiscoverPage() {
   const [posterColorSamples, setPosterColorSamples] = useState<Array<{ item: SearchResult; color: PosterColorGroup }>>([])
   const [tasteQuery, setTasteQuery] = useState('')
   const [bingeIndex, setBingeIndex] = useState(0)
+  const [spotlightMenuOpen, setSpotlightMenuOpen] = useState(false)
+  const spotlightMenuRef = useRef<HTMLDivElement>(null)
   const [moreToDiscover, setMoreToDiscover] = useState<SearchResult[]>([])
   const [moreToDiscoverStatus, setMoreToDiscoverStatus] = useState<'idle' | 'loading' | 'error' | 'done'>('idle')
   const moreToDiscoverSentinelRef = useRef<HTMLDivElement>(null)
@@ -993,6 +995,23 @@ export default function DiscoverPage() {
   const heroItem = heroRecommendation?.item
   const heroMediaKey = heroItem ? mediaIdentity(heroItem) : null
   useEffect(() => {
+    if (!spotlightMenuOpen) return
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (!spotlightMenuRef.current?.contains(event.target as Node)) setSpotlightMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setSpotlightMenuOpen(false)
+      document.querySelector<HTMLButtonElement>('.discover-spotlight-heading__more')?.focus()
+    }
+    document.addEventListener('pointerdown', closeOnPointerDown)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnPointerDown)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [spotlightMenuOpen])
+  useEffect(() => {
     const previousKey = previousSpotlightKeyRef.current
     previousSpotlightKeyRef.current = heroMediaKey
     if (!previousKey || !heroMediaKey || previousKey === heroMediaKey || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
@@ -1000,7 +1019,7 @@ export default function DiscoverPage() {
     // can share the two-column grid with the poster. Animate the visible grid
     // items themselves there; desktop keeps the single coordinated copy move.
     const surfaceSelector = window.matchMedia('(max-width: 700px)').matches
-      ? '.discover-spotlight__top, .discover-spotlight__bottom > *, .discover-spotlight__poster'
+      ? '.discover-spotlight__bottom > *, .discover-spotlight__poster'
       : '.discover-spotlight__copy, .discover-spotlight__poster'
     const surfaces = spotlightTransitionRef.current?.querySelectorAll<HTMLElement>(surfaceSelector)
     if (!surfaces?.length) return
@@ -1536,8 +1555,10 @@ export default function DiscoverPage() {
   }
   const chooseAnotherSpotlight = () => {
     if (spotlightCandidates.length < 2) return
-    const currentIndex = spotlightCandidates.findIndex((entry) => mediaIdentity(entry.item) === heroMediaKey)
-    const next = spotlightCandidates[(Math.max(0, currentIndex) + 1) % spotlightCandidates.length]
+    const currentIndex = spotlightCandidates.findIndex((entry) => mediaIdentity(entry.item) === spotlightSelectionKey)
+    const fallbackIndex = spotlightCandidates.findIndex((entry) => mediaIdentity(entry.item) !== heroMediaKey)
+    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % spotlightCandidates.length : fallbackIndex
+    const next = spotlightCandidates[nextIndex]
     if (next) setSpotlightSelectionKey(mediaIdentity(next.item))
   }
   const selectTastePick = (item: SearchResult) => {
@@ -1606,13 +1627,19 @@ export default function DiscoverPage() {
             <button ref={surpriseButtonRef} className="discover-surprise-trigger" type="button" onClick={triggerSurprise} disabled={pickerPool.length < 2 || surpriseSpinning} aria-busy={surpriseSpinning}><Shuffle size={16} aria-hidden="true" /> <span>{surpriseSpinning ? 'Choosing…' : 'Surprise Me'}</span></button>
             <button ref={preferencesButtonRef} className="discover-preferences-trigger" type="button" onClick={() => setPreferencesOpen(true)} aria-label="Discovery settings"><Settings size={18} aria-hidden="true" /></button>
           </div>
+          {viewState === 'content' && <DiscoveryReveal><DiscoveryCalendarRow watchProgress={watchProgress} traktConnected={traktConnected} simklConnected={simklConnected} anilistConnected={anilistConnected} mdblistApiKey={mdblistApiKey} /></DiscoveryReveal>}
           {viewState === 'content' && heroRecommendation && <DiscoveryReveal>
             <>
-              <header className="discover-spotlight-heading row-contain"><p>{tab === 'movies' ? 'A movie for tonight' : tab === 'series' ? 'A series for tonight' : 'An anime for tonight'}</p><h2 id="discover-next-title">Your Next Obsession</h2><span className="discover-spotlight-heading__accent" aria-hidden="true" /></header>
+              <header className="discover-spotlight-heading row-contain">
+                <div className="discover-spotlight-heading__copy"><h2 id="discover-next-title">Your Next Obsession</h2></div>
+                <div className="discover-spotlight-heading__menu" ref={spotlightMenuRef}>
+                  <button type="button" className="discover-spotlight-heading__more" aria-label="More spotlight options" aria-haspopup="menu" aria-expanded={spotlightMenuOpen} onClick={() => setSpotlightMenuOpen((open) => !open)}><MoreHorizontal size={20} aria-hidden="true" /></button>
+                  {spotlightMenuOpen && <div className="discover-spotlight-menu" role="menu" aria-label="Spotlight options"><button type="button" role="menuitem" disabled={spotlightCandidates.length < 2} onClick={() => { setSpotlightMenuOpen(false); chooseAnotherSpotlight() }}>Another option</button></div>}
+                </div>
+              </header>
               <section ref={spotlightTransitionRef} className="discover-spotlight discover-next-hero" aria-labelledby="discover-next-title" data-title={heroRecommendation.item.title}>
                 {heroBackdrop && <div key={heroBackdrop} className="discover-spotlight__ambient" aria-hidden="true"><img className={loadedHeroBackdrop === heroBackdrop ? 'is-loaded' : undefined} src={heroBackdrop} alt="" draggable={false} decoding="async" fetchPriority="high" onLoad={() => setLoadedHeroBackdrop(heroBackdrop)} /></div>}
                 <div className="discover-spotlight__copy" data-title={heroRecommendation.item.title}>
-                  <div className="discover-spotlight__top"><p className="discover-spotlight__eyebrow">Tonight</p><p className="discover-spotlight__duration">Usually {formatWatchDuration(tasteProfile.preferredRuntimeMinutes || heroRecommendation.runtimeMinutes || (tab === 'movies' ? 105 : 45))}</p></div>
                   <div className="discover-spotlight__bottom">
                     {heroLogo && !heroLogoError ? <img key={heroRecommendation.item.id} src={heroLogo} alt={heroRecommendation.item.title} draggable={false} onError={() => setHeroLogoError(true)} className="discover-spotlight__logo" /> : <h2 key={heroRecommendation.item.id}>{heroRecommendation.item.title}</h2>}
                     <div className="discover-spotlight__meta">
@@ -1627,7 +1654,6 @@ export default function DiscoverPage() {
                       <button type="button" className="discover-spotlight__play" onClick={() => openHeroDetail(true)}>▶ <span>Play</span></button>
                       <button type="button" className="discover-spotlight__another discover-spotlight__secondary" onClick={() => openHeroDetail(false)} aria-label="Details"><Info size={17} aria-hidden="true"/><span>Details</span></button>
                       <button type="button" className="discover-spotlight__another" aria-label="Not for me" onClick={() => submitFeedback(heroRecommendation.item, 'not-interested')}><ThumbsDown size={17} aria-hidden="true"/><span>Not for me</span></button>
-                      <button type="button" className="discover-spotlight__another discover-spotlight__another-option" aria-label="Another option" onClick={chooseAnotherSpotlight} disabled={spotlightCandidates.length < 2}><Shuffle size={17} aria-hidden="true"/><span>Another option</span></button>
                     </div>
                   </div>
                 </div>
@@ -1646,9 +1672,6 @@ export default function DiscoverPage() {
             const catalogItems = (section.catalogItems ?? section.items).map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
             return <DiscoveryReveal key={section.id}><div className="row-contain discover-shelf"><MediaRow title={title} items={items} showAllItems={catalogItems} layout={isTopTen ? 'ranked' : 'poster'} previewLimit={isTopTen ? 10 : undefined} renderAllPreviewItems={isTopTen} disableCinematic forceShowAll showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div></DiscoveryReveal>
           })}
-          {/* Keep the connected release calendar available without interrupting
-              the Spotlight → OR TRY → Top 10 editorial sequence at the top. */}
-          {viewState === 'content' && <DiscoveryReveal><DiscoveryCalendarRow watchProgress={watchProgress} traktConnected={traktConnected} simklConnected={simklConnected} anilistConnected={anilistConnected} mdblistApiKey={mdblistApiKey} /></DiscoveryReveal>}
           {ranked.length > 0 && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
             <p className="discover-section-eyebrow">Refine your taste</p>
             <div className="discover-refine__heading">
