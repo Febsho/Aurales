@@ -6447,6 +6447,29 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-editorial-tabs button:active { transform: scale(.98); }
 .discover-editorial-tabs button:focus-visible { outline: 2px solid rgba(255,255,255,.9); outline-offset: 2px; }
 .discover-time { width: 100%; margin-block: .8rem 1.2rem; }
+.discover-weekend { width: 100%; margin-block: .8rem 1.2rem; }
+.discover-weekend__feature { position: relative; display: grid; min-height: clamp(18rem, 25vw, 25rem); grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; gap: 1rem; margin-inline: var(--discover-gutter, 1.5rem); padding: clamp(1rem, 2.5vw, 1.65rem); overflow: hidden; isolation: isolate; border: 1px solid rgba(255,255,255,.1); border-radius: 1.25rem; background: #242428; box-shadow: 0 16px 44px rgba(0,0,0,.2); animation: discover-weekend-enter .38s cubic-bezier(.2,.75,.25,1) both; }
+.discover-weekend__ambient { position: absolute; inset: 0; z-index: -1; overflow: hidden; background: #252529; }
+.discover-weekend__ambient::after { position: absolute; inset: 0; content: ''; background: linear-gradient(90deg, rgba(20,20,24,.92), rgba(20,20,24,.72) 60%, rgba(20,20,24,.55)), linear-gradient(0deg, rgba(18,18,21,.92), transparent 75%); }
+.discover-weekend__ambient img { width: 100%; height: 100%; object-fit: cover; opacity: .34; filter: saturate(.82); transform: scale(1.02); }
+.discover-weekend__copy { position: relative; z-index: 1; display: flex; min-width: 0; flex-direction: column; justify-content: space-between; }
+.discover-weekend__top p { margin: 0; color: #fff; font-size: clamp(1.8rem, 4vw, 3rem); font-weight: 750; letter-spacing: -.045em; line-height: 1; }
+.discover-weekend__top span { display: block; margin-top: .35rem; color: rgba(255,255,255,.66); font-size: clamp(.78rem, 1.25vw, .95rem); }
+.discover-weekend__bottom { min-width: 0; }
+.discover-weekend__bottom h3 { margin: 0 0 .22rem; color: #fff; font-size: clamp(1.2rem, 2.5vw, 1.8rem); font-weight: 700; letter-spacing: -.025em; line-height: 1.1; overflow-wrap: anywhere; }
+.discover-weekend__meta, .discover-weekend__overview { margin: 0; color: rgba(255,255,255,.67); font-size: .82rem; line-height: 1.4; }
+.discover-weekend__overview { display: -webkit-box; max-width: 46rem; margin-top: .25rem; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.discover-weekend__actions { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem; margin-top: .8rem; }
+.discover-weekend__actions button { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; gap: .45rem; padding: .55rem 1rem; border: 1px solid transparent; border-radius: 999px; background: transparent; color: rgba(255,255,255,.76); font: inherit; font-size: .84rem; font-weight: 650; cursor: pointer; transition: background .18s ease, color .18s ease, transform .18s ease; }
+.discover-weekend__actions button:active { transform: scale(.97); }
+.discover-weekend__actions button:disabled { opacity: .48; cursor: not-allowed; }
+.discover-weekend__actions .discover-weekend__play { padding-inline: 1.1rem; background: #fff; color: #111; }
+.discover-weekend__actions .discover-weekend__another:hover { background: rgba(255,255,255,.1); color: white; }
+.discover-weekend__poster { position: relative; z-index: 1; width: clamp(7.5rem, 15vw, 10rem); height: auto; min-height: 0; align-self: center; aspect-ratio: 2 / 3; overflow: hidden; border: 1px solid rgba(255,255,255,.14); border-radius: .85rem; background: rgba(0,0,0,.25); box-shadow: 0 12px 30px rgba(0,0,0,.34); }
+.discover-weekend__poster img { width: 100%; height: 100%; object-fit: cover; transition: transform .32s cubic-bezier(.2,.75,.25,1); }
+.discover-weekend__feature:hover .discover-weekend__poster img { transform: scale(1.025); }
+.discover-weekend__poster span { position: absolute; right: .4rem; bottom: .4rem; padding: .25rem .4rem; border-radius: .45rem; background: rgba(0,0,0,.74); color: #fff; font-size: .68rem; font-weight: 700; }
+@keyframes discover-weekend-enter { from { opacity: .45; transform: translateY(7px) scale(.995); } to { opacity: 1; transform: translateY(0) scale(1); } }
 .discover-editorial-empty { margin: .5rem var(--discover-gutter, 1.5rem) 1rem; color: rgba(255,255,255,.55); font-size: .82rem; }
 .discover-shelf--big-screen, .discover-shelf--gems, .discover-shelf--moods, .discover-shelf--recent { margin-block: .9rem 1.2rem; }
 .discover-shelf--big-screen .media-row--feature .media-row-card-slot { min-width: clamp(16rem, 28vw, 25rem); }
@@ -6466,7 +6489,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-page__tabs button:focus-visible { position: relative; z-index: 1; outline: 2px solid rgba(255,255,255,.92); outline-offset: 2px; }
 
 @media (prefers-reduced-motion: reduce) {
-  .discover-spotlight, .discover-spotlight__copy, .discover-spotlight__poster, .discover-spotlight__ambient img, .discover-picker-backdrop, .discover-picker { animation: none !important; }
+  .discover-spotlight, .discover-spotlight__copy, .discover-spotlight__poster, .discover-spotlight__ambient img, .discover-weekend__feature, .discover-picker-backdrop, .discover-picker { animation: none !important; }
   .discover-reveal[data-revealed="true"] .media-row-card-slot,
   .discover-reveal[data-revealed="true"] .discover-more__grid > button { animation-delay: 0ms !important; }
   .discover-reveal { opacity: 1; transform: none; transition: none; }
@@ -6649,6 +6672,17 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-editorial-tabs { width: 100%; gap: .35rem; }
   .discover-editorial-tabs button { min-height: 44px; padding-inline: .65rem; font-size: .68rem; }
   .discover-time { margin-block: .65rem .95rem; }
+  .discover-weekend { margin-block: .65rem .95rem; }
+  .discover-weekend__feature { min-height: clamp(13rem, 35svh, 17rem); grid-template-columns: minmax(0, 1fr) clamp(6.5rem, 24vw, 7.5rem); gap: .7rem; margin-inline: var(--discover-gutter); margin-right: calc(var(--discover-gutter) + 1px); padding: .9rem; border-radius: 1.05rem; }
+  .discover-weekend__top p { font-size: clamp(1.7rem, 8vw, 2.1rem); }
+  .discover-weekend__top span { margin-top: .2rem; font-size: .72rem; }
+  .discover-weekend__bottom h3 { font-size: clamp(1rem, 4.4vw, 1.25rem); }
+  .discover-weekend__meta, .discover-weekend__overview { font-size: .66rem; line-height: 1.25; }
+  .discover-weekend__overview { -webkit-line-clamp: 2; }
+  .discover-weekend__actions { gap: .2rem; margin-top: .45rem; }
+  .discover-weekend__actions button { min-height: 44px; padding-inline: .55rem; font-size: .68rem; }
+  .discover-weekend__actions .discover-weekend__play { padding-inline: .75rem; }
+  .discover-weekend__poster { width: 100%; border-radius: .65rem; }
   .discover-shelf--big-screen, .discover-shelf--gems, .discover-shelf--moods, .discover-shelf--recent { margin-block: .65rem .9rem; }
   .discover-genres__grid { gap: .5rem; margin-block: .65rem .8rem; }
   .discover-genres__grid button { flex-basis: min(44vw, 11rem); min-height: 6rem; padding: .75rem; border-radius: .8rem; }

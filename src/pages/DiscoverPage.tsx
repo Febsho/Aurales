@@ -450,6 +450,7 @@ export default function DiscoverPage() {
   const [selectedSimilaritySectionId, setSelectedSimilaritySectionId] = useState<string | null>(null)
   const [tasteQuery, setTasteQuery] = useState('')
   const [bingeIndex, setBingeIndex] = useState(0)
+  const [weekendPlanSelectionKey, setWeekendPlanSelectionKey] = useState<string | null>(null)
   const [selectedRuntimeBucketId, setSelectedRuntimeBucketId] = useState<(typeof DISCOVERY_RUNTIME_BUCKETS)[number]['id']>('long-night')
   const [selectedDiscoveryMoodId, setSelectedDiscoveryMoodId] = useState<(typeof DISCOVERY_MOODS)[number]['id']>('mind-bending')
   const [selectedPosterColor, setSelectedPosterColor] = useState<PosterColorGroup | 'all'>('all')
@@ -689,6 +690,7 @@ export default function DiscoverPage() {
     reportDiscoveryRowLoading,
   )
   const selectedRuntimeBucket = DISCOVERY_RUNTIME_BUCKETS.find((bucket) => bucket.id === selectedRuntimeBucketId) ?? DISCOVERY_RUNTIME_BUCKETS[2]
+  useEffect(() => { setWeekendPlanSelectionKey(null) }, [tab, selectedRuntimeBucket.id, discoveryQueryKey])
   const genreRowId = `discover-genre-${tab}-${selectedGenreId ?? 'all'}-${discoveryQueryKey}`
   // Anime movies — the anime tab's discover rows are series-only, so without these
   // rows anime films would never surface in the anime category
@@ -1258,6 +1260,24 @@ export default function DiscoverPage() {
   }, [currentTrendingRanked, tab, timeTonight, timeTonightAnimeMovies])
   const timeTonightLoading = discoveryRowLoads[`discover-time-${tab}-${selectedRuntimeBucket.id}-${discoveryQueryKey}`]
     || (tab === 'anime' && discoveryRowLoads[`discover-time-anime-movies-${selectedRuntimeBucket.id}-${discoveryQueryKey}`])
+  const weekendPlanCandidates = useMemo(() => {
+    const runtimeMatches = timeTonightItems.filter((item) => mediaIdentity(item) !== heroMediaKey)
+    if (runtimeMatches.length) return runtimeMatches
+    const seen = new Set<string>()
+    return [...currentTrendingRanked, ...sortRecommendationsByPopularity(tabRanked)].map((entry) => entry.item).filter((item) => {
+      const key = mediaIdentity(item)
+      if (!item.poster || key === heroMediaKey || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  }, [currentTrendingRanked, heroMediaKey, tabRanked, timeTonightItems])
+  const weekendPlanItem = weekendPlanCandidates.find((item) => mediaIdentity(item) === weekendPlanSelectionKey) ?? weekendPlanCandidates[0]
+  const weekendPlanUsesRuntimeMatch = Boolean(weekendPlanItem && timeTonightItems.some((item) => mediaIdentity(item) === mediaIdentity(weekendPlanItem)))
+  const chooseAnotherWeekendPlan = () => {
+    if (weekendPlanCandidates.length < 2 || !weekendPlanItem) return
+    const currentIndex = weekendPlanCandidates.findIndex((item) => mediaIdentity(item) === mediaIdentity(weekendPlanItem))
+    setWeekendPlanSelectionKey(mediaIdentity(weekendPlanCandidates[(currentIndex + 1) % weekendPlanCandidates.length]!))
+  }
   const bigScreenItems = useMemo(() => {
     const featured = new Set([
       ...(heroItem ? [mediaIdentity(heroItem)] : []),
@@ -1748,50 +1768,6 @@ export default function DiscoverPage() {
               showAllPath={`/catalog/discover-section-${tab}-${activeSimilaritySection.id}?title=${encodeURIComponent(`Because you ${activeSimilaritySection.id.startsWith('because-favorited') ? 'favorited' : 'watched'} ${activeSimilarityTitle}`)}`}
             />
           </div></DiscoveryReveal>}
-          {tabRanked.length > 0 && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
-            <p className="discover-section-eyebrow">Refine your taste</p>
-            <div className="discover-refine__heading">
-              <h2 id="discover-refine-title">Pick Three You Like</h2>
-              <div className="discover-refine__progress" aria-label={`${pickedIds.length} of 3 titles selected`}>
-                {[0, 1, 2].map((index) => <span key={index} className={index < pickedIds.length ? 'is-complete' : ''} />)}
-                <span className="discover-refine__count">{pickedIds.length < 3 ? `${3 - pickedIds.length} more to go` : 'Taste tuned'}</span>
-              </div>
-            </div>
-            <div className="discover-refine__tools">
-              <label className="discover-refine__search"><Search size={16} aria-hidden="true"/><input type="search" value={tasteQuery} onChange={(event) => { setTasteQuery(event.target.value); setPickOffset(0) }} placeholder="Search titles" aria-label="Search titles to refine recommendations" /></label>
-              {tastePickCandidates.length < tastePickPool.length && pickedIds.length < 3 && <button className="discover-refine__more" type="button" onClick={() => setPickOffset((current) => current + 10)}><RefreshCw size={16} aria-hidden="true" /> <span>More choices</span></button>}
-              {pickedIds.length > 0 && <button className="discover-refine__reset" type="button" onClick={resetTastePicks}><RotateCcw size={16} aria-hidden="true" /> <span>Start over</span></button>}
-            </div>
-            <div className="discover-taste-picks">
-              {tastePickCandidates.map((item) => {
-                const id = mediaIdentity(item)
-                return <button key={id} type="button" className="discover-taste-pick" onClick={() => selectTastePick(item)} disabled={pickedIds.length >= 3} aria-label={`Choose ${item.title}`}>
-                  <span className="discover-taste-pick__poster">{item.poster && <img key={item.poster} className="discover-artwork-enter" src={item.poster} alt="" loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />}{item.rating != null && <span className="discover-taste-pick__rating">★ {Number(item.rating).toFixed(1)}</span>}</span>
-                  <span className="discover-taste-pick__title">{item.title}</span>
-                  <span className="discover-taste-pick__year">{item.year || (item.isAnime ? 'Anime' : item.type === 'series' ? 'Series' : 'Movie')}</span>
-                </button>
-              })}
-              {tastePickCandidates.length === 0 && <p className="discover-taste-picks__empty">No matching titles. Try another search.</p>}
-            </div>
-          </section></DiscoveryReveal>}
-          {viewState === 'content' && colorPreviewItems.length >= 3 && <DiscoveryReveal><section className="discover-colors row-contain" aria-labelledby="discover-colors-title">
-            <div className="discover-colors__heading"><div><p className="discover-section-eyebrow">Browse by poster colour</p><h2 id="discover-colors-title">Pick by Colour</h2></div><span>Popular titles, grouped by their artwork</span></div>
-            <div className="discover-colors__filters" role="group" aria-label="Poster colour">
-              <button type="button" className={selectedPosterColor === 'all' ? 'is-active' : ''} aria-pressed={selectedPosterColor === 'all'} onClick={() => setSelectedPosterColor('all')}>All</button>
-              {POSTER_COLOR_GROUPS.filter((group) => availablePosterColors.has(group.id)).map((group) => <button key={group.id} type="button" className={selectedPosterColor === group.id ? 'is-active' : ''} aria-pressed={selectedPosterColor === group.id} onClick={() => setSelectedPosterColor(group.id)}><span aria-hidden="true" style={{ backgroundColor: group.color }} />{group.label}</button>)}
-            </div>
-            <div className="discover-colors__row"><MediaRow title={colorCatalogTitle} items={colorPreviewItems} showAllItems={colorSelectionItems} layout="poster" disableCinematic showAllPath={`/catalog/${colorRowId}?title=${encodeURIComponent(colorCatalogTitle)}`} /></div>
-          </section></DiscoveryReveal>}
-          {viewState === 'content' && <DiscoveryReveal><section className="discover-time row-contain" aria-labelledby="discover-time-title">
-            <div className="discover-editorial-heading"><div><p className="discover-section-eyebrow">Picked to fit</p><h2 id="discover-time-title">How Much Time Tonight?</h2></div>
-              <div className="discover-editorial-tabs" role="group" aria-label="Choose a watch duration">
-                {DISCOVERY_RUNTIME_BUCKETS.map((bucket) => <button key={bucket.id} type="button" aria-pressed={selectedRuntimeBucket.id === bucket.id} onClick={() => setSelectedRuntimeBucketId(bucket.id)}>{bucket.label}</button>)}
-              </div>
-            </div>
-            {timeTonightItems.length > 0
-              ? <MediaRow title={selectedRuntimeBucket.label} items={timeTonightItems} showAllItems={timeTonightItems} layout="poster" disableCinematic showAllPath={`/catalog/discover-time-${tab}-${selectedRuntimeBucket.id}-${discoveryQueryKey}?title=${encodeURIComponent(selectedRuntimeBucket.label)}`} />
-              : <p className="discover-editorial-empty" role="status">{timeTonightLoading ? 'Finding popular titles for this time…' : 'No titles found for this time yet.'}</p>}
-          </section></DiscoveryReveal>}
           {viewState === 'content' && bigScreenItems.length >= 3 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--big-screen"><MediaRow headerEyebrow="Best in widescreen" title="Made for the Big Screen" items={bigScreenItems.slice(0, 10)} showAllItems={bigScreenItems} layout="feature" disableCinematic forceShowAll showAllPath={`/catalog/discover-big-screen-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Made for the Big Screen')}`} /></div></DiscoveryReveal>}
           {viewState === 'content' && hiddenGemItems.length >= 3 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--gems"><MediaRow headerEyebrow="Highly rated, waiting for you" title="Hidden Gems" items={hiddenGemItems.slice(0, 10)} showAllItems={hiddenGemsSection?.catalogItems?.map((entry) => entry.item) ?? hiddenGemItems} layout="poster" disableCinematic forceShowAll showAllPath={`/catalog/discover-hidden-gems-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Hidden Gems')}`} /></div></DiscoveryReveal>}
           {bingeRecommendations.length > 0 && <DiscoveryReveal><section className="discover-binge row-contain" aria-labelledby="discover-binge-title">
@@ -1838,6 +1814,63 @@ export default function DiscoverPage() {
               {selectedGenreId != null && genreSelectionItems.length === 0 && !genreLoading && <p className="discover-genre-picks__empty">No titles found for {genreMap[selectedGenreId] || 'this genre'} yet. Try another genre.</p>}
             </div>
           </section></DiscoveryReveal>
+          {viewState === 'content' && <DiscoveryReveal><section className="discover-time discover-weekend row-contain" aria-labelledby="discover-weekend-title">
+            <div className="discover-editorial-heading"><div><p className="discover-section-eyebrow">A {tab === 'movies' ? 'movie' : tab === 'anime' ? 'anime pick' : 'series'} for tonight</p><h2 id="discover-weekend-title">Your Weekend Plan</h2></div>
+              <div className="discover-editorial-tabs" role="group" aria-label="Choose a watch duration">
+                {DISCOVERY_RUNTIME_BUCKETS.map((bucket) => <button key={bucket.id} type="button" aria-pressed={selectedRuntimeBucket.id === bucket.id} onClick={() => setSelectedRuntimeBucketId(bucket.id)}>{bucket.label}</button>)}
+              </div>
+            </div>
+            {weekendPlanItem ? <article key={mediaIdentity(weekendPlanItem)} className="discover-weekend__feature" data-title={weekendPlanItem.title}>
+              <div className="discover-weekend__ambient" aria-hidden="true">{weekendPlanItem.backdrop && <img src={weekendPlanItem.backdrop} alt="" loading="lazy" decoding="async" />}</div>
+              <div className="discover-weekend__copy">
+                <div className="discover-weekend__top"><p>Tonight</p><span>{weekendPlanUsesRuntimeMatch ? `Usually ${formatWatchDuration(weekendPlanItem.runtime ?? tasteProfile.preferredRuntimeMinutes ?? (tab === 'movies' ? 105 : 45))}` : 'Popular right now'}</span></div>
+                <div className="discover-weekend__bottom">
+                  <h3>{weekendPlanItem.title}</h3>
+                  <p className="discover-weekend__meta">{[weekendPlanItem.year, weekendPlanItem.runtime ? formatWatchDuration(weekendPlanItem.runtime) : undefined, weekendPlanItem.genres?.[0], weekendPlanItem.rating != null ? `★ ${Number(weekendPlanItem.rating).toFixed(1)}` : undefined].filter(Boolean).join(' · ')}</p>
+                  {weekendPlanItem.overview && <p className="discover-weekend__overview">{weekendPlanItem.overview}</p>}
+                  <div className="discover-weekend__actions">
+                    <button type="button" className="discover-weekend__play" onClick={() => openItemDetail(weekendPlanItem, true)}>▶ <span>Play</span></button>
+                    <button type="button" className="discover-weekend__another" onClick={chooseAnotherWeekendPlan} disabled={weekendPlanCandidates.length < 2}><Shuffle size={15} aria-hidden="true"/><span>Another option</span></button>
+                  </div>
+                </div>
+              </div>
+              {(weekendPlanItem.poster || weekendPlanItem.backdrop) && <div className="discover-weekend__poster"><img src={weekendPlanItem.poster || weekendPlanItem.backdrop} alt={`${weekendPlanItem.title} poster`} loading="lazy" decoding="async" />{weekendPlanItem.rating != null && <span>★ {Number(weekendPlanItem.rating).toFixed(1)}</span>}</div>}
+            </article> : <p className="discover-editorial-empty" role="status">{timeTonightLoading ? 'Finding a popular pick for tonight…' : 'No titles found for this time yet.'}</p>}
+          </section></DiscoveryReveal>}
+          {tabRanked.length > 0 && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
+            <p className="discover-section-eyebrow">Refine your taste</p>
+            <div className="discover-refine__heading">
+              <h2 id="discover-refine-title">Pick Three You Like</h2>
+              <div className="discover-refine__progress" aria-label={`${pickedIds.length} of 3 titles selected`}>
+                {[0, 1, 2].map((index) => <span key={index} className={index < pickedIds.length ? 'is-complete' : ''} />)}
+                <span className="discover-refine__count">{pickedIds.length < 3 ? `${3 - pickedIds.length} more to go` : 'Taste tuned'}</span>
+              </div>
+            </div>
+            <div className="discover-refine__tools">
+              <label className="discover-refine__search"><Search size={16} aria-hidden="true"/><input type="search" value={tasteQuery} onChange={(event) => { setTasteQuery(event.target.value); setPickOffset(0) }} placeholder="Search titles" aria-label="Search titles to refine recommendations" /></label>
+              {tastePickCandidates.length < tastePickPool.length && pickedIds.length < 3 && <button className="discover-refine__more" type="button" onClick={() => setPickOffset((current) => current + 10)}><RefreshCw size={16} aria-hidden="true" /> <span>More choices</span></button>}
+              {pickedIds.length > 0 && <button className="discover-refine__reset" type="button" onClick={resetTastePicks}><RotateCcw size={16} aria-hidden="true" /> <span>Start over</span></button>}
+            </div>
+            <div className="discover-taste-picks">
+              {tastePickCandidates.map((item) => {
+                const id = mediaIdentity(item)
+                return <button key={id} type="button" className="discover-taste-pick" onClick={() => selectTastePick(item)} disabled={pickedIds.length >= 3} aria-label={`Choose ${item.title}`}>
+                  <span className="discover-taste-pick__poster">{item.poster && <img key={item.poster} className="discover-artwork-enter" src={item.poster} alt="" loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />}{item.rating != null && <span className="discover-taste-pick__rating">★ {Number(item.rating).toFixed(1)}</span>}</span>
+                  <span className="discover-taste-pick__title">{item.title}</span>
+                  <span className="discover-taste-pick__year">{item.year || (item.isAnime ? 'Anime' : item.type === 'series' ? 'Series' : 'Movie')}</span>
+                </button>
+              })}
+              {tastePickCandidates.length === 0 && <p className="discover-taste-picks__empty">No matching titles. Try another search.</p>}
+            </div>
+          </section></DiscoveryReveal>}
+          {viewState === 'content' && colorPreviewItems.length >= 3 && <DiscoveryReveal><section className="discover-colors row-contain" aria-labelledby="discover-colors-title">
+            <div className="discover-colors__heading"><div><p className="discover-section-eyebrow">Browse by poster colour</p><h2 id="discover-colors-title">Pick by Colour</h2></div><span>Popular titles, grouped by their artwork</span></div>
+            <div className="discover-colors__filters" role="group" aria-label="Poster colour">
+              <button type="button" className={selectedPosterColor === 'all' ? 'is-active' : ''} aria-pressed={selectedPosterColor === 'all'} onClick={() => setSelectedPosterColor('all')}>All</button>
+              {POSTER_COLOR_GROUPS.filter((group) => availablePosterColors.has(group.id)).map((group) => <button key={group.id} type="button" className={selectedPosterColor === group.id ? 'is-active' : ''} aria-pressed={selectedPosterColor === group.id} onClick={() => setSelectedPosterColor(group.id)}><span aria-hidden="true" style={{ backgroundColor: group.color }} />{group.label}</button>)}
+            </div>
+            <div className="discover-colors__row"><MediaRow title={colorCatalogTitle} items={colorPreviewItems} showAllItems={colorSelectionItems} layout="poster" disableCinematic showAllPath={`/catalog/${colorRowId}?title=${encodeURIComponent(colorCatalogTitle)}`} /></div>
+          </section></DiscoveryReveal>}
           {viewState === 'content' && <DiscoveryReveal><section className="discover-more row-contain" aria-labelledby="discover-more-title">
             <div className="discover-more__heading"><div><p className="discover-section-eyebrow">More popular picks</p><h2 id="discover-more-title">Keep Exploring</h2></div><span>{moreToDiscover.length ? `${moreToDiscover.length} titles loaded` : 'Fresh titles load as you scroll'}</span></div>
             {moreToDiscover.length > 0 && <div className="media-grid discover-more__grid">
