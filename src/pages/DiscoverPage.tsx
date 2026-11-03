@@ -14,7 +14,7 @@ import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
 import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, rankCandidates, reconcileTrendingSignals, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, orderSpotlightCandidates, rankCandidates, reconcileTrendingSignals, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
 import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktWatchedShows, getRatings as getTraktRatings } from '../services/trakt/sync'
@@ -1000,15 +1000,10 @@ export default function DiscoverPage() {
     false,
   )
   // Keep the editorial extra out of adjacent shelves so it reads as its own
-  // recommendation instead of a repeated catalog card.
+  // recommendation instead of a repeated catalog card. Live weekly trends
+  // lead, and alternatives follow the popularity-first fallback ordering.
   const spotlightCandidates = useMemo(() => {
-    const seen = new Set<string>()
-    return [...currentTrendingRanked, ...tabRanked].filter((entry) => {
-      const key = mediaIdentity(entry.item)
-      if (!entry.item.poster || seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
+    return orderSpotlightCandidates(currentTrendingRanked, tabRanked)
   }, [currentTrendingRanked, tabRanked])
   const heroRecommendation = spotlightCandidates.find((entry) => mediaIdentity(entry.item) === spotlightSelectionKey) ?? spotlightCandidates[0]
   // Lock the first available editorial pick for this Discovery scope. Catalog

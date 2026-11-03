@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SearchResult, WatchProgress } from '../../types'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, rankCandidates, reconcileTrendingSignals, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, orderSpotlightCandidates, rankCandidates, reconcileTrendingSignals, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
 import type { DiscoveryActivity, RecommendationCandidate, RecommendationFeedback } from './types'
 
 const sciFi: SearchResult = { id:'seed',title:'Seed',type:'movie',provider:'tmdb',tmdbId:1,genreIds:[878],year:2020,rating:8 }
@@ -235,6 +235,25 @@ describe('discovery recommendation engine', () => {
     const ranked = rankCandidates([ordinary, trending], buildTasteProfile(activity()), activity(), [], 'for-you')
 
     expect(ranked[0]?.item.tmdbId).toBe(114)
+  })
+  it('keeps live trends first and orders Spotlight alternatives by public popularity', () => {
+    const profile = buildTasteProfile(activity())
+    const popularFallback = candidate(715, { rating: 7.2, year: 2021 })
+    popularFallback.popularity = 180
+    const tasteMatch = candidate(716, { rating: 9.8, year: new Date().getFullYear() })
+    tasteMatch.popularity = 3
+    const currentTrend = candidate(717, { rating: 6.5, year: 2018 })
+    currentTrend.popularity = 4
+    currentTrend.source = 'tmdb-trending'
+    const fallbackRanked = rankCandidates([tasteMatch, popularFallback], profile, activity(), [], 'for-you')
+    const currentTrendRanked = rankCandidates([currentTrend], profile, activity(), [], 'for-you')
+    const tasteMatchRanked = fallbackRanked.find((entry) => entry.item.tmdbId === 716)!
+    const popularFallbackRanked = fallbackRanked.find((entry) => entry.item.tmdbId === 715)!
+    tasteMatchRanked.score.total = popularFallbackRanked.score.total + 50
+    const personalizedOrder = [tasteMatchRanked, popularFallbackRanked]
+
+    expect(personalizedOrder[0]?.item.tmdbId).toBe(716)
+    expect(orderSpotlightCandidates(currentTrendRanked, personalizedOrder).map((entry) => entry.item.tmdbId)).toEqual([717, 715, 716])
   })
   it('lets a verified weekly trend beat a stale low-momentum title in the default feed', () => {
     const archive = candidate(136, { year: new Date().getFullYear() - 12, rating: 8 })

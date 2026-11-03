@@ -194,6 +194,26 @@ export function sortRecommendationsByPopularity(ranked: RankedRecommendation[]):
 }
 
 /**
+ * Keep the editorial Spotlight current when today's weekly feed is available,
+ * then offer the most popular remaining recommendations as alternatives.
+ * This avoids letting an old daily snapshot's personal score dominate the
+ * carousel once the live trend entries have been exhausted.
+ */
+export function orderSpotlightCandidates(
+  currentTrends: RankedRecommendation[],
+  recommendations: RankedRecommendation[],
+): RankedRecommendation[] {
+  const seen = new Set<string>()
+  return [...sortRecommendationsByPopularity(currentTrends), ...sortRecommendationsByPopularity(recommendations)]
+    .filter((entry) => {
+      const key = mediaKey(entry.item)
+      if (!entry.item.poster || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+
+/**
  * A persisted daily snapshot can outlive the weekly feed that produced it.
  * Keep a title's trend boost only while the current feed still contains it;
  * rerank expired trend entries as ordinary discoveries using today's signals.
