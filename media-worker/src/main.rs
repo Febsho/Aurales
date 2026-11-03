@@ -1432,9 +1432,10 @@ async fn run_media_conversion(
                     &input_path,
                     &state.conversion_dir.join(format!("{id}.input-assets")),
                     mobile_compatibility,
+                    &upstream_status,
                 )
                 .await
-                .map_err(|_| ConversionFailure::SourceUnavailable)?
+                .map_err(|_| source_fetch_failure(upstream_status.load(Ordering::Relaxed)))?
             } else {
                 download_allowlisted_media(
                     &state,
@@ -5245,6 +5246,7 @@ async fn materialize_dash_track(
     credential_origin: &url::Origin,
     request_headers: &HashMap<String, String>,
     already_downloaded: u64,
+    upstream_status: Option<&AtomicU16>,
 ) -> Result<(Option<String>, Vec<String>, u64), ()> {
     tokio::fs::create_dir_all(asset_dir).await.map_err(|_| ())?;
     let mut downloaded_bytes = 0u64;
@@ -5284,7 +5286,7 @@ async fn materialize_dash_track(
                 expected,
                 false,
                 Some((start, end)),
-                None,
+                upstream_status,
             )
             .await?
         } else {
@@ -5296,7 +5298,7 @@ async fn materialize_dash_track(
                 &temporary_path,
                 remaining,
                 false,
-                None,
+                upstream_status,
             )
             .await?
         };
@@ -5338,6 +5340,7 @@ async fn download_dash_conversion_input(
     output_path: &PathBuf,
     assets_dir: &PathBuf,
     mobile_compatibility: bool,
+    upstream_status: &AtomicU16,
 ) -> Result<bool, ()> {
     tokio::fs::create_dir(assets_dir).await.map_err(|_| ())?;
     let credential_origin = initial_url.origin();
@@ -5350,7 +5353,7 @@ async fn download_dash_conversion_input(
         &source_mpd_path,
         MAX_HLS_MANIFEST_BYTES as u64,
         true,
-        None,
+        Some(upstream_status),
     )
     .await?;
     if !is_dash_manifest(&manifest_url, Some(&content_type)) {
@@ -5382,6 +5385,7 @@ async fn download_dash_conversion_input(
             &credential_origin,
             request_headers,
             downloaded_bytes,
+            Some(upstream_status),
         )
         .await?;
         downloaded_bytes = downloaded_bytes.saturating_add(video_bytes);
@@ -5419,6 +5423,7 @@ async fn download_dash_conversion_input(
                     &credential_origin,
                     request_headers,
                     downloaded_bytes.saturating_add(audio_downloaded_bytes),
+                    None,
                 )
                 .await;
                 let Ok((initialization_name, segment_names, bytes)) = result else {
@@ -5503,6 +5508,7 @@ async fn download_dash_conversion_input(
                     &credential_origin,
                     request_headers,
                     downloaded_bytes.saturating_add(subtitle_downloaded_bytes),
+                    None,
                 )
                 .await;
                 let Ok((initialization_name, segment_names, subtitle_bytes)) = result else {
