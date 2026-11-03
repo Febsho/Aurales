@@ -1196,6 +1196,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(reducedMotionStyle.animation).toBe('none')
   expect(reducedMotionStyle.artworkAnimation).toBe('none')
   expect(parseFloat(reducedMotionStyle.transitionDuration)).toBeLessThanOrEqual(.00001)
+  await expect(trendingShelf.locator('.media-row-card-slot').last()).toHaveCSS('animation-delay', '0s')
   await page.emulateMedia({ reducedMotion: 'no-preference' })
 
   const moreToDiscover = page.getByRole('heading', { name: 'Keep Exploring', exact: true })
@@ -1216,6 +1217,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect.poll(() => firstContinuedCard.evaluate((card) => getComputedStyle(card).animationName)).toBe('discover-more-card-arrive')
   const continuedGridStagger = await continuedGrid.locator(':scope > button').evaluateAll((cards) => cards.slice(0, 10).map((card) => getComputedStyle(card).animationDelay))
   expect(continuedGridStagger).toEqual(['0s', '0.032s', '0.064s', '0.096s', '0.128s', '0.16s', '0.192s', '0.224s', '0.256s', '0.288s'])
+  const continuedBatchStagger = await continuedGrid.locator(':scope > button').evaluateAll((cards) => cards.slice(10, 12).map((card) => getComputedStyle(card).animationDelay))
+  expect(continuedBatchStagger).toEqual(['0s', '0.032s'])
   await expect(continuedGrid.getByRole('button').first()).toHaveAccessibleName('More discovery fixture 1 More discovery fixture 1 2026')
   const continuedArtworkTitles = await continuedGrid.locator('img.media-card-artwork').evaluateAll((images) => images.map((image) => image.getAttribute('alt') || ''))
   expect(continuedArtworkTitles.slice(0, 5)).toEqual(Array.from({ length: 5 }, (_, index) => `More discovery fixture ${index + 1}`))

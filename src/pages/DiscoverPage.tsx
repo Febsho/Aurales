@@ -1588,7 +1588,7 @@ export default function DiscoverPage() {
           {viewState === 'content' && <DiscoveryReveal><section className="discover-more row-contain" aria-labelledby="discover-more-title">
             <div className="discover-more__heading"><div><p className="discover-section-eyebrow">More popular picks</p><h2 id="discover-more-title">Keep Exploring</h2></div><span>{moreToDiscover.length ? `${moreToDiscover.length} titles loaded` : 'Fresh titles load as you scroll'}</span></div>
             {moreToDiscover.length > 0 && <div className="media-grid discover-more__grid">
-              {moreToDiscover.map((item) => <MediaCard key={mediaIdentity(item)} item={item} layout="poster" disableTrailerPreview />)}
+              {moreToDiscover.map((item, index) => <MediaCard key={mediaIdentity(item)} item={item} layout="poster" disableTrailerPreview style={{ '--discover-card-delay': `${(index % 10) * 32}ms` } as import('react').CSSProperties} />)}
             </div>}
             <div ref={moreToDiscoverSentinelRef} className="discover-more__sentinel" aria-live="polite" role="status">
               {moreToDiscoverStatus === 'loading' && <><span className="discover-more__spinner" aria-hidden="true" />Loading more popular titles…</>}

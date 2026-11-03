@@ -390,7 +390,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
           const focused = focusedCardIndex === idx || (fixedHome && focusedCardIndex == null && idx === 0)
           return (
             <React.Fragment key={mediaIdentity(item)}>
-              <div className="media-row-card-slot relative flex-none">
+              <div className="media-row-card-slot relative flex-none" style={{ '--discover-card-delay': `${(idx % 10) * 32}ms` } as React.CSSProperties}>
               <MediaCard
                 item={item}
                 layout={specialLayout ? effectiveLayout as 'ranked' | 'feature' : (cinematic && !fixedHome) || effectiveLayout === 'landscape' ? 'landscape' : 'poster'}

@@ -6270,29 +6270,8 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 @keyframes discover-spotlight-poster-enter { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
 .discover-reveal { opacity: 0; transform: translateY(12px); transition: opacity .42s ease, transform .42s cubic-bezier(.2,.75,.25,1); }
 .discover-reveal[data-revealed="true"], .discover-reveal.is-visible { opacity: 1; transform: translateY(0); }
-.discover-reveal[data-revealed="true"] .media-row-card-slot { animation: discover-card-arrive .38s cubic-bezier(.2,.75,.25,1) both; }
-.discover-reveal[data-revealed="true"] .media-row-card-slot:nth-child(1) { animation-delay: 0ms; }
-.discover-reveal[data-revealed="true"] .media-row-card-slot:nth-child(2) { animation-delay: 32ms; }
-.discover-reveal[data-revealed="true"] .media-row-card-slot:nth-child(3) { animation-delay: 64ms; }
-.discover-reveal[data-revealed="true"] .media-row-card-slot:nth-child(4) { animation-delay: 96ms; }
-.discover-reveal[data-revealed="true"] .media-row-card-slot:nth-child(5) { animation-delay: 128ms; }
-.discover-reveal[data-revealed="true"] .media-row-card-slot:nth-child(6) { animation-delay: 160ms; }
-.discover-reveal[data-revealed="true"] .media-row-card-slot:nth-child(7) { animation-delay: 192ms; }
-.discover-reveal[data-revealed="true"] .media-row-card-slot:nth-child(8) { animation-delay: 224ms; }
-.discover-reveal[data-revealed="true"] .media-row-card-slot:nth-child(9) { animation-delay: 256ms; }
-.discover-reveal[data-revealed="true"] .media-row-card-slot:nth-child(10) { animation-delay: 288ms; }
-.discover-reveal[data-revealed="true"] .media-row-card-slot:nth-child(n+11) { animation-delay: 320ms; }
-.discover-reveal[data-revealed="true"] .discover-more__grid > button { animation: discover-more-card-arrive .38s cubic-bezier(.2,.75,.25,1) backwards; }
-.discover-reveal[data-revealed="true"] .discover-more__grid > button:nth-child(2) { animation-delay: 32ms; }
-.discover-reveal[data-revealed="true"] .discover-more__grid > button:nth-child(3) { animation-delay: 64ms; }
-.discover-reveal[data-revealed="true"] .discover-more__grid > button:nth-child(4) { animation-delay: 96ms; }
-.discover-reveal[data-revealed="true"] .discover-more__grid > button:nth-child(5) { animation-delay: 128ms; }
-.discover-reveal[data-revealed="true"] .discover-more__grid > button:nth-child(6) { animation-delay: 160ms; }
-.discover-reveal[data-revealed="true"] .discover-more__grid > button:nth-child(7) { animation-delay: 192ms; }
-.discover-reveal[data-revealed="true"] .discover-more__grid > button:nth-child(8) { animation-delay: 224ms; }
-.discover-reveal[data-revealed="true"] .discover-more__grid > button:nth-child(9) { animation-delay: 256ms; }
-.discover-reveal[data-revealed="true"] .discover-more__grid > button:nth-child(10) { animation-delay: 288ms; }
-.discover-reveal[data-revealed="true"] .discover-more__grid > button:nth-child(n+11) { animation-delay: 320ms; }
+.discover-reveal[data-revealed="true"] .media-row-card-slot { animation: discover-card-arrive .38s cubic-bezier(.2,.75,.25,1) both; animation-delay: var(--discover-card-delay, 0ms); }
+.discover-reveal[data-revealed="true"] .discover-more__grid > button { animation: discover-more-card-arrive .38s cubic-bezier(.2,.75,.25,1) backwards; animation-delay: var(--discover-card-delay, 0ms); }
 @keyframes discover-card-arrive { from { opacity: .35; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes discover-more-card-arrive { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 .discover-spotlight__copy { position: relative; z-index: 2; display: flex; min-width: 0; max-width: 56rem; align-self: stretch; flex-direction: column; padding-block: .35rem; }
@@ -6394,6 +6373,8 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 
 @media (prefers-reduced-motion: reduce) {
   .discover-spotlight, .discover-spotlight__copy, .discover-spotlight__poster, .discover-spotlight__ambient img, .discover-picker-backdrop, .discover-picker { animation: none !important; }
+  .discover-reveal[data-revealed="true"] .media-row-card-slot,
+  .discover-reveal[data-revealed="true"] .discover-more__grid > button { animation-delay: 0ms !important; }
   .discover-reveal { opacity: 1; transform: none; transition: none; }
   .discover-page * { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }

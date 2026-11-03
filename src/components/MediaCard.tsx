@@ -109,9 +109,11 @@ interface MediaCardProps {
   cinematicExpand?: boolean
   /** Fit special layouts into the fixed-home shelf rather than the page flow. */
   fixedHome?: boolean
+  /** Optional entrance delay used by Discovery's staggered editorial grids. */
+  style?: React.CSSProperties
 }
 
-function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = false, disableTrailerPreview = false, rank, onFocusItem, onUnfocusItem, cinematicMode = false, cinematicFocused = false, cinematicExpand = true, fixedHome = false }: MediaCardProps) {
+function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = false, disableTrailerPreview = false, rank, onFocusItem, onUnfocusItem, cinematicMode = false, cinematicFocused = false, cinematicExpand = true, fixedHome = false, style }: MediaCardProps) {
   const cardRef = useRef<HTMLButtonElement>(null)
   const hoverTimerRef = useRef<number | null>(null)
   const closeTimerRef = useRef<number | null>(null)
@@ -1203,7 +1205,7 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
       data-fixed-focused={(fixedHome && cinematicFocused) || undefined}
       data-mouse-follow={mouseFollowEnabled || undefined}
       className={`relative flex-shrink-0 overflow-visible group cursor-pointer focus-ring transition-[width,transform,opacity] duration-[var(--duration-card)] ease-expo ${cardWidthClass} ${cardSlotHeightClass}`}
-      style={rankedStyle}
+      style={style ? { ...rankedStyle, ...style } : rankedStyle}
     >
       {/* The numeral occupies exactly the gutter the poster is offset by, and is
           right-aligned with tabular figures inside it. Previously it was a
