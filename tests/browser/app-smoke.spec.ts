@@ -553,7 +553,10 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.getByRole('heading', { name: /^Because You / })).toHaveCount(0)
   const calendar = page.locator('.discover-calendar')
   await expect(calendar.getByRole('heading', { name: 'Calendar', exact: true })).toBeVisible()
-  const calendarTop = (await calendar.boundingBox())!.y
+  const calendarTop = await calendar.evaluate((element) => {
+    const root = document.querySelector<HTMLElement>('.app-scroll-root')
+    return element.getBoundingClientRect().top - (root?.getBoundingClientRect().top ?? 0) + (root?.scrollTop ?? window.scrollY)
+  })
   if (await calendar.locator('.discover-calendar__item').count() > 0) {
     await expect(calendar.getByRole('button', { name: 'Today' })).toHaveAttribute('aria-pressed', 'false')
     await expect(calendar.getByRole('button', { name: 'Next 30 days' })).toHaveAttribute('aria-pressed', 'true')
@@ -567,14 +570,18 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const obsessionLayout = await heroSpotlight.evaluate((card) => {
     const poster = card.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
     const title = card.querySelector<HTMLElement>('.discover-spotlight__bottom > .discover-spotlight__logo, .discover-spotlight__bottom > h2')!.getBoundingClientRect()
-    return { viewport: document.documentElement.clientWidth, card: card.getBoundingClientRect().toJSON(), poster: poster.toJSON(), title: title.toJSON() }
+    const copy = card.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
+    return { viewport: document.documentElement.clientWidth, card: card.getBoundingClientRect().toJSON(), poster: poster.toJSON(), title: title.toJSON(), copy: copy.toJSON() }
   })
   expect(obsessionLayout.card.left, 'the editorial pick should align with the mobile page gutter').toBeGreaterThanOrEqual(12)
   expect(obsessionLayout.poster.width, 'the editorial poster should remain visible in the mobile spotlight').toBeGreaterThanOrEqual(84)
   expect(obsessionLayout.poster.width).toBeLessThanOrEqual(124)
-  expect(obsessionLayout.poster.left).toBeGreaterThanOrEqual(obsessionLayout.card.left + 8)
-  expect(obsessionLayout.poster.right).toBeLessThan(obsessionLayout.title.left)
+  expect(obsessionLayout.poster.left).toBeGreaterThan(obsessionLayout.copy.right)
+  expect(obsessionLayout.title.left).toBeGreaterThanOrEqual(obsessionLayout.card.left + 8)
   expect(obsessionLayout.title.right).toBeLessThanOrEqual(obsessionLayout.card.right - 8)
+  expect(obsessionLayout.card.height, 'the mobile editorial spotlight should fit its Tonight copy without a large blank lower half').toBeLessThanOrEqual(360)
+  await expect(heroSpotlight.getByText('Tonight', { exact: true })).toBeVisible()
+  await expect(heroSpotlight.getByRole('button', { name: /Another option/ })).toBeEnabled()
   const editorialPoster = heroSpotlight.locator('.discover-spotlight__poster img')
   await expect(editorialPoster).toHaveAttribute('data-artwork-loaded', 'true')
   await expect(editorialPoster).toHaveCSS('opacity', '1')
@@ -583,31 +590,35 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(heroBackdrop).toHaveCSS('opacity', '1')
   await expect(page.getByRole('heading', { name: 'OR TRY', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Top 10 For You', exact: true })).toBeVisible()
-  const tonightCard = page.locator('.discover-tonight')
-  await expect(tonightCard).toBeVisible()
-  await expect(tonightCard.getByRole('heading', { name: 'Tonight', exact: true })).toBeVisible()
-  await expect(tonightCard.getByRole('button', { name: /Another option/ })).toBeEnabled()
-  expect(await tonightCard.getAttribute('data-active-title')).not.toBe(await obsessionCard.getAttribute('data-title'))
+  await expect(page.locator('.discover-tonight')).toHaveCount(0)
   const discoverySurfaceOrder = await page.evaluate(() => {
     const topTen = [...document.querySelectorAll<HTMLElement>('.discover-shelf h2')].find((heading) => heading.textContent?.trim() === 'Top 10 For You')
-    const tonight = document.querySelector<HTMLElement>('.discover-tonight')
+    const calendar = document.querySelector<HTMLElement>('.discover-calendar')
+    const obsession = document.querySelector<HTMLElement>('.discover-next-hero')
     const refine = document.querySelector<HTMLElement>('.discover-refine')
-    return Boolean(topTen && tonight && refine && topTen.compareDocumentPosition(tonight) & Node.DOCUMENT_POSITION_FOLLOWING && tonight.compareDocumentPosition(refine) & Node.DOCUMENT_POSITION_FOLLOWING)
+    return Boolean(calendar && obsession && topTen && refine
+      && calendar.compareDocumentPosition(obsession) & Node.DOCUMENT_POSITION_FOLLOWING
+      && obsession.compareDocumentPosition(topTen) & Node.DOCUMENT_POSITION_FOLLOWING
+      && topTen.compareDocumentPosition(refine) & Node.DOCUMENT_POSITION_FOLLOWING)
   })
-  expect(discoverySurfaceOrder, 'Tonight stays between public catalog shelves and taste refinement').toBe(true)
+  expect(discoverySurfaceOrder, 'the Tonight spotlight stays between Calendar and public catalogs, ahead of taste refinement').toBe(true)
   const mobileDiscoveryLayout = await page.evaluate(() => {
     const rect = (selector: string) => {
       const element = document.querySelector<HTMLElement>(selector)
       if (!element) return null
-      const { y, height } = element.getBoundingClientRect()
-      return { y, height }
+      const bounds = element.getBoundingClientRect()
+      const root = document.querySelector<HTMLElement>('.app-scroll-root')
+      const y = bounds.top - (root?.getBoundingClientRect().top ?? 0) + (root?.scrollTop ?? window.scrollY)
+      return { y, height: bounds.height }
     }
     const headingRect = (label: string) => {
       const element = [...document.querySelectorAll<HTMLElement>('.discover-shelf h2')]
         .find((heading) => heading.textContent?.trim() === label)
       if (!element) return null
-      const { y, height } = element.getBoundingClientRect()
-      return { y, height }
+      const bounds = element.getBoundingClientRect()
+      const root = document.querySelector<HTMLElement>('.app-scroll-root')
+      const y = bounds.top - (root?.getBoundingClientRect().top ?? 0) + (root?.scrollTop ?? window.scrollY)
+      return { y, height: bounds.height }
     }
     return {
       profileWelcomeHeading: rect('.discover-page__heading h1'),
@@ -638,24 +649,17 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(promotedTrendTitles.length, 'Top 10 should include fresh weekly trends while keeping the editorial Spotlight separate').toBeGreaterThan(0)
   const mobileSpotlight = page.locator('.discover-next-hero')
   const mobileSpotlightTitle = await mobileSpotlight.getAttribute('data-title')
-  const tonightBeforeSpotlightChange = await tonightCard.getAttribute('data-active-title')
-  await page.locator('.discover-spotlight-heading').getByRole('button', { name: 'More spotlight options' }).click()
-  await page.getByRole('menuitem', { name: 'Another option' }).click()
+  await mobileSpotlight.getByRole('button', { name: /Another option/ }).click()
   await expect.poll(() => mobileSpotlight.getAttribute('data-title')).not.toBe(mobileSpotlightTitle)
-  await expect(tonightCard).toHaveAttribute('data-active-title', tonightBeforeSpotlightChange!)
   const mobileSpotlightMotion = await mobileSpotlight.evaluate((hero) => {
     const movingSurfaces = [
-      hero.querySelector<HTMLElement>('.discover-spotlight__bottom > .discover-spotlight__meta'),
-      hero.querySelector<HTMLElement>('.discover-spotlight__bottom > h2, .discover-spotlight__bottom > .discover-spotlight__logo'),
+      hero.querySelector<HTMLElement>('.discover-spotlight__copy'),
       hero.querySelector<HTMLElement>('.discover-spotlight__poster'),
     ]
     return movingSurfaces.map((surface) => Boolean(surface?.getAnimations().length))
   })
-  expect(mobileSpotlightMotion, 'mobile editorial changes should animate real grid items even though copy wrappers use display: contents').toEqual([true, true, true])
-  const tonightTitle = await tonightCard.getAttribute('data-active-title')
-  await tonightCard.getByRole('button', { name: /Another option/ }).click()
-  await expect.poll(() => tonightCard.getAttribute('data-active-title')).not.toBe(tonightTitle)
-  await expect(tonightCard.locator('.discover-tonight__ambient')).toHaveCSS('animation-name', 'discover-tonight-backdrop-enter')
+  expect(mobileSpotlightMotion, 'the independent editorial Tonight pick and its poster should animate together').toEqual([true, true])
+  await expect(mobileSpotlight.locator('.discover-spotlight__ambient img')).toHaveCSS('animation-name', 'discover-art-enter')
   await page.getByRole('button', { name: 'Not for me' }).click()
   await expect(page.locator('.discover-picker')).toHaveCount(0)
   const discoverySettings = page.getByRole('button', { name: 'Discovery settings' })
@@ -858,7 +862,6 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(surpriseButton).toBeEnabled()
   const startingTitle = await obsessionCard.getAttribute('data-title')
   const startingHeroTitle = await heroSpotlight.getAttribute('data-title')
-  const startingTonightTitle = await tonightCard.getAttribute('data-active-title')
   await page.evaluate(() => {
     const target = window as Window & { __auralesOriginalRandom?: () => number }
     target.__auralesOriginalRandom = Math.random
@@ -888,7 +891,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(surpriseButton).toHaveAttribute('aria-busy', 'false', { timeout: 5000 })
   await expect(pickerDialog.getByRole('button', { name: 'Open', exact: true })).toBeVisible()
   await expect(pickerDialog.getByRole('button', { name: 'Spin again', exact: true })).toBeVisible()
-  await expect(tonightCard).toHaveAttribute('data-active-title', startingTonightTitle!)
+  await expect(heroSpotlight).toHaveAttribute('data-title', startingHeroTitle!)
   expect(await pickerPosterFrame?.evaluate((poster) => poster.isConnected), 'roulette frames should keep the poster surface mounted').toBe(true)
   expect(await pickerPosterImage?.evaluate((image) => image.isConnected), 'roulette frames should update one poster image instead of stacking transitions').toBe(true)
   await expect(pickerDialog.locator('.discover-picker__poster > img')).toHaveCount(1)
@@ -1034,14 +1037,15 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         actionsTop: hero.querySelector<HTMLElement>('.discover-spotlight__actions')?.getBoundingClientRect().top ?? 0,
       } : null,
       posterVisible: Boolean(poster && poster.getBoundingClientRect().width > 0),
-      posterLeftAligned: Boolean(poster && hero && poster.getBoundingClientRect().left >= hero.getBoundingClientRect().left + 8 && poster.getBoundingClientRect().right < hero.getBoundingClientRect().left + hero.getBoundingClientRect().width * .5),
+      posterRightAligned: Boolean(poster && hero && poster.getBoundingClientRect().left > hero.getBoundingClientRect().left + hero.getBoundingClientRect().width * .5 && poster.getBoundingClientRect().right <= hero.getBoundingClientRect().right - 8),
       actionsFit: Boolean(hero && copy && heroActions.length >= 2 && heroActions.filter((button) => getComputedStyle(button).display !== 'none').every((button) => {
         const bounds = button.getBoundingClientRect()
         return bounds.left >= hero.getBoundingClientRect().left - 1 && bounds.right <= hero.getBoundingClientRect().right + 1 && bounds.bottom <= hero.getBoundingClientRect().bottom + 1
       })),
-      actionsOnOneLine: (() => {
+      actionsStayInRows: (() => {
         const visible = heroActions.filter((button) => getComputedStyle(button).display !== 'none')
-        return visible.length >= 2 && visible.every((button) => Math.abs(button.getBoundingClientRect().top - visible[0]!.getBoundingClientRect().top) <= 2)
+        const change = hero?.querySelector<HTMLElement>('.discover-spotlight__change')
+        return visible.length >= 3 && Boolean(change && visible.every((button) => Math.abs(button.getBoundingClientRect().top - visible[0]!.getBoundingClientRect().top) <= 2 || button === change && button.getBoundingClientRect().top > visible[0]!.getBoundingClientRect().top))
       })(),
     }
   })
@@ -1066,9 +1070,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(discoveryLayout!.hero.overview?.right).toBeLessThanOrEqual(discoveryLayout!.viewport)
     expect(discoveryLayout!.hero.actionsTop).toBeGreaterThanOrEqual(discoveryLayout!.hero.overview!.bottom - 1)
     expect(discoveryLayout!.posterVisible).toBe(true)
-    expect(discoveryLayout!.posterLeftAligned).toBe(true)
+    expect(discoveryLayout!.posterRightAligned).toBe(true)
     expect(discoveryLayout!.actionsFit).toBe(true)
-    expect(discoveryLayout!.actionsOnOneLine).toBe(true)
+    expect(discoveryLayout!.actionsStayInRows).toBe(true)
   }
 
   await page.setViewportSize({ width: 1440, height: 900 })
@@ -1115,13 +1119,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       const hero = document.querySelector<HTMLElement>('.discover-next-hero')!
       const copy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
       const poster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
-      const tonight = page.querySelector<HTMLElement>('.discover-tonight')!
-      const tonightCopy = tonight.querySelector<HTMLElement>('.discover-tonight__copy')!.getBoundingClientRect()
-      const tonightIntro = tonight.querySelector<HTMLElement>('.discover-tonight__intro')!.getBoundingClientRect()
-      const tonightPoster = tonight.querySelector<HTMLElement>('.discover-tonight__poster')!.getBoundingClientRect()
       const binge = page.querySelector<HTMLElement>('.discover-binge__feature')
       const contentSections = Array.from(page.querySelectorAll<HTMLElement>(
-        '.discover-next-hero, .discover-shelf, .discover-tonight, .discover-refine, .discover-genres, .discover-binge, .discover-time, .discover-more',
+        '.discover-next-hero, .discover-shelf, .discover-refine, .discover-genres, .discover-binge, .discover-time, .discover-more',
       )).map((section) => section.getBoundingClientRect())
       const time = page.querySelector<HTMLElement>('.discover-time')?.getBoundingClientRect()
       return {
@@ -1130,9 +1130,6 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         page: page.getBoundingClientRect().toJSON(),
         headingFontSize: Number.parseFloat(getComputedStyle(page.querySelector<HTMLElement>('.discover-page__heading h1')!).fontSize),
         heroHeight: hero.getBoundingClientRect().height,
-        tonightHeight: tonight.getBoundingClientRect().height,
-        tonightColumnsSeparated: tonightCopy.right <= tonightPoster.left + 1 && tonightIntro.right <= tonightPoster.left + 1,
-        tonightPosterInside: tonightPoster.left >= tonight.getBoundingClientRect().left && tonightPoster.right <= tonight.getBoundingClientRect().right,
         timeWidth: time?.width ?? 0,
         timeLeft: time?.left ?? 0,
         timeRight: time?.right ?? 0,
@@ -1154,9 +1151,6 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopBounds.headingFontSize, `Discovery heading should stay within its desktop type scale at ${width}px`).toBeLessThanOrEqual(44)
     expect(desktopBounds.heroHeight, `Discovery spotlight should retain its desktop composition at ${width}px`).toBeGreaterThanOrEqual(300)
     expect(desktopBounds.heroHeight, `Discovery spotlight should not dominate the desktop page at ${width}px`).toBeLessThanOrEqual(500)
-    expect(desktopBounds.tonightHeight, `Tonight should retain its editorial card layout at ${width}px`).toBeGreaterThanOrEqual(260)
-    expect(desktopBounds.tonightColumnsSeparated, `Tonight copy should not overlap its poster at ${width}px`).toBe(true)
-    expect(desktopBounds.tonightPosterInside, `Tonight poster should stay inside its card at ${width}px`).toBe(true)
     expect(desktopBounds.maxPosterCardRatio, `Discovery poster cards should follow their artwork height at ${width}px`).toBeLessThanOrEqual(2.4)
     if (width >= 900 && desktopBounds.bingeColumns > 0) expect(desktopBounds.bingeColumns, `binge feature should use a horizontal desktop composition at ${width}px`).toBe(2)
   }
@@ -1220,8 +1214,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect.poll(() => desktopTopTenRail.evaluate((rail) => rail.scrollLeft)).toBeLessThanOrEqual(desktopBeforeRight.left + 1)
   await page.setViewportSize({ width: 1440, height: 900 })
   const spotlightNode = await page.locator('.discover-next-hero').elementHandle()
-  await page.locator('.discover-spotlight-heading').getByRole('button', { name: 'More spotlight options' }).click()
-  const alternateSpotlightItem = page.getByRole('menuitem', { name: 'Another option' })
+  const alternateSpotlightItem = page.locator('.discover-next-hero').getByRole('button', { name: /Another option/ })
   if (await alternateSpotlightItem.isEnabled()) {
     const spotlightBeforeAlternate = await page.locator('.discover-next-hero').getAttribute('data-title')
     await alternateSpotlightItem.click()

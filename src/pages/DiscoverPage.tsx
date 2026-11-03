@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { Info, MoreHorizontal, RefreshCw, RotateCcw, Search, Settings, Shuffle, ThumbsDown, X } from 'lucide-react'
+import { Info, RefreshCw, RotateCcw, Search, Settings, Shuffle, ThumbsDown, X } from 'lucide-react'
 import type { DiscoverConfig, SearchResult, WatchProgress } from '../types'
 import { discoverTmdbPageWithCache, discoverTmdbWithCache, getTmdbPerson, getTrendingTmdb, tmdbProvider } from '../services/tmdb'
 import MediaRow from '../components/MediaRow'
@@ -472,12 +471,6 @@ export default function DiscoverPage() {
   const [posterColorSamples, setPosterColorSamples] = useState<Array<{ item: SearchResult; color: PosterColorGroup }>>([])
   const [tasteQuery, setTasteQuery] = useState('')
   const [bingeIndex, setBingeIndex] = useState(0)
-  const [spotlightMenuOpen, setSpotlightMenuOpen] = useState(false)
-  const [tonightSelectionKey, setTonightSelectionKey] = useState<string | null>(null)
-  const spotlightMenuRef = useRef<HTMLDivElement>(null)
-  const spotlightMenuPopupRef = useRef<HTMLDivElement>(null)
-  const spotlightMenuButtonRef = useRef<HTMLButtonElement>(null)
-  const [spotlightMenuPosition, setSpotlightMenuPosition] = useState<{ top: number; left: number } | null>(null)
   const [moreToDiscover, setMoreToDiscover] = useState<SearchResult[]>([])
   const [moreToDiscoverStatus, setMoreToDiscoverStatus] = useState<'idle' | 'loading' | 'error' | 'done'>('idle')
   const moreToDiscoverSentinelRef = useRef<HTMLDivElement>(null)
@@ -1000,34 +993,10 @@ export default function DiscoverPage() {
   const heroItem = heroRecommendation?.item
   const heroMediaKey = heroItem ? mediaIdentity(heroItem) : null
   useEffect(() => {
-    if (!spotlightMenuOpen) return
-    const closeOnPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node
-      if (!spotlightMenuRef.current?.contains(target) && !spotlightMenuPopupRef.current?.contains(target)) setSpotlightMenuOpen(false)
-    }
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      setSpotlightMenuOpen(false)
-      spotlightMenuButtonRef.current?.focus()
-    }
-    document.addEventListener('pointerdown', closeOnPointerDown)
-    document.addEventListener('keydown', closeOnEscape)
-    return () => {
-      document.removeEventListener('pointerdown', closeOnPointerDown)
-      document.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [spotlightMenuOpen])
-  useEffect(() => {
     const previousKey = previousSpotlightKeyRef.current
     previousSpotlightKeyRef.current = heroMediaKey
     if (!previousKey || !heroMediaKey || previousKey === heroMediaKey || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-    // On phones the copy wrappers use `display: contents` so their children
-    // can share the two-column grid with the poster. Animate the visible grid
-    // items themselves there; desktop keeps the single coordinated copy move.
-    const surfaceSelector = window.matchMedia('(max-width: 700px)').matches
-      ? '.discover-spotlight__bottom > *, .discover-spotlight__poster'
-      : '.discover-spotlight__copy, .discover-spotlight__poster'
-    const surfaces = spotlightTransitionRef.current?.querySelectorAll<HTMLElement>(surfaceSelector)
+    const surfaces = spotlightTransitionRef.current?.querySelectorAll<HTMLElement>('.discover-spotlight__copy, .discover-spotlight__poster')
     if (!surfaces?.length) return
     const animations = Array.from(surfaces, (surface, index) => surface.animate([
       { opacity: .58, transform: 'translateY(6px) scale(.99)' },
@@ -1362,20 +1331,6 @@ export default function DiscoverPage() {
       return true
     })
   }, [currentTrendingRanked, heroMediaKey, ranked])
-  // Tonight keeps its own stable candidate list and selection. It does not
-  // read the Surprise Me pool, whose membership intentionally changes with
-  // the editorial Spotlight selection.
-  const tonightCandidates = useMemo(() => {
-    const seen = new Set<string>()
-    return [...currentTrendingRanked, ...ranked].filter((entry) => {
-      const key = mediaIdentity(entry.item)
-      if (!entry.item.poster || seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
-  }, [currentTrendingRanked, ranked])
-  const firstTonightCandidate = tonightCandidates.find((entry) => mediaIdentity(entry.item) !== heroMediaKey) ?? tonightCandidates[0]
-  const tonightRecommendation = tonightCandidates.find((entry) => mediaIdentity(entry.item) === tonightSelectionKey) ?? firstTonightCandidate
   const pickerRecommendation = (pickerSelectionKey ? pickerPool.find((entry) => mediaIdentity(entry.item) === pickerSelectionKey) : undefined) || pickerPool[0]
   const pickerItem = pickerRecommendation?.item
   const pickerFrameId = pickerItem ? mediaIdentity(pickerItem) : null
@@ -1401,12 +1356,8 @@ export default function DiscoverPage() {
       .map((entry) => entry.item)
   }, [ranked, pickedIds, tasteQuery])
   const tastePickCandidates = useMemo(() => tastePickPool.slice(0, 10 + pickOffset), [tastePickPool, pickOffset])
-  useEffect(() => { setPickerSelectionKey(null); setTonightSelectionKey(null); setPickerLogoError(false); setHeroLogoError(false) }, [tab, mode, discoveryQueryKey])
+  useEffect(() => { setPickerSelectionKey(null); setPickerLogoError(false); setHeroLogoError(false) }, [tab, mode, discoveryQueryKey])
   useEffect(() => { setSpotlightSelectionKey(null) }, [tab, mode, discoveryQueryKey])
-  useEffect(() => {
-    if (tonightSelectionKey || trendingReadyScope !== trendingScope || !firstTonightCandidate) return
-    setTonightSelectionKey(mediaIdentity(firstTonightCandidate.item))
-  }, [firstTonightCandidate, tonightSelectionKey, trendingReadyScope, trendingScope])
   useEffect(() => { setHeroLogoError(false) }, [heroItem?.id])
   useEffect(() => { setPickerLogoError(false) }, [pickerItem?.id])
 
@@ -1601,17 +1552,6 @@ export default function DiscoverPage() {
     const next = spotlightCandidates[nextIndex]
     if (next) setSpotlightSelectionKey(mediaIdentity(next.item))
   }
-  const chooseAnotherTonight = () => {
-    if (!tonightRecommendation || tonightCandidates.length < 2) return
-    const currentIndex = tonightCandidates.findIndex((entry) => mediaIdentity(entry.item) === mediaIdentity(tonightRecommendation.item))
-    for (let step = 1; step < tonightCandidates.length; step += 1) {
-      const next = tonightCandidates[(currentIndex + step + tonightCandidates.length) % tonightCandidates.length]!
-      if (mediaIdentity(next.item) !== heroMediaKey) {
-        setTonightSelectionKey(mediaIdentity(next.item))
-        return
-      }
-    }
-  }
   const selectTastePick = (item: SearchResult) => {
     const id = mediaIdentity(item)
     if (pickedIds.includes(id) || pickedIds.length >= 3) return
@@ -1683,25 +1623,14 @@ export default function DiscoverPage() {
             <>
               <header className="discover-spotlight-heading row-contain">
                 <div className="discover-spotlight-heading__copy"><h2 id="discover-next-title">Your Next Obsession</h2></div>
-                <div className="discover-spotlight-heading__menu" ref={spotlightMenuRef}>
-                  <button ref={spotlightMenuButtonRef} type="button" className="discover-spotlight-heading__more" aria-label="More spotlight options" aria-haspopup="menu" aria-expanded={spotlightMenuOpen} onClick={(event) => {
-                    if (spotlightMenuOpen) { setSpotlightMenuOpen(false); return }
-                    const bounds = event.currentTarget.getBoundingClientRect()
-                    const width = 160
-                    setSpotlightMenuPosition({ top: bounds.bottom + 6, left: Math.max(8, Math.min(bounds.right - width, window.innerWidth - width - 8)) })
-                    setSpotlightMenuOpen(true)
-                  }}><MoreHorizontal size={20} aria-hidden="true" /></button>
-                </div>
               </header>
-              {spotlightMenuOpen && spotlightMenuPosition && createPortal(
-                <div ref={spotlightMenuPopupRef} className="discover-spotlight-menu" role="menu" aria-label="Spotlight options" style={spotlightMenuPosition}>
-                  <button type="button" role="menuitem" disabled={spotlightCandidates.length < 2} onClick={() => { setSpotlightMenuOpen(false); chooseAnotherSpotlight() }}>Another option</button>
-                </div>,
-                document.body,
-              )}
               <section ref={spotlightTransitionRef} className="discover-spotlight discover-next-hero" aria-labelledby="discover-next-title" data-title={heroRecommendation.item.title}>
                 {heroBackdrop && <div key={heroBackdrop} className="discover-spotlight__ambient" aria-hidden="true"><img className={loadedHeroBackdrop === heroBackdrop ? 'is-loaded' : undefined} src={heroBackdrop} alt="" draggable={false} decoding="async" fetchPriority="high" onLoad={() => setLoadedHeroBackdrop(heroBackdrop)} /></div>}
                 <div className="discover-spotlight__copy" data-title={heroRecommendation.item.title}>
+                  <div className="discover-spotlight__top">
+                    <p className="discover-spotlight__eyebrow">Tonight</p>
+                    <p className="discover-spotlight__duration">Usually {formatWatchDuration(heroRecommendation.runtimeMinutes || tasteProfile.preferredRuntimeMinutes || (tab === 'movies' ? 105 : 45))}</p>
+                  </div>
                   <div className="discover-spotlight__bottom">
                     {heroLogo && !heroLogoError ? <img key={heroRecommendation.item.id} src={heroLogo} alt={heroRecommendation.item.title} draggable={false} onError={() => setHeroLogoError(true)} className="discover-spotlight__logo" /> : <h2 key={heroRecommendation.item.id}>{heroRecommendation.item.title}</h2>}
                     <div className="discover-spotlight__meta">
@@ -1715,7 +1644,8 @@ export default function DiscoverPage() {
                     <div className="discover-spotlight__actions">
                       <button type="button" className="discover-spotlight__play" onClick={() => openHeroDetail(true)}>▶ <span>Play</span></button>
                       <button type="button" className="discover-spotlight__another discover-spotlight__secondary" onClick={() => openHeroDetail(false)} aria-label="Details"><Info size={17} aria-hidden="true"/><span>Details</span></button>
-                      <button type="button" className="discover-spotlight__another" aria-label="Not for me" onClick={() => submitFeedback(heroRecommendation.item, 'not-interested')}><ThumbsDown size={17} aria-hidden="true"/><span>Not for me</span></button>
+                      <button type="button" className="discover-spotlight__another discover-spotlight__feedback" aria-label="Not for me" onClick={() => submitFeedback(heroRecommendation.item, 'not-interested')}><ThumbsDown size={17} aria-hidden="true"/><span>Not for me</span></button>
+                      <button type="button" className="discover-spotlight__another discover-spotlight__change" onClick={chooseAnotherSpotlight} disabled={spotlightCandidates.length < 2}><Shuffle size={15} aria-hidden="true"/><span>Another option</span></button>
                     </div>
                   </div>
                 </div>
@@ -1734,24 +1664,6 @@ export default function DiscoverPage() {
             const catalogItems = (section.catalogItems ?? section.items).map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
             return <DiscoveryReveal key={section.id}><div className="row-contain discover-shelf"><MediaRow title={title} items={items} showAllItems={catalogItems} layout={isTopTen ? 'ranked' : 'poster'} previewLimit={isTopTen ? 10 : undefined} renderAllPreviewItems={isTopTen} disableCinematic forceShowAll showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div></DiscoveryReveal>
           })}
-          {tonightRecommendation && <DiscoveryReveal><section className="discover-tonight row-contain" aria-labelledby="discover-tonight-title" data-active-title={tonightRecommendation.item.title}>
-            {tonightRecommendation.item.backdrop && <div key={tonightRecommendation.item.backdrop} className="discover-tonight__ambient" aria-hidden="true"><img src={tonightRecommendation.item.backdrop} alt="" loading="lazy" decoding="async" /></div>}
-            <div className="discover-tonight__intro"><h2 id="discover-tonight-title">Tonight</h2><p>Usually {formatWatchDuration(tasteProfile.preferredRuntimeMinutes || tonightRecommendation.runtimeMinutes || (tab === 'movies' ? 105 : 45))}</p></div>
-            <div key={`copy-${mediaIdentity(tonightRecommendation.item)}`} className="discover-tonight__copy">
-              <h3>{tonightRecommendation.item.title}</h3>
-              <p className="discover-tonight__meta">{[tonightRecommendation.item.year, tonightRecommendation.item.genres?.[0] || (tonightRecommendation.item.type === 'movie' ? 'Movie' : 'Series'), tonightRecommendation.item.rating != null ? `★ ${Number(tonightRecommendation.item.rating).toFixed(1)}` : undefined].filter(Boolean).join(' · ')}</p>
-              {tonightRecommendation.reasons[0] && <p className="discover-tonight__reason">{tonightRecommendation.reasons[0].label.replace(/\btaste\b/gi, 'preferences')}</p>}
-              <div className="discover-tonight__actions">
-                <button type="button" className="discover-tonight__play" onClick={() => openItemDetail(tonightRecommendation.item, true)}>▶ <span>Play</span></button>
-                <button type="button" onClick={() => openItemDetail(tonightRecommendation.item)}>Details</button>
-                <button type="button" onClick={chooseAnotherTonight} disabled={!tonightRecommendation || !tonightCandidates.some((entry) => mediaIdentity(entry.item) !== mediaIdentity(tonightRecommendation.item) && mediaIdentity(entry.item) !== heroMediaKey)}><Shuffle size={15} aria-hidden="true" />Another option</button>
-              </div>
-            </div>
-            <div key={`poster-${mediaIdentity(tonightRecommendation.item)}`} className="discover-tonight__poster">
-              <img src={tonightRecommendation.item.poster} alt={`${tonightRecommendation.item.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
-              {tonightRecommendation.item.rating != null && <span>★ {Number(tonightRecommendation.item.rating).toFixed(1)}</span>}
-            </div>
-          </section></DiscoveryReveal>}
           {ranked.length > 0 && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
             <p className="discover-section-eyebrow">Refine your taste</p>
             <div className="discover-refine__heading">
