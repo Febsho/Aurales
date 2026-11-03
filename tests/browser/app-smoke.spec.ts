@@ -1112,7 +1112,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       const poster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
       const binge = page.querySelector<HTMLElement>('.discover-binge__feature')
       const contentSections = Array.from(page.querySelectorAll<HTMLElement>(
-        '.discover-next-hero, .discover-shelf, .discover-refine, .discover-genres, .discover-binge, .discover-time, .discover-more',
+        '.discover-next-hero, .discover-shelf, .discover-refine, .discover-genres, .discover-binge, .discover-moods, .discover-color, .discover-time, .discover-calendar, .discover-more',
       )).map((section) => section.getBoundingClientRect())
       const time = page.querySelector<HTMLElement>('.discover-time')?.getBoundingClientRect()
       return {
@@ -1125,6 +1125,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         timeLeft: time?.left ?? 0,
         timeRight: time?.right ?? 0,
         sectionsInside: contentSections.every((bounds) => bounds.left >= -1 && bounds.right <= viewport + 1),
+        sectionsStacked: contentSections.every((bounds, index) => index === 0 || bounds.height === 0 || contentSections[index - 1]!.height === 0 || contentSections[index - 1]!.bottom <= bounds.top + 1),
         heroColumnsSeparated: copy.right <= poster.left + 1,
         maxPosterCardRatio: Math.max(...Array.from(page.querySelectorAll<HTMLElement>('.discover-page .discover-shelf .media-row-card-slot'), (card) => card.getBoundingClientRect().height / Math.max(1, card.getBoundingClientRect().width))),
         bingeColumns: binge ? getComputedStyle(binge).gridTemplateColumns.split(' ').length : 0,
@@ -1134,6 +1135,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopBounds.page.left, `Discovery shifted offscreen at ${width}px`).toBeGreaterThanOrEqual(-1)
     expect(desktopBounds.page.right, `Discovery exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
     expect(desktopBounds.sectionsInside, `a Discovery section exceeds the viewport at ${width}px`).toBe(true)
+    expect(desktopBounds.sectionsStacked, `Discovery sections overlap at ${width}px`).toBe(true)
     expect(desktopBounds.timeWidth, `time picker should remain a readable width at ${width}px`).toBeGreaterThan(0)
     expect(desktopBounds.timeLeft, `time picker shifted offscreen at ${width}px`).toBeGreaterThanOrEqual(-1)
     expect(desktopBounds.timeRight, `time picker exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
@@ -1153,6 +1155,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       const page = document.querySelector<HTMLElement>('.discover-page')!
       const hero = document.querySelector<HTMLElement>('.discover-next-hero')!
       const time = page.querySelector<HTMLElement>('.discover-time')!.getBoundingClientRect()
+      const contentSections = Array.from(page.querySelectorAll<HTMLElement>(
+        '.discover-next-hero, .discover-shelf, .discover-refine, .discover-genres, .discover-binge, .discover-moods, .discover-color, .discover-time, .discover-calendar, .discover-more',
+      )).map((section) => section.getBoundingClientRect())
       const copy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
       const poster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
       const shelfCard = page.querySelector<HTMLElement>('.discover-shelf .media-row-card-slot > button')
@@ -1167,6 +1172,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         timeWidth: time.width,
         timeLeft: time.left,
         timeRight: time.right,
+        sectionsInside: contentSections.every((bounds) => bounds.left >= -1 && bounds.right <= viewport + 1),
+        sectionsStacked: contentSections.every((bounds, index) => index === 0 || bounds.height === 0 || contentSections[index - 1]!.height === 0 || contentSections[index - 1]!.bottom <= bounds.top + 1),
         heroColumnsSeparated: copy.right <= poster.left + 1,
         maxPosterCardRatio: Math.max(...Array.from(page.querySelectorAll<HTMLElement>('.discover-shelf .media-row-card-slot'), (card) => card.getBoundingClientRect().height / Math.max(1, card.getBoundingClientRect().width))),
       }
@@ -1177,6 +1184,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopBounds.timeWidth, `Tauri time picker should remain visible at ${width}px`).toBeGreaterThan(0)
     expect(desktopBounds.timeLeft, `Tauri time picker shifted offscreen at ${width}px`).toBeGreaterThanOrEqual(-1)
     expect(desktopBounds.timeRight, `Tauri time picker exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
+    expect(desktopBounds.sectionsInside, `a Tauri Discovery section exceeds the viewport at ${width}px`).toBe(true)
+    expect(desktopBounds.sectionsStacked, `Tauri Discovery sections overlap at ${width}px`).toBe(true)
     expect(desktopBounds.heroColumnsSeparated, `Tauri hero copy overlaps its poster at ${width}px`).toBe(true)
     expect(desktopBounds.heroAnimation, `Tauri editorial spotlight should animate at ${width}px`).not.toBe('none')
     expect(desktopBounds.shelfCardTransition, `Tauri shelf cards should keep their focus transitions at ${width}px`).toContain('transform')
