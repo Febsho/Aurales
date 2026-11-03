@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import '../../src/index.css'
 import InAppPlayer from '../../src/components/InAppPlayer'
+import type { PlaybackRequestHeaders } from '../../src/services/mediaWorker'
 
 document.documentElement.dataset.runtimePlatform = 'web'
 
@@ -9,6 +10,7 @@ const params = new URLSearchParams(location.search)
 const initialUrl = params.get('source')
 if (!initialUrl) throw new Error('Harness requires a source query parameter')
 const subtitleUrl = params.get('subtitle')
+const playbackRequestHeaders = JSON.parse(params.get('headers') || '{}') as PlaybackRequestHeaders
 
 function clearPlaybackState() {
   delete document.body.dataset.playbackStarted
@@ -28,6 +30,7 @@ function Harness() {
   ;(window as Window & { __loadPlaybackSource?: (source: string) => void }).__loadPlaybackSource = loadSource
   return <InAppPlayer
     url={url}
+    playbackRequestHeaders={playbackRequestHeaders}
     title="Aurales player fixture"
     subtitle="Player integration test"
     subtitles={subtitleUrl ? [{ id: 'browser-subtitle', url: subtitleUrl, lang: 'en', label: 'External subtitle' }] : []}

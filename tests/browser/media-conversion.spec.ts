@@ -121,6 +121,52 @@ test('mobile HLS decoder failures are converted to a native MP4 by the worker', 
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime), { timeout: 10_000 }).toBeGreaterThan(1.4)
 })
 
+test('mobile header-protected streams convert when the worker proxy session cannot open', async ({ page }, testInfo) => {
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'This verifies mobile fallback for add-on request headers.')
+  const sourceUrl = new URL('/header-protected-source.mp4', String(testInfo.project.use.baseURL)).toString()
+  const outputMediaId = 'abababababababababababababababab'
+  const jobId = 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd'
+  const fixture = await readFile(resolve(process.cwd(), 'tests/browser/fixtures/mobile-h264-compat.mp4'))
+  const requestHeaders = { authorization: 'Bearer add-on-stream-token', referer: 'https://addon.example/' }
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+  })
+  await page.route('**/v1/media/sessions', (route) => route.fulfill({
+    status: 503,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: 'media_proxy_unavailable' }),
+  }))
+  await page.route('**/v1/capabilities', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ streamRanking: true, mediaDirectProxy: true, pmdbProxy: true, mediaRemux: true, mediaMp4: true, mediaHls: false, audioTranscode: true, videoTranscode: true, mobileSafeVideoTranscode: true }),
+  }))
+  let conversionRequest: Record<string, unknown> | null = null
+  await page.route('**/v1/media/conversions', async (route) => {
+    conversionRequest = JSON.parse(route.request().postData() || '{}')
+    await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId, status: 'processing' }) })
+  })
+  await page.route(`**/v1/media/conversions/${jobId}`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ jobId, status: 'ready', mode: 'h264Aac', bytes: fixture.length, url: `/v1/media/${outputMediaId}?expires=1893456000&signature=header-conversion`, subtitles: [] }),
+  }))
+  await page.route(`**/v1/media/${outputMediaId}?*`, (route) => route.fulfill({ status: 200, contentType: 'video/mp4', body: fixture }))
+
+  const query = new URLSearchParams({ source: sourceUrl, headers: JSON.stringify(requestHeaders) })
+  await page.goto(`/tests/browser/player-harness.html?${query}`)
+  const video = page.locator('video')
+  await expect.poll(() => conversionRequest).toMatchObject({
+    url: sourceUrl,
+    mode: 'auto',
+    outputFormat: 'mp4',
+    mobileCompatibility: true,
+    headers: requestHeaders,
+  })
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputMediaId}?`)
+  await expect(page.locator('body')).toHaveAttribute('data-playback-started', 'true', { timeout: 15_000 })
+})
+
 test('mobile playback stalls retry through the worker proxy without an error event', async ({ page }, testInfo) => {
   test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'This verifies mobile direct-media stall recovery.')
   await page.clock.install()

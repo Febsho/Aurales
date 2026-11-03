@@ -353,6 +353,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       setHeaderSessionUrl(session.url)
     }).catch(() => {
       if (disposed) return
+      const video = videoRef.current
+      if (video && requestWorkerConversionRef.current?.(video)) return
       const message = 'The add-on stream requires provider headers, but its worker session could not be opened. Check the source access or choose another stream.'
       setLoading(false)
       setError(message)
