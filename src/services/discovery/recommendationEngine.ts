@@ -184,10 +184,21 @@ export function dedupeCandidates(candidates: RecommendationCandidate[]): Recomme
  * popularity metadata bury titles from the verified weekly trend feed.
  */
 export function sortRecommendationsByPopularity(ranked: RankedRecommendation[]): RankedRecommendation[] {
+  const currentYear = new Date().getUTCFullYear()
   return [...ranked].sort((left, right) => {
     const leftIsTrending = left.trendSignal || left.source === 'tmdb-trending'
     const rightIsTrending = right.trendSignal || right.source === 'tmdb-trending'
+    const momentum = (entry: RankedRecommendation) => {
+      const year = recommendationReleaseYear(entry.item)
+      if (year == null) return Math.max(0, entry.popularity || 0) * .875
+      const age = Math.max(0, currentYear - year)
+      // Keep catalog hits competitive while giving current releases a modest
+      // edge over old titles with similar public popularity.
+      const recencyWeight = 1 - .25 * Math.min(1, age / 8)
+      return Math.max(0, entry.popularity || 0) * recencyWeight
+    }
     return Number(rightIsTrending) - Number(leftIsTrending)
+      || momentum(right) - momentum(left)
       || (right.popularity || 0) - (left.popularity || 0)
       || right.score.total - left.score.total
   })

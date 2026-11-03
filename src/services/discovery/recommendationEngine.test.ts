@@ -148,6 +148,15 @@ describe('discovery recommendation engine', () => {
 
     expect(sortRecommendationsByPopularity(ranked).map((entry) => entry.item.tmdbId)).toEqual([140, 139])
   })
+  it('gives recent releases a modest edge over similarly popular old catalog titles', () => {
+    const archiveHit = candidate(154, { year: 2008 })
+    archiveHit.popularity = 250
+    const recentHit = candidate(155, { year: new Date().getUTCFullYear() - 1 })
+    recentHit.popularity = 215
+    const ranked = rankCandidates([archiveHit, recentHit], buildTasteProfile(activity()), activity(), [], 'for-you')
+
+    expect(sortRecommendationsByPopularity(ranked).map((entry) => entry.item.tmdbId)).toEqual([155, 154])
+  })
   it('preserves the live weekly chart order when TMDB popularity values disagree', () => {
     const sourceOrder = [
       candidate(143, { title: 'Trend rank one', year: 2026 }),
