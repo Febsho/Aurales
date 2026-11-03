@@ -1983,7 +1983,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
         expect(layout.bingePosterRatios, `${platform} desktop Binge posters should keep their portrait artwork shape`).toHaveLength(5)
         expect(layout.bingePosterRatios.every((ratio) => ratio >= 0.58 && ratio <= 0.76), `${platform} desktop Binge posters should not be stretched or cropped into landscape tiles: ${JSON.stringify(layout.bingePosterRatios)}`).toBe(true)
       }
-      if (width >= 1100) {
+      if (width >= 900) {
         expect(layout.bingeLayout, `${platform} desktop Binge content should render at ${width}px`).not.toBeNull()
         if (layout.bingeLayout) {
           const { feature, copy, gallery, title, actions } = layout.bingeLayout
@@ -1996,7 +1996,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
           expect(actions.bottom, `${platform} Binge actions should stay inside their copy column`).toBeLessThanOrEqual(copy.bottom + 1)
         }
       }
-      if (width >= 1200 && layout.bingePosterHeights.length === 5) {
+      if (width >= 900 && layout.bingePosterHeights.length === 5) {
         expect(Math.max(...layout.bingePosterHeights) - Math.min(...layout.bingePosterHeights), `${platform} desktop Binge posters should share one aligned row at ${width}px`).toBeLessThanOrEqual(2)
       }
       expect(layout.headingFontSize, `${platform} Discovery heading is unexpectedly large at ${width}px`).toBeLessThanOrEqual(44)
