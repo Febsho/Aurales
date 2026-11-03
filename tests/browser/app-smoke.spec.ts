@@ -364,6 +364,26 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.route('https://api.themoviedb.org/**', async (route) => {
     const requestUrl = new URL(route.request().url())
     tmdbRequestPaths.add(requestUrl.pathname)
+    if (/^\/3\/trending\/(movie|tv)\/week$/.test(requestUrl.pathname)) {
+      const weeklyType = requestUrl.pathname.includes('/movie/') ? 'movie' : 'series'
+      const results = Array.from({ length: 8 }, (_, index) => ({
+        id: 89000 + index,
+        title: `Weekly trend ${index + 1}`,
+        name: `Weekly trend ${index + 1}`,
+        poster_path: `/weekly-trend-${index + 1}.jpg`,
+        backdrop_path: '/weekly-trend-backdrop.jpg',
+        overview: 'A current weekly-trending test title.',
+        release_date: '2026-05-01',
+        first_air_date: '2026-05-01',
+        vote_average: 8.2,
+        vote_count: 1800,
+        popularity: 80 - index * 10,
+        genre_ids: weeklyType === 'movie' ? [878, 14] : [18, 10759],
+        original_language: 'en',
+      }))
+      await route.fulfill({ json: { page: 1, total_pages: 1, total_results: results.length, results } })
+      return
+    }
     if (requestUrl.searchParams.get('with_genres') === '28') {
       await new Promise((resolve) => setTimeout(resolve, 500))
       await route.fulfill({ json: { page: 1, total_pages: 1, total_results: 0, results: [] } })
@@ -592,6 +612,11 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(topTenRow.locator('.media-rank__value').nth(1)).toHaveText('2')
   await expect(page.getByRole('heading', { name: 'OR TRY', exact: true })).toBeVisible()
   const trendingShelf = page.locator('.discover-shelf--trending')
+  const heroTitle = await page.locator('.discover-next-hero').getAttribute('data-title')
+  const expectedWeeklyTrendOrder = Array.from({ length: 8 }, (_, index) => `Weekly trend ${index + 1}`).filter((title) => title !== heroTitle)
+  await expect.poll(() => trendingShelf.locator('.media-row-card-slot img').first().getAttribute('alt')).toBe(expectedWeeklyTrendOrder[0])
+  const weeklyTrendOrder = await trendingShelf.locator('.media-row-card-slot img').evaluateAll((images) => images.map((image) => image.getAttribute('alt')))
+  expect(weeklyTrendOrder.slice(0, 5)).toEqual(expectedWeeklyTrendOrder.slice(0, 5))
   await trendingShelf.scrollIntoViewIfNeeded()
   await expect.poll(() => trendingShelf.evaluate((element) => element.parentElement?.getAttribute('data-revealed'))).toBe('true')
   await expect.poll(() => trendingShelf.locator('.media-row-card-slot').first().evaluate((card) => getComputedStyle(card).animationName)).toBe('discover-card-arrive')

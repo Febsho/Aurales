@@ -1118,20 +1118,40 @@ export default function DiscoverPage() {
   )
   // The public weekly trend feed powers the reference's OR TRY shelf. It is
   // independent of the user's library and follows the Tonight spotlight.
+  const currentTrendingRanked = useMemo(() => rankCandidates(
+    currentTrending
+      .filter((item) => item.poster && matchesDiscoverTab(item, tab) && candidatePassesPrefs(item, prefs))
+      .map((item) => recommendationCandidate(item, 'tmdb-trending')),
+    tasteProfile,
+    activity,
+    feedback,
+    mode,
+    rankingNow,
+    impressions,
+    prefsWeights(prefs),
+  ).sort((left, right) => (right.popularity || 0) - (left.popularity || 0) || right.score.total - left.score.total), [activity, currentTrending, feedback, impressions, mode, prefs, rankingNow, tab, tasteProfile])
   const trendingSection = useMemo(() => {
-    const weekly = personalizedSections.find((section) => section.id === 'trending-this-week')
-    if (weekly) return weekly
-
-    // Keep the reference's "OR TRY" rail useful when the optional public
-    // weekly-trending endpoint is unavailable. The TMDB discovery pool still
-    // carries its current popularity signal, so use its strongest unseen picks.
-    const alreadyFeatured = new Set(visiblePersonalizedSections.flatMap((section) => section.items.map((entry) => mediaIdentity(entry.item))))
+    const heroKey = heroItem ? mediaIdentity(heroItem) : undefined
+    const alreadyFeatured = new Set(visiblePersonalizedSections
+      .filter((section) => section.id !== 'trending-this-week')
+      .flatMap((section) => section.items.map((entry) => mediaIdentity(entry.item))))
+    const current = currentTrendingRanked.filter((entry) => {
+      const key = mediaIdentity(entry.item)
+      return key !== heroKey && !alreadyFeatured.has(key)
+    })
+    const currentKeys = new Set(current.map((entry) => mediaIdentity(entry.item)))
+    // Fall back to the strongest current popularity signals when the public
+    // weekly feed is unavailable or too small to fill a useful shelf.
     const popular = ranked
-      .filter((entry) => entry.item.poster && !alreadyFeatured.has(mediaIdentity(entry.item)))
+      .filter((entry) => {
+        const key = mediaIdentity(entry.item)
+        return entry.item.poster && key !== heroKey && !alreadyFeatured.has(key) && !currentKeys.has(key)
+      })
       .sort((left, right) => (right.popularity || 0) - (left.popularity || 0) || right.score.total - left.score.total)
-    if (popular.length < 5) return undefined
-    return { id: 'trending-this-week', title: 'OR TRY', items: popular.slice(0, 10), catalogItems: popular }
-  }, [personalizedSections, ranked, visiblePersonalizedSections])
+    const catalogItems = [...current, ...popular]
+    if (catalogItems.length < 5) return undefined
+    return { id: 'trending-this-week', title: 'OR TRY', items: catalogItems.slice(0, 10), catalogItems }
+  }, [currentTrendingRanked, heroItem, ranked, visiblePersonalizedSections])
   const bingeRecommendations = useMemo(() => {
     const bingeRanked = tab === 'movies'
       ? rankCandidates(
