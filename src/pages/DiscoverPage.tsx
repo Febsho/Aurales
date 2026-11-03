@@ -136,13 +136,36 @@ function DiscoveryReveal({ children }: { children: import('react').ReactNode }) 
     }
     const element = ref.current
     if (!element) return
-    const observer = new IntersectionObserver(([entry]) => {
-      if (!entry?.isIntersecting) return
+    // Chromium can leave an observed shelf unrevealed when a smooth programmatic
+    // scroll lands on it before the observer's first delivery. Keep the observer
+    // animation, with a geometry-based fallback on scroll/resize for that case.
+    let didReveal = false
+    const reveal = () => {
+      if (didReveal) return
+      didReveal = true
       setRevealed(true)
       observer.disconnect()
-    }, { rootMargin: '0px 0px -32px 0px', threshold: 0.06 })
+      window.removeEventListener('scroll', revealIfVisible)
+      window.removeEventListener('resize', revealIfVisible)
+    }
+    const revealIfVisible = () => {
+      const bounds = element.getBoundingClientRect()
+      if (bounds.bottom >= -80 && bounds.top <= window.innerHeight + 80) reveal()
+    }
+    const handleIntersection = ([entry]: IntersectionObserverEntry[]) => {
+      if (entry?.isIntersecting) reveal()
+    }
+    const observer = new IntersectionObserver(handleIntersection, { rootMargin: '0px 0px -32px 0px', threshold: 0.01 })
     observer.observe(element)
-    return () => observer.disconnect()
+    window.addEventListener('scroll', revealIfVisible, { passive: true })
+    window.addEventListener('resize', revealIfVisible, { passive: true })
+    const frame = window.requestAnimationFrame(revealIfVisible)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      observer.disconnect()
+      window.removeEventListener('scroll', revealIfVisible)
+      window.removeEventListener('resize', revealIfVisible)
+    }
   }, [])
 
   return <div ref={ref} className="discover-reveal" data-revealed={revealed}>{children}</div>
