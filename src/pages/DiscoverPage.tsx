@@ -1777,14 +1777,14 @@ export default function DiscoverPage() {
                 {heroBackdrop && <div key={heroBackdrop} className="discover-spotlight__ambient" aria-hidden="true"><img className={loadedHeroBackdrop === heroBackdrop ? 'is-loaded' : undefined} src={heroBackdrop} alt="" draggable={false} decoding="async" fetchPriority="high" onLoad={() => setLoadedHeroBackdrop(heroBackdrop)} /></div>}
                 <div className="discover-spotlight__copy" data-title={heroRecommendation.item.title}>
                   <div className="discover-spotlight__top">
-                    <p className="discover-spotlight__eyebrow">Tonight</p>
+                    <p className="discover-spotlight__eyebrow">{heroRecommendation.item.type === 'movie' ? 'A movie for tonight' : heroRecommendation.item.isAnime ? 'An anime for tonight' : 'A series for tonight'}</p>
                     <p className="discover-spotlight__duration">Usually {formatWatchDuration(heroRecommendation.runtimeMinutes || tasteProfile.preferredRuntimeMinutes || (tab === 'movies' ? 105 : 45))}</p>
                   </div>
                   <div className={`discover-spotlight__bottom${heroRecommendation.reasons[0] ? ' has-editorial-reason' : ''}`}>
                     {heroLogo && !heroLogoError ? <img key={heroRecommendation.item.id} src={heroLogo} alt={heroRecommendation.item.title} draggable={false} onError={() => setHeroLogoError(true)} className="discover-spotlight__logo" /> : <h2 key={heroRecommendation.item.id}>{heroRecommendation.item.title}</h2>}
                     <div className="discover-spotlight__meta">
                       {heroRecommendation.item.year && <span>{heroRecommendation.item.year}</span>}
-                      <span>{heroRecommendation.runtimeMinutes ? formatWatchDuration(heroRecommendation.runtimeMinutes) : isAnimeLike(heroRecommendation.item) ? 'Anime' : heroRecommendation.item.type === 'series' ? 'Series' : 'Movie'}</span>
+                      <span>{isAnimeLike(heroRecommendation.item) ? 'Anime' : heroRecommendation.item.type === 'series' ? 'Series' : 'Movie'}</span>
                       {heroRecommendation.item.genres?.slice(0, 1).map((genre) => <span key={genre}>{genre}</span>)}
                       {heroRating && <span>★ {heroRating}</span>}
                     </div>

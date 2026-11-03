@@ -1514,7 +1514,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         heroHeight: hero.getBoundingClientRect().height,
         sectionsInside: contentSections.every((bounds) => bounds.left >= -1 && bounds.right <= viewport + 1),
         sectionsStacked: contentSections.every((bounds, index) => index === 0 || bounds.height === 0 || contentSections[index - 1]!.height === 0 || contentSections[index - 1]!.bottom <= bounds.top + 1),
-        heroColumnsSeparated: copy.right <= poster.left + 1,
+        heroColumnsSeparated: poster.right <= copy.left + 1,
         maxPosterCardRatio: Math.max(...Array.from(page.querySelectorAll<HTMLElement>('.discover-page .discover-shelf .media-row-card-slot'), (card) => card.getBoundingClientRect().height / Math.max(1, card.getBoundingClientRect().width))),
         bingeColumns: binge ? getComputedStyle(binge).gridTemplateColumns.split(' ').length : 0,
       }
@@ -1563,7 +1563,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         shelfCardTransition: shelfCard ? getComputedStyle(shelfCard).transitionProperty : '',
         sectionsInside: contentSections.every((bounds) => bounds.left >= -1 && bounds.right <= viewport + 1),
         sectionsStacked: contentSections.every((bounds, index) => index === 0 || bounds.height === 0 || contentSections[index - 1]!.height === 0 || contentSections[index - 1]!.bottom <= bounds.top + 1),
-        heroColumnsSeparated: copy.right <= poster.left + 1,
+        heroColumnsSeparated: poster.right <= copy.left + 1,
         maxPosterCardRatio: Math.max(...Array.from(page.querySelectorAll<HTMLElement>('.discover-shelf .media-row-card-slot'), (card) => card.getBoundingClientRect().height / Math.max(1, card.getBoundingClientRect().width))),
       }
     })
@@ -1763,7 +1763,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(pageErrors).toEqual([])
 })
 
-test('Discovery remains correctly composed across Web and Tauri screen sizes', async ({ page }) => {
+test('Discovery remains correctly composed across Web and Tauri screen sizes', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   let markTmdbRequestStarted!: () => void
   const tmdbRequestStarted = new Promise<void>((resolve) => { markTmdbRequestStarted = resolve })
@@ -1872,8 +1872,11 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
 
   for (const platform of ['web', 'tauri'] as const) {
     await page.evaluate((runtime) => { document.documentElement.dataset.runtimePlatform = runtime }, platform)
-    for (const width of [320, 390, 768, 1024, 1440, 1920, 2560]) {
-      await page.setViewportSize({ width, height: 900 })
+    const responsiveWidths = testInfo.project.name === 'android-chromium'
+      ? [await page.evaluate(() => window.innerWidth)]
+      : [320, 390, 768, 1024, 1440, 1920, 2560]
+    for (const width of responsiveWidths) {
+      if (testInfo.project.name !== 'android-chromium') await page.setViewportSize({ width, height: 900 })
       await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width)
       await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
       const layout = await page.evaluate(() => {
@@ -1952,7 +1955,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
           timeCardsInside: timeCards.every((bounds) => bounds.top >= timeRowBounds.top - 2 && bounds.bottom <= timeRowBounds.bottom + 2),
           headingFontSize: Number.parseFloat(getComputedStyle(root.querySelector<HTMLElement>('.discover-page__heading h1')!).fontSize),
           heroFontFamily: getComputedStyle(heroTitle).fontFamily,
-          heroColumnsSeparated: heroCopy.right <= heroPoster.left + 1,
+          heroColumnsSeparated: heroPoster.right <= heroCopy.left + 1,
           heroTextContained: textBlocks.every((bounds) => bounds.left >= heroCopy.left - 1 && bounds.right <= heroCopy.right + 1 && bounds.top >= heroCopy.top - 1 && bounds.bottom <= heroCopy.bottom + 1),
           heroTextStacked: textBlocks.every((bounds, index) => index === 0 || textBlocks[index - 1]!.bottom <= bounds.top + 2),
           sectionsInside: sections.every((bounds) => bounds.left >= -1 && bounds.right <= document.documentElement.clientWidth + 1),
