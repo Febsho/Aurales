@@ -8177,6 +8177,70 @@ mod tests {
             "failed to prepare a high-frame-rate mobile fixture"
         );
 
+        let hevc_main10_input = dir.join("hevc-main10-ac3-input.mkv");
+        let hevc_generated = tokio::process::Command::new(&ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x180:rate=24:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=800:sample_rate=48000:duration=1",
+                "-c:v",
+                "libx265",
+                "-preset",
+                "ultrafast",
+                "-x265-params",
+                "pools=1:frame-threads=1:log-level=error",
+                "-pix_fmt",
+                "yuv420p10le",
+                "-c:a",
+                "ac3",
+                "-shortest",
+            ])
+            .arg(&hevc_main10_input)
+            .output()
+            .await
+            .unwrap();
+
+        let av1_opus_input = dir.join("av1-opus-input.mkv");
+        let av1_generated = tokio::process::Command::new(&ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x180:rate=24:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=800:sample_rate=48000:duration=1",
+                "-c:v",
+                "libsvtav1",
+                "-preset",
+                "12",
+                "-crf",
+                "50",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "libopus",
+                "-shortest",
+            ])
+            .arg(&av1_opus_input)
+            .output()
+            .await
+            .unwrap();
+
         let mut make_opus = tokio::process::Command::new(&ffmpeg);
         make_opus
             .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
@@ -8191,7 +8255,7 @@ mod tests {
             "failed to prepare H.264/Opus fixture"
         );
 
-        let cases = [
+        let mut cases = vec![
             (
                 "remux",
                 fixtures.join("h264-aac.mp4"),
@@ -8214,6 +8278,16 @@ mod tests {
                 ConversionMode::H264AacCompat,
             ),
         ];
+        if hevc_generated.status.success() {
+            cases.push((
+                "hevc-main10-ac3",
+                hevc_main10_input,
+                ConversionMode::H264Aac,
+            ));
+        }
+        if av1_generated.status.success() {
+            cases.push(("av1-opus", av1_opus_input, ConversionMode::H264Aac));
+        }
         for (name, input, mode) in cases {
             let output = dir.join(format!("{name}.mp4"));
             let source_info = probe_local_media(&ffmpeg, &input).await.unwrap();

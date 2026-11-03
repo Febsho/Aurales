@@ -130,9 +130,13 @@ representations are rejected.
 
 The repository's FFmpeg integration fixtures exercise these paths: H.264/AAC
 MP4 is stream-copy remuxed; H.264/Opus Matroska becomes AAC audio with copied
-H.264 video; VP8/Opus WebM reaches the H.264/AAC video fallback. The browser
-matrix covers HLS VOD seeking through MSE on desktop; mobile conversion uses
-native MP4 playback. For mobile video encoding (including HLS fallback when
+H.264 video; VP8/Opus WebM reaches the H.264/AAC video fallback. When the local
+FFmpeg build provides the optional encoders, generated HEVC Main 10/AC-3 and
+AV1/Opus sources also exercise the mobile video-and-audio fallback. The tests
+inspect the produced H.264 profile, level, pixel format, frame rate, and
+dimensions, including a generated 60 fps input. The browser matrix covers HLS
+VOD seeking through MSE on desktop; mobile conversion uses native MP4 playback.
+For mobile video encoding (including HLS fallback when
 MP4 muxing is unavailable), the worker uses H.264 Baseline Level 4.2 and scales
 landscape video to at most 1920×1080 and portrait video to at most 1080×1920.
 Its video filter caps output frame rates at 60 fps while preserving known
