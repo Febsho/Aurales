@@ -1094,7 +1094,12 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     }
 
     void Promise.all(Array.from({ length: Math.min(4, subtitles.length) }, loadWorker)).then(() => {
-      if (!cancelled) setPreparedSubtitles(prepared)
+      if (!cancelled) {
+        setPreparedSubtitles((current) => [
+          ...prepared,
+          ...current.filter((track) => track.id.startsWith('worker:')),
+        ])
+      }
     })
 
     return () => {
