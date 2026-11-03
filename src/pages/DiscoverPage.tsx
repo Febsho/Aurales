@@ -1237,7 +1237,11 @@ export default function DiscoverPage() {
       .filter((section) => section.id === 'made-for-you' || section.id === 'trending-this-week' || section.items.length >= 5)
   }, [currentTrendingRanked, heroMediaKey, mode, rankingNow, shelfRanked, tasteProfile])
   const visiblePersonalizedSections = useMemo(
-    () => personalizedSections.filter((section) => !['hidden-gems', 'new', 'top-rated'].includes(section.id)),
+    // The redesigned Discovery surface keeps its recommendation content in
+    // the independent Spotlight, OR TRY and Top 10. Legacy per-library rows
+    // (Because You Watched/Favorited/Love...) fragment that editorial flow;
+    // library signals still feed ranking and the Top 10 without adding rows.
+    () => personalizedSections.filter((section) => section.id === 'made-for-you'),
     [personalizedSections],
   )
   // The public weekly trend feed powers the reference's OR TRY shelf. It is

@@ -548,6 +548,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(heroSpotlight.locator('.discover-spotlight__ambient img')).toHaveAttribute('src', /weekly-trend-backdrop/)
   await expect(page.locator('.discover-libraries')).toHaveCount(0)
   await expect(page.locator('.discover-shelf--favorites, .discover-shelf--new-library')).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: /^Because You / })).toHaveCount(0)
   const calendar = page.locator('.discover-calendar')
   await expect(calendar.getByRole('heading', { name: 'Calendar', exact: true })).toBeVisible()
   const calendarTop = (await calendar.boundingBox())!.y
