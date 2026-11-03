@@ -802,18 +802,11 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   })
   expect(pickerBeforeShelves, 'the broad public recommendations should lead into the taste picker').toBe(true)
   await expect(page.getByRole('heading', { name: 'Your Genres' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Your Weekend Plan' })).toBeVisible()
-  const weekendPlan = page.locator('.discover-weekend__feature')
-  await expect(weekendPlan).toBeVisible()
-  const weekendPlanBeforeAlternate = await weekendPlan.getAttribute('data-title')
-  const spotlightBeforeWeekendAlternate = await page.locator('.discover-next-hero').getAttribute('data-title')
-  const weekendAlternate = weekendPlan.getByRole('button', { name: 'Another option' })
-  if (await weekendAlternate.isEnabled()) {
-    await weekendAlternate.click()
-    await expect.poll(() => weekendPlan.getAttribute('data-title')).not.toBe(weekendPlanBeforeAlternate)
-    await expect(weekendPlan).toHaveCSS('animation-name', 'discover-weekend-enter')
-  }
-  await expect(page.locator('.discover-next-hero')).toHaveAttribute('data-title', spotlightBeforeWeekendAlternate!)
+  await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toBeVisible()
+  const timeTonightRail = page.locator('.discover-time .media-row')
+  await expect(timeTonightRail).toBeVisible()
+  await expect.poll(() => timeTonightRail.locator('.media-row-card-slot').count()).toBeGreaterThan(0)
+  const spotlightBeforeRuntimeChange = await page.locator('.discover-next-hero').getAttribute('data-title')
   await expect(page.locator('.discover-time')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Made for the Big Screen' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Hidden Gems', exact: true })).toBeVisible()
@@ -825,14 +818,14 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await runtimeControls.getByRole('button', { name: 'Under 90 Minutes' }).click()
   await expect(runtimeControls.getByRole('button', { name: 'Under 90 Minutes' })).toHaveAttribute('aria-pressed', 'true')
   await expect.poll(() => runtimeFilters.includes('1-89')).toBe(true)
+  await expect(page.locator('.discover-next-hero')).toHaveAttribute('data-title', spotlightBeforeRuntimeChange!)
   await expect(page.getByRole('heading', { name: 'Pick by Colour' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Your Weekend Plan' })).toBeVisible()
   await contentTypeControls.getByRole('button', { name: 'Anime', exact: true }).click()
   await expect(page.locator('.discover-next-hero .discover-spotlight__meta')).toContainText('Anime')
   await contentTypeControls.getByRole('button', { name: 'Movies', exact: true }).click()
   const discoveryFlow = await page.locator('.discover-page').evaluate((root) => {
     const headings = Array.from(root.querySelectorAll<HTMLElement>('h2, h3')).map((heading) => heading.textContent?.trim() || '')
-    const referenceOrder = ['Your Next Obsession', 'OR TRY', 'Top 10 For You', 'Your Weekend Plan', 'Pick Three You Like', 'Pick by Colour', 'Your Genres', 'Your Next Binge', 'Sunday Night Moods', 'Made for the Big Screen', 'Hidden Gems', 'New in Your Library', 'Keep Exploring']
+    const referenceOrder = ['Your Next Obsession', 'OR TRY', 'Top 10 For You', 'How Much Time Tonight?', 'Pick Three You Like', 'Pick by Colour', 'Your Genres', 'Your Next Binge', 'Sunday Night Moods', 'Made for the Big Screen', 'Hidden Gems', 'New in Your Library', 'Keep Exploring']
     return referenceOrder.filter((title) => headings.includes(title)).map((title) => headings.indexOf(title))
   })
   expect(discoveryFlow.every((position, index) => index === 0 || position > discoveryFlow[index - 1]!), 'Discovery shelves should follow the order shown in the reference video').toBe(true)
@@ -906,7 +899,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(surpriseButton).toBeEnabled()
   const startingTitle = await obsessionCard.getAttribute('data-title')
   const startingHeroTitle = await heroSpotlight.getAttribute('data-title')
-  const startingWeekendPlanTitle = await page.locator('.discover-weekend__feature').getAttribute('data-title')
+  const startingTimeTonightTitles = await page.locator('.discover-time .media-row-card-slot img').evaluateAll((images) => images.map((image) => (image as HTMLImageElement).alt))
   await page.evaluate(() => {
     const target = window as Window & { __auralesOriginalRandom?: () => number }
     target.__auralesOriginalRandom = Math.random
@@ -937,7 +930,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(pickerDialog.getByRole('button', { name: 'Open', exact: true })).toBeVisible()
   await expect(pickerDialog.getByRole('button', { name: 'Spin again', exact: true })).toBeVisible()
   await expect(heroSpotlight).toHaveAttribute('data-title', startingHeroTitle!)
-  await expect(page.locator('.discover-weekend__feature')).toHaveAttribute('data-title', startingWeekendPlanTitle!)
+  expect(await page.locator('.discover-time .media-row-card-slot img').evaluateAll((images) => images.map((image) => (image as HTMLImageElement).alt))).toEqual(startingTimeTonightTitles)
   expect(await pickerPosterFrame?.evaluate((poster) => poster.isConnected), 'roulette frames should keep the poster surface mounted').toBe(true)
   expect(await pickerPosterImage?.evaluate((image) => image.isConnected), 'roulette frames should update one poster image instead of stacking transitions').toBe(true)
   await expect(pickerDialog.locator('.discover-picker__poster > img')).toHaveCount(1)
@@ -1467,7 +1460,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
   await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeHidden()
   await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Pick by Colour' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Your Weekend Plan' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Sunday Night Moods' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Made for the Big Screen' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Hidden Gems', exact: true })).toBeVisible()
@@ -1486,10 +1479,10 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
         const heroCopy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
         const heroPoster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
         const heroTitle = hero.querySelector<HTMLElement>('.discover-spotlight__copy h2')!
-        const weekend = root.querySelector<HTMLElement>('.discover-weekend__feature')!
-        const weekendBounds = weekend.getBoundingClientRect()
-        const weekendCopy = weekend.querySelector<HTMLElement>('.discover-weekend__copy')!.getBoundingClientRect()
-        const weekendPoster = weekend.querySelector<HTMLElement>('.discover-weekend__poster')!.getBoundingClientRect()
+        const timeSection = root.querySelector<HTMLElement>('.discover-time')!
+        const timeRow = timeSection.querySelector<HTMLElement>('.media-row')
+        const timeRowBounds = (timeRow ?? timeSection).getBoundingClientRect()
+        const timeCards = Array.from(timeRow?.querySelectorAll<HTMLElement>('.media-row-card-slot') ?? []).map((card) => card.getBoundingClientRect())
         const textBlocks = Array.from(hero.querySelectorAll<HTMLElement>(
           '.discover-spotlight__eyebrow, .discover-spotlight__copy h2, .discover-spotlight__meta, .discover-spotlight__overview, .discover-spotlight__actions',
         )).filter((element) => getComputedStyle(element).display !== 'none' && element.getBoundingClientRect().height > 0)
@@ -1504,7 +1497,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
           return { title: section.querySelector('h2')?.textContent?.trim() || section.className, top: bounds.top, bottom: bounds.bottom }
         })
         const editorialHeaders = Array.from(root.querySelectorAll<HTMLElement>('.discover-editorial-heading')).map((header) => {
-          const section = header.closest<HTMLElement>('.discover-time, .discover-weekend, .discover-shelf')!
+          const section = header.closest<HTMLElement>('.discover-time, .discover-shelf')!
           const title = header.querySelector<HTMLElement>('h2')!.getBoundingClientRect()
           const tabs = header.querySelector<HTMLElement>('.discover-editorial-tabs')!.getBoundingClientRect()
           return { section: section.getBoundingClientRect(), title: title.toJSON(), tabs: tabs.toJSON(), tabsSeparated: tabs.top >= title.bottom - 1 || tabs.left >= title.right - 1 }
@@ -1522,9 +1515,8 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
           tabLabelWidths: Array.from(root.querySelectorAll<HTMLElement>('.discover-page__tabs button')).map((button) => ({ label: button.textContent?.trim(), width: button.clientWidth, scrollWidth: button.scrollWidth })),
           controlsRowsSeparated: modes.top >= tabs.bottom - 1,
           hero: hero.getBoundingClientRect().toJSON(),
-          weekend: weekendBounds.toJSON(),
-          weekendColumnsSeparated: weekendCopy.right <= weekendPoster.left + 1,
-          weekendInside: weekendBounds.left >= -1 && weekendBounds.right <= document.documentElement.clientWidth + 1,
+          timeRow: timeRowBounds.toJSON(),
+          timeCardsInside: timeCards.every((bounds) => bounds.top >= timeRowBounds.top - 2 && bounds.bottom <= timeRowBounds.bottom + 2),
           headingFontSize: Number.parseFloat(getComputedStyle(root.querySelector<HTMLElement>('.discover-page__heading h1')!).fontSize),
           heroFontFamily: getComputedStyle(heroTitle).fontFamily,
           heroColumnsSeparated: heroCopy.right <= heroPoster.left + 1,
@@ -1556,8 +1548,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
         expect(Math.abs((layout.tabs.top + layout.tabs.bottom) / 2 - (layout.modes.top + layout.modes.bottom) / 2), `${platform} tabs and actions should share a row at ${width}px`).toBeLessThanOrEqual(2)
       }
       expect(layout.heroColumnsSeparated, `${platform} spotlight copy overlaps its poster at ${width}px`).toBe(true)
-      expect(layout.weekendColumnsSeparated, `${platform} Weekend Plan copy overlaps its poster at ${width}px`).toBe(true)
-      expect(layout.weekendInside, `${platform} Weekend Plan exceeds the viewport at ${width}px`).toBe(true)
+      expect(layout.timeCardsInside, `${platform} time-fit cards should remain vertically contained at ${width}px`).toBe(true)
       expect(layout.heroTextContained, `${platform} spotlight text escapes its copy column at ${width}px`).toBe(true)
       expect(layout.heroTextStacked, `${platform} spotlight text overlaps at ${width}px`).toBe(true)
       expect(layout.heroFontFamily, `${platform} spotlight should use the app's standard system font`).toContain('system-ui')
