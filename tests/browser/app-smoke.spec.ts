@@ -586,7 +586,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         first_air_date: '2026-05-01',
         vote_average: 8.2,
         vote_count: 1800,
-        popularity: 80 - index * 10,
+        // TMDB's individual popularity field can conflict with its live weekly
+        // chart position; Discovery must retain the provider's actual rank.
+        popularity: index === 2 ? 235 : 80 - index * 10,
         genre_ids: weeklyType === 'movie' ? [878, 14] : [18, 10759],
         original_language: 'en',
       }))

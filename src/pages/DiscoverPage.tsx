@@ -14,7 +14,7 @@ import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
 import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, orderSpotlightCandidates, rankCandidates, reconcileTrendingSignals, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, orderRecommendationsBySource, orderSpotlightCandidates, rankCandidates, reconcileTrendingSignals, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
 import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktWatchedShows, getRatings as getTraktRatings } from '../services/trakt/sync'
@@ -942,21 +942,22 @@ export default function DiscoverPage() {
   // while its replacement loads. Keep every Discovery surface scoped to the
   // active tab so another media type never flashes into the recommendations.
   const snapshotTabRanked = useMemo(() => ranked.filter((entry) => matchesDiscoverTab(entry.item, tab)), [ranked, tab])
-  const currentTrendingRanked = useMemo(() => sortRecommendationsByPopularity(rankCandidates(
-    currentTrending
-      .filter((item) => item.poster && matchesDiscoverTab(item, tab) && candidatePassesPrefs(item, prefs))
-      .map((item) => recommendationCandidate(item, 'tmdb-trending')),
-    tasteProfile,
-    activity,
-    feedback,
-    mode,
-    rankingNow,
-    impressions,
-    prefsWeights(prefs),
-  )),
-  // Keep the public weekly chart's momentum order for OR TRY, Top 10 boosts and
-  // the randomizer. Personal taste, feedback and watch history still break ties
-  // through score.total in sortRecommendationsByPopularity.
+  const currentTrendingRanked = useMemo(() => {
+    const sourceItems = currentTrending.filter((item) => item.poster && matchesDiscoverTab(item, tab) && candidatePassesPrefs(item, prefs))
+    return orderRecommendationsBySource(rankCandidates(
+      sourceItems.map((item) => recommendationCandidate(item, 'tmdb-trending')),
+      tasteProfile,
+      activity,
+      feedback,
+      mode,
+      rankingNow,
+      impressions,
+      prefsWeights(prefs),
+    ), sourceItems)
+  },
+  // Preserve the public weekly chart's actual feed order for the Spotlight,
+  // OR TRY, Top 10 boosts and the randomizer. The popularity field is a noisy
+  // per-title signal and must not reorder a rank supplied by the live source.
   [activity, currentTrending, feedback, impressions, mode, prefs, rankingNow, tab, tasteProfile])
   const tabRanked = useMemo(() => reconcileTrendingSignals(
     snapshotTabRanked,
@@ -1311,28 +1312,31 @@ export default function DiscoverPage() {
     [connectedActivity.watchlist, localWatchlist, tab],
   )
   const bingeRecommendations = useMemo(() => {
-    const bingeRanked = sortRecommendationsByPopularity(tab === 'movies'
-      ? rankCandidates(
-        [
-          ...bingeTrending
-            .filter((item) => item.type === 'series' && !isAnimeLike(item) && candidatePassesPrefs(item, prefs))
-            .map((item) => recommendationCandidate(item, 'tmdb-trending')),
-          ...bingeSeries
-            .filter((item) => item.type === 'series' && !isAnimeLike(item) && candidatePassesPrefs(item, prefs))
-            .map((item) => recommendationCandidate(item, 'tmdb-discover')),
-        ],
-        tasteProfile,
-        activity,
-        feedback,
-        mode,
-        rankingNow,
-        impressions,
-        prefsWeights(prefs),
-      )
-      // For series and anime, merge the live weekly feed into the saved
-      // personalized ranking. Otherwise a still-valid daily snapshot can
-      // keep old shows ahead of what is trending this week.
-      : [...currentTrendingRanked, ...tabRanked])
+    const bingeRanked = tab === 'movies'
+      ? (() => {
+        const trendingSeries = bingeTrending.filter((item) => item.type === 'series' && !isAnimeLike(item) && candidatePassesPrefs(item, prefs))
+        const catalogSeries = bingeSeries.filter((item) => item.type === 'series' && !isAnimeLike(item) && candidatePassesPrefs(item, prefs))
+        const rankBingeItems = (items: SearchResult[], source: 'tmdb-trending' | 'tmdb-discover') => rankCandidates(
+          items.map((item) => recommendationCandidate(item, source)),
+          tasteProfile,
+          activity,
+          feedback,
+          mode,
+          rankingNow,
+          impressions,
+          prefsWeights(prefs),
+        )
+        const rankedTrends = rankBingeItems(trendingSeries, 'tmdb-trending')
+        const rankedCatalog = sortRecommendationsByPopularity(rankBingeItems(catalogSeries, 'tmdb-discover'))
+        return [...orderRecommendationsBySource(rankedTrends, trendingSeries), ...rankedCatalog]
+      })()
+      : (() => {
+        // Current live trend rank outranks any stale saved snapshot. Keep the
+        // remaining personalized catalog in popularity order behind it.
+        const liveTrendKeys = new Set(currentTrendingRanked.map((entry) => mediaIdentity(entry.item)))
+        const catalog = tabRanked.filter((entry) => !liveTrendKeys.has(mediaIdentity(entry.item)))
+        return [...currentTrendingRanked, ...sortRecommendationsByPopularity(catalog)]
+      })()
     const matchesTab = (item: SearchResult) => item.type === 'series'
       && (tab === 'anime' ? isAnimeLike(item) : !isAnimeLike(item))
     const seen = new Set<string>()

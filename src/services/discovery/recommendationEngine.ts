@@ -193,6 +193,19 @@ export function sortRecommendationsByPopularity(ranked: RankedRecommendation[]):
   })
 }
 
+/** Keep the upstream order for a live editorial feed after personalization metadata is attached. */
+export function orderRecommendationsBySource(ranked: RankedRecommendation[], sourceItems: SearchResult[]): RankedRecommendation[] {
+  const sourcePosition = new Map(sourceItems.map((item, index) => [mediaKey(item), index]))
+  return [...ranked].sort((left, right) => {
+    const leftPosition = sourcePosition.get(mediaKey(left.item))
+    const rightPosition = sourcePosition.get(mediaKey(right.item))
+    if (leftPosition != null && rightPosition != null) return leftPosition - rightPosition
+    if (leftPosition != null) return -1
+    if (rightPosition != null) return 1
+    return right.score.total - left.score.total
+  })
+}
+
 /**
  * Keep the editorial Spotlight current when today's weekly feed is available,
  * then offer the most popular remaining recommendations as alternatives.
@@ -204,7 +217,7 @@ export function orderSpotlightCandidates(
   recommendations: RankedRecommendation[],
 ): RankedRecommendation[] {
   const seen = new Set<string>()
-  return [...sortRecommendationsByPopularity(currentTrends), ...sortRecommendationsByPopularity(recommendations)]
+  return [...currentTrends, ...sortRecommendationsByPopularity(recommendations)]
     .filter((entry) => {
       const key = mediaKey(entry.item)
       if (!entry.item.poster || seen.has(key)) return false

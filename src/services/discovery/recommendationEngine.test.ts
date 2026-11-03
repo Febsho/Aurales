@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SearchResult, WatchProgress } from '../../types'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, orderSpotlightCandidates, rankCandidates, reconcileTrendingSignals, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, orderRecommendationsBySource, orderSpotlightCandidates, rankCandidates, reconcileTrendingSignals, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
 import type { DiscoveryActivity, RecommendationCandidate, RecommendationFeedback } from './types'
 
 const sciFi: SearchResult = { id:'seed',title:'Seed',type:'movie',provider:'tmdb',tmdbId:1,genreIds:[878],year:2020,rating:8 }
@@ -114,6 +114,21 @@ describe('discovery recommendation engine', () => {
     const ranked = rankCandidates([popularArchive, weeklyTrend], buildTasteProfile(activity()), activity(), [], 'for-you')
 
     expect(sortRecommendationsByPopularity(ranked).map((entry) => entry.item.tmdbId)).toEqual([140, 139])
+  })
+  it('preserves the live weekly chart order when TMDB popularity values disagree', () => {
+    const sourceOrder = [
+      candidate(143, { title: 'Trend rank one', year: 2026 }),
+      candidate(144, { title: 'Trend rank two', year: 2026 }),
+      candidate(145, { title: 'Trend rank three', year: 2026 }),
+    ]
+    sourceOrder[0]!.popularity = 190
+    sourceOrder[1]!.popularity = 56
+    sourceOrder[2]!.popularity = 235
+    sourceOrder.forEach((entry) => { entry.source = 'tmdb-trending' })
+    const ranked = rankCandidates(sourceOrder, buildTasteProfile(activity()), activity(), [], 'for-you')
+
+    expect(orderRecommendationsBySource([...ranked].reverse(), sourceOrder.map((entry) => entry.item)).map((entry) => entry.item.tmdbId))
+      .toEqual([143, 144, 145])
   })
   it('lets an established popular title beat an obscure new release in Surprise Me', () => {
     const oldHit = candidate(107, { year: new Date().getFullYear() - 10, rating: 8 })
@@ -254,6 +269,16 @@ describe('discovery recommendation engine', () => {
 
     expect(personalizedOrder[0]?.item.tmdbId).toBe(716)
     expect(orderSpotlightCandidates(currentTrendRanked, personalizedOrder).map((entry) => entry.item.tmdbId)).toEqual([717, 715, 716])
+  })
+  it('keeps the live weekly rank order in Spotlight when popularity metadata conflicts', () => {
+    const first = candidate(718, { title: 'Trend rank one' })
+    const second = candidate(719, { title: 'Trend rank two' })
+    first.source = second.source = 'tmdb-trending'
+    first.popularity = 30
+    second.popularity = 90
+    const sourceOrdered = rankCandidates([first, second], buildTasteProfile(activity()), activity(), [], 'for-you')
+
+    expect(orderSpotlightCandidates(sourceOrdered, []).map((entry) => entry.item.tmdbId)).toEqual([718, 719])
   })
   it('lets a verified weekly trend beat a stale low-momentum title in the default feed', () => {
     const archive = candidate(136, { year: new Date().getFullYear() - 12, rating: 8 })
