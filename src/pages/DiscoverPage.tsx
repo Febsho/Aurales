@@ -14,7 +14,7 @@ import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
 import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, orderRecommendationsBySource, orderSpotlightCandidates, prioritizeLiveTrends, prioritizeLiveTrendsWithin, rankCandidates, reconcileTrendingSignals, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
+import { applyRecommendationFeedback, buildPopularTopTen, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, orderRecommendationsBySource, orderSpotlightCandidates, prioritizeLiveTrends, prioritizeLiveTrendsWithin, rankCandidates, reconcileTrendingSignals, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
 import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktWatchedShows, getRatings as getTraktRatings } from '../services/trakt/sync'
@@ -1199,15 +1199,7 @@ export default function DiscoverPage() {
       .slice(0, 3)
     if (!freshTrendPicks.length) return sections
     const promotedKeys = new Set(freshTrendPicks.map((entry) => mediaIdentity(entry.item)))
-    const mergeTopTen = (items: typeof topTen.items) => {
-      const seen = new Set<string>()
-      return [...freshTrendPicks, ...items].filter((entry) => {
-        const key = mediaIdentity(entry.item)
-        if (seen.has(key)) return false
-        seen.add(key)
-        return true
-      }).slice(0, 10)
-    }
+    const mergeTopTen = (items: typeof topTen.items) => buildPopularTopTen(freshTrendPicks, items)
 
     return sections
       .map((section) => {

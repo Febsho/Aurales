@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SearchResult, WatchProgress } from '../../types'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, orderRecommendationsBySource, orderSpotlightCandidates, prioritizeLiveTrends, prioritizeLiveTrendsWithin, rankCandidates, reconcileTrendingSignals, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
+import { applyRecommendationFeedback, buildPopularTopTen, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, orderRecommendationsBySource, orderSpotlightCandidates, prioritizeLiveTrends, prioritizeLiveTrendsWithin, rankCandidates, reconcileTrendingSignals, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
 import type { DiscoveryActivity, RecommendationCandidate, RecommendationFeedback } from './types'
 
 const sciFi: SearchResult = { id:'seed',title:'Seed',type:'movie',provider:'tmdb',tmdbId:1,genreIds:[878],year:2020,rating:8 }
@@ -42,6 +42,18 @@ describe('discovery recommendation engine', () => {
     expect(sections.find((section) => section.id === 'made-for-you')?.catalogItems).toHaveLength(12)
     expect(sections.find((section) => section.id === 'made-for-you')?.items[0]?.source).toBe('tmdb-discover')
     expect(sections.flatMap((section) => section.items).every((entry) => entry.source !== 'tmdb-similar')).toBe(true)
+  })
+  it('keeps current trends on top of Top 10 and popularity ahead of personal score', () => {
+    const weekly = [candidate(930), candidate(931), candidate(932)].map((entry) => ({ ...entry, source: 'tmdb-trending' as const }))
+    const archive = candidate(933, { year: 2005 })
+    archive.popularity = 1
+    const establishedHit = candidate(934, { year: 2014 })
+    establishedHit.popularity = 300
+    const ranked = rankCandidates([...weekly, archive, establishedHit], buildTasteProfile(activity()), activity(), [], 'for-you')
+      .map((entry) => ({ ...entry, score: { ...entry.score, total: entry.item.tmdbId === 933 ? 10_000 : 0 } }))
+    const liveTrends = ranked.filter((entry) => entry.source === 'tmdb-trending')
+
+    expect(buildPopularTopTen(liveTrends, ranked).map((entry) => entry.item.tmdbId)).toEqual([930, 931, 932, 934, 933])
   })
   it('completed titles strengthen matching preferences', () => {
     const completed: WatchProgress = { id:'p',mediaId:'seed',mediaType:'movie',progressSeconds:100,durationSeconds:100,completed:true }

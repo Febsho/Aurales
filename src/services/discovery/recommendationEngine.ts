@@ -227,6 +227,32 @@ export function prioritizeLiveTrendsWithin(
   )
 }
 
+/** Keep the live weekly chart at the front of Top 10, then favor popular fallbacks. */
+export function buildPopularTopTen(
+  currentTrends: RankedRecommendation[],
+  recommendations: RankedRecommendation[],
+  limit = 10,
+  trendLimit = 3,
+): RankedRecommendation[] {
+  const boundedLimit = Math.max(0, limit)
+  const seen = new Set<string>()
+  const top: RankedRecommendation[] = []
+  for (const entry of currentTrends.slice(0, Math.max(0, trendLimit))) {
+    const key = mediaKey(entry.item)
+    if (seen.has(key)) continue
+    seen.add(key)
+    top.push(entry)
+  }
+  for (const entry of sortRecommendationsByPopularity(recommendations)) {
+    const key = mediaKey(entry.item)
+    if (seen.has(key)) continue
+    seen.add(key)
+    top.push(entry)
+    if (top.length >= boundedLimit) break
+  }
+  return top.slice(0, boundedLimit)
+}
+
 /** Keep the upstream order for a live editorial feed after personalization metadata is attached. */
 export function orderRecommendationsBySource(ranked: RankedRecommendation[], sourceItems: SearchResult[]): RankedRecommendation[] {
   const sourcePosition = new Map(sourceItems.map((item, index) => [mediaKey(item), index]))
