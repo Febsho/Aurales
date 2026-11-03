@@ -1035,6 +1035,20 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(discoveryLayout!.actionsOnOneLine).toBe(true)
   }
 
+  const mobileSpotlight = page.locator('.discover-next-hero')
+  const mobileSpotlightTitle = await mobileSpotlight.getAttribute('data-title')
+  await mobileSpotlight.getByRole('button', { name: 'Another option' }).click()
+  await expect.poll(() => mobileSpotlight.getAttribute('data-title')).not.toBe(mobileSpotlightTitle)
+  const mobileSpotlightMotion = await mobileSpotlight.evaluate((hero) => {
+    const movingSurfaces = [
+      hero.querySelector<HTMLElement>('.discover-spotlight__top'),
+      hero.querySelector<HTMLElement>('.discover-spotlight__bottom > h2, .discover-spotlight__bottom > .discover-spotlight__logo'),
+      hero.querySelector<HTMLElement>('.discover-spotlight__poster'),
+    ]
+    return movingSurfaces.map((surface) => Boolean(surface?.getAnimations().length))
+  })
+  expect(mobileSpotlightMotion, 'mobile editorial changes should animate real grid items even though copy wrappers use display: contents').toEqual([true, true, true])
+
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.evaluate(() => window.scrollTo(0, 0))
   await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()

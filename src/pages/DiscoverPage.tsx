@@ -996,7 +996,13 @@ export default function DiscoverPage() {
     const previousKey = previousSpotlightKeyRef.current
     previousSpotlightKeyRef.current = heroMediaKey
     if (!previousKey || !heroMediaKey || previousKey === heroMediaKey || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-    const surfaces = spotlightTransitionRef.current?.querySelectorAll<HTMLElement>('.discover-spotlight__copy, .discover-spotlight__poster')
+    // On phones the copy wrappers use `display: contents` so their children
+    // can share the two-column grid with the poster. Animate the visible grid
+    // items themselves there; desktop keeps the single coordinated copy move.
+    const surfaceSelector = window.matchMedia('(max-width: 700px)').matches
+      ? '.discover-spotlight__top, .discover-spotlight__bottom > *, .discover-spotlight__poster'
+      : '.discover-spotlight__copy, .discover-spotlight__poster'
+    const surfaces = spotlightTransitionRef.current?.querySelectorAll<HTMLElement>(surfaceSelector)
     if (!surfaces?.length) return
     const animations = Array.from(surfaces, (surface, index) => surface.animate([
       { opacity: .58, transform: 'translateY(6px) scale(.99)' },
