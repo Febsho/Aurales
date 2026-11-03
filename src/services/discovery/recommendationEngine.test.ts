@@ -214,6 +214,21 @@ describe('discovery recommendation engine', () => {
     // staples.
     expect(trendWins).toBeGreaterThan(4_000)
   })
+  it('gives higher weekly chart positions a stronger Surprise Me chance', () => {
+    const weeklyTrends = Array.from({ length: 20 }, (_, index) => {
+      const entry = candidate(900 + index, { year: 2025 })
+      entry.source = 'tmdb-trending'
+      entry.popularity = 60
+      return entry
+    })
+    const ranked = rankCandidates(weeklyTrends, buildTasteProfile(activity()), activity(), [], 'for-you')
+      .sort((left, right) => Number(left.item.tmdbId) - Number(right.item.tmdbId))
+    const draws = Array.from({ length: 10_000 }, (_, index) => (index + 0.5) / 10_000)
+    const firstPlaceWins = draws.filter((draw) => chooseSurpriseRecommendation(ranked, undefined, () => draw)?.item.tmdbId === 900).length
+    const twentiethPlaceWins = draws.filter((draw) => chooseSurpriseRecommendation(ranked, undefined, () => draw)?.item.tmdbId === 919).length
+
+    expect(firstPlaceWins).toBeGreaterThan(twentiethPlaceWins * 1.5)
+  })
   it('gives a current weekly-trending title a stronger Surprise Me chance even without popularity metadata', () => {
     const ordinary = candidate(105, { year: 2020 })
     ordinary.popularity = 0

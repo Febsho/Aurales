@@ -662,6 +662,7 @@ export function chooseSurpriseRecommendation(pool: RankedRecommendation[], curre
   const alternatives = pool.filter((entry) => String(entry.item.id) !== String(currentId))
   const choices = alternatives.length ? alternatives : pool
   const year = new Date().getUTCFullYear()
+  let weeklyTrendRank = 0
   const weights = choices.map((entry, index) => {
     // Keep popularity on an absolute scale. Normalizing to the current pool's
     // maximum made a stale title look like a blockbuster whenever every item
@@ -672,6 +673,10 @@ export function chooseSurpriseRecommendation(pool: RankedRecommendation[], curre
     // provenance here so popularity is counted once and live weekly trends
     // receive their own clear preference.
     const isWeeklyTrend = entry.trendSignal || entry.source === 'tmdb-trending'
+    // `choices` is assembled with the current weekly chart first and in its
+    // provider order. Preserve that rank in the draw: equal trend badges do
+    // not mean every chart position should be equally likely.
+    const trendRankBoost = isWeeklyTrend ? 28 / (weeklyTrendRank++ + 1) : 0
     const releaseYear = recommendationReleaseYear(entry.item)
     const age = releaseYear ? Math.max(0, year - releaseYear) : 8
     const freshness = Math.max(0, 1 - age / 6)
@@ -679,7 +684,7 @@ export function chooseSurpriseRecommendation(pool: RankedRecommendation[], curre
     // Live trends and established hits lead the draw, while fresh releases
     // still beat equally popular catalogue staples. A fresh obscure title
     // does not crowd out a known hit, and old low-momentum titles stay rare.
-    return 1 + popularity * 16 + (isWeeklyTrend ? 28 : 0) + freshness * 10 + rankPreference * .25
+    return 1 + popularity * 16 + (isWeeklyTrend ? 28 : 0) + trendRankBoost + freshness * 10 + rankPreference * .25
   })
   const total = weights.reduce((sum, weight) => sum + weight, 0)
   let target = Math.min(.999999999, Math.max(0, random())) * total
