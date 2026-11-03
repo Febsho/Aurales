@@ -1216,12 +1216,12 @@ export default function DiscoverPage() {
     if (!topTen) return sections
 
     // Daily personalized snapshots should not make Top 10 stale while the
-    // current weekly feed has already refreshed. Promote two fresh trends into
+    // current weekly feed has already refreshed. Promote three fresh trends into
     // the editorial Top 10, then let the separate OR TRY shelf continue with
     // the remaining titles. Keep the Spotlight out of both shelves.
     const freshTrendPicks = currentTrendingRanked
       .filter((entry) => mediaIdentity(entry.item) !== heroMediaKey)
-      .slice(0, 2)
+      .slice(0, 3)
     if (!freshTrendPicks.length) return sections
     const promotedKeys = new Set(freshTrendPicks.map((entry) => mediaIdentity(entry.item)))
     const mergeTopTen = (items: typeof topTen.items) => {
