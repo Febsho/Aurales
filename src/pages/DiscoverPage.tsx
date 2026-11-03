@@ -1894,11 +1894,11 @@ export default function DiscoverPage() {
             </div>
           </section></DiscoveryReveal>
           {bingeRecommendations.length > 0 && <DiscoveryReveal><section className="discover-binge row-contain" aria-labelledby="discover-binge-title">
-            <div className="discover-binge__heading"><div><p className="discover-section-eyebrow">For your next long watch</p><h2 id="discover-binge-title">Your Next Binge</h2></div><span>Based on your taste and watch history</span></div>
+            <div className="discover-binge__heading"><div><p className="discover-section-eyebrow">{activeBingeItem?.isAnime ? 'Anime to get lost in' : 'Series to get lost in'}</p><h2 id="discover-binge-title">Your Next Binge</h2></div><span>Popular picks from current catalogs</span></div>
             <div className="discover-binge__feature" data-active-title={activeBingeItem?.title}>
               <div key={`art-${activeBingeItem ? mediaIdentity(activeBingeItem) : 'empty'}`} className="discover-binge__art" aria-hidden="true">{activeBingeItem?.backdrop && <img src={activeBingeItem.backdrop} alt="" loading="lazy" decoding="async"/>}</div>
               <div key={`copy-${activeBingeItem ? mediaIdentity(activeBingeItem) : 'empty'}`} className="discover-binge__copy" aria-live="polite">
-                <div><p className="discover-section-eyebrow">{activeBingeItem?.isAnime ? 'Anime to get lost in' : 'Series to get lost in'}</p><h3>{activeBingeItem?.title}</h3><p>{[activeBingeItem?.year, activeBingeItem?.genres?.[0], activeBingeItem?.isAnime ? 'Anime' : 'Series'].filter(Boolean).join(' · ')}</p></div>
+                <div><h3>{activeBingeItem?.title}</h3><p>{[activeBingeItem?.year, activeBingeItem?.genres?.[0], activeBingeItem?.isAnime ? 'Anime' : 'Series'].filter(Boolean).join(' · ')}</p></div>
                 <div className="discover-binge__actions"><button type="button" onClick={() => activeBingeItem && openItemDetail(activeBingeItem, true)}>▶ Play</button><button type="button" onClick={() => activeBingeItem && openItemDetail(activeBingeItem)}>Details</button><button type="button" onClick={() => setBingeIndex((current) => (current + 1) % bingeRecommendations.length)} disabled={bingeRecommendations.length < 2}>Another option</button></div>
               </div>
               {activeBingeItem && <div key={`gallery-${mediaIdentity(activeBingeItem)}`} className="discover-binge__gallery" aria-label="Binge recommendations">

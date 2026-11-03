@@ -212,7 +212,8 @@ test('Discovery uses public catalogs when the active profile has no library entr
       return { width: bounds.width, ratio: poster.width / poster.height, detailsContained: details.left >= poster.left && details.right <= poster.right && details.top >= poster.top && details.bottom <= poster.bottom }
     })
     expect(cardLayout.width, `Calendar cards should be readable at ${width}px`).toBeGreaterThanOrEqual(224)
-    expect(cardLayout.ratio).toBeCloseTo(1.65, 1)
+    expect(cardLayout.ratio, `Calendar release cards should use a wide backdrop crop at ${width}px`).toBeGreaterThanOrEqual(1.9)
+    expect(cardLayout.ratio, `Calendar release cards should not become banner-thin at ${width}px`).toBeLessThanOrEqual(3.8)
     expect(cardLayout.detailsContained).toBe(true)
   }
 })
