@@ -1142,10 +1142,15 @@ export default function DiscoverPage() {
     observer.observe(sentinel)
     return () => observer.disconnect()
   }, [continuationScope, viewState])
+  const genreTileCandidates = useMemo(
+    () => sortRecommendationsByPopularity([...currentTrendingRanked, ...tabRanked])
+      .filter((entry) => mediaIdentity(entry.item) !== heroMediaKey),
+    [currentTrendingRanked, heroMediaKey, tabRanked],
+  )
   const genreTiles = useMemo(() => genreOptions.map((genre) => ({
     option: { title: genre.title, genres: [genre.id] },
-    item: tabRanked.find((entry) => entry.item.genreIds?.includes(genre.id))?.item,
-  })), [genreOptions, tabRanked])
+    item: genreTileCandidates.find((entry) => entry.item.genreIds?.includes(genre.id))?.item,
+  })), [genreOptions, genreTileCandidates])
   const genreSelectionItems = useMemo(() => {
     if (selectedGenreId == null) return []
     const seen = new Set<string>()

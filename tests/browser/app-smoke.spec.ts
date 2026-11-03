@@ -860,6 +860,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   })
   expect(pickerBeforeShelves, 'the broad public recommendations should lead into the taste picker').toBe(true)
   await expect(page.getByRole('heading', { name: 'Your Genres' })).toBeVisible()
+  const fantasyGenreTile = page.locator('.discover-genres__grid button').filter({ hasText: 'Fantasy' }).first()
+  await expect.poll(() => fantasyGenreTile.evaluate((tile) => tile.style.backgroundImage)).toContain('weekly-trend-backdrop.jpg')
   await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toBeVisible()
   const timeTonightRail = page.locator('.discover-time .media-row')
   await expect(timeTonightRail).toBeVisible()
