@@ -853,10 +853,10 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     const refine = document.querySelector<HTMLElement>('.discover-refine')
     return Boolean(obsession && trending && topTen && refine
       && obsession.compareDocumentPosition(trending) & Node.DOCUMENT_POSITION_FOLLOWING
-      && trending.compareDocumentPosition(refine) & Node.DOCUMENT_POSITION_FOLLOWING
-      && refine.compareDocumentPosition(topTen) & Node.DOCUMENT_POSITION_FOLLOWING)
+      && trending.compareDocumentPosition(topTen) & Node.DOCUMENT_POSITION_FOLLOWING
+      && topTen.compareDocumentPosition(refine) & Node.DOCUMENT_POSITION_FOLLOWING)
   })
-  expect(discoverySurfaceOrder, 'the editorial spotlight leads into OR TRY, the video-led taste picker, and the full catalog shelves').toBe(true)
+  expect(discoverySurfaceOrder, 'the editorial spotlight leads into OR TRY and Top 10 before the taste picker').toBe(true)
   const mobileDiscoveryLayout = await page.evaluate(() => {
     const rect = (selector: string) => {
       const element = document.querySelector<HTMLElement>(selector)
@@ -882,6 +882,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       obsessionCard: rect('.discover-next-hero'),
       trendingHeading: headingRect('OR TRY'),
       topTenHeading: headingRect('Top 10 For You'),
+      tastePicker: rect('.discover-refine'),
     }
   })
   const { profileWelcomeHeading, browseControls, obsessionHeading, obsessionCard: spotlightBounds, trendingHeading, topTenHeading } = mobileDiscoveryLayout
@@ -891,6 +892,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const topTenTop = topTenHeading!.y
   expect(obsessionTop).toBeLessThan(trendingTop)
   expect(trendingTop).toBeLessThan(topTenTop)
+  expect(topTenTop).toBeLessThan(mobileDiscoveryLayout.tastePicker!.y)
   await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toBeVisible()
   await expect(page.locator('.discover-shelf--recent')).toBeVisible()
   await expect(heroSpotlight.getByRole('button', { name: 'Details' })).toBeVisible()
@@ -1030,10 +1032,10 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     const trend = Array.from(document.querySelectorAll('.discover-shelf h2')).find((heading) => heading.textContent?.trim() === 'OR TRY')
     const topTen = Array.from(document.querySelectorAll('.discover-shelf h2')).find((heading) => heading.textContent?.trim() === 'Top 10 For You')
     return Boolean(picker && trend && topTen
-      && (trend.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING)
-      && (picker.compareDocumentPosition(topTen) & Node.DOCUMENT_POSITION_FOLLOWING))
+      && (trend.compareDocumentPosition(topTen) & Node.DOCUMENT_POSITION_FOLLOWING)
+      && (topTen.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING))
   })
-  expect(pickerOrder, 'the taste picker should follow the weekly trending rail and precede deeper catalog shelves').toBe(true)
+  expect(pickerOrder, 'the taste picker should follow the weekly trending rail and Top 10 catalog').toBe(true)
   await expect(page.getByRole('heading', { name: 'Your Genres' })).toBeVisible()
   const fantasyGenreTile = page.locator('.discover-genres__grid button').filter({ hasText: 'Fantasy' }).first()
   const spotlightTitle = await page.locator('.discover-next-hero').getAttribute('data-title')
@@ -1853,6 +1855,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
           viewport: document.documentElement.clientWidth,
           documentWidth: document.documentElement.scrollWidth,
           page: root.getBoundingClientRect().toJSON(),
+          bingeSection: root.querySelector<HTMLElement>('.discover-binge')?.getBoundingClientRect().toJSON() ?? null,
           controls: controls.toJSON(), tabs: tabs.toJSON(), modes: modes.toJSON(),
           calendarEmptyStateCompact: Boolean(calendarEmptyRow && calendarOpenButton
             && getComputedStyle(calendarEmptyRow).display === 'flex'
@@ -1895,6 +1898,12 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
       expect(layout.page.right, `${platform} Discovery exceeds the viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
       expect(layout.sectionsInside, `${platform} Discovery sections exceed ${width}px`).toBe(true)
       expect(layout.sectionsStacked, `${platform} Discovery sections overlap at ${width}px: ${JSON.stringify(layout.sectionDetails)}`).toBe(true)
+      if (width >= 1600 && layout.bingeSection) {
+        expect(
+          Math.abs((layout.bingeSection.left + layout.bingeSection.right) / 2 - (layout.page.left + layout.page.right) / 2),
+          `${platform} Binge feature should stay centered when its desktop width is capped at ${width}px`,
+        ).toBeLessThanOrEqual(2)
+      }
       expect(layout.editorialControlsInside, `${platform} time/mood controls escape their section at ${width}px`).toBe(true)
       expect(layout.editorialControlsSeparated, `${platform} time/mood headings overlap their controls at ${width}px`).toBe(true)
       expect(layout.calendarEmptyStateCompact, `${platform} empty calendar should remain one compact row at ${width}px`).toBe(true)

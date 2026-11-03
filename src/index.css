@@ -6240,7 +6240,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     width: calc(100% - 2 * var(--discover-gutter));
     max-width: 112rem;
   }
-  html[data-runtime-platform="web"] .discover-binge,
   html[data-runtime-platform="web"] .discover-spotlight,
   html[data-runtime-platform="web"] .discover-spotlight-heading {
     margin-inline: var(--discover-gutter);
@@ -6258,7 +6257,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     width: calc(100% - 2 * var(--discover-gutter));
     max-width: 112rem;
   }
-  html[data-runtime-platform="tauri"] .discover-binge,
   html[data-runtime-platform="tauri"] .discover-spotlight,
   html[data-runtime-platform="tauri"] .discover-spotlight-heading {
     margin-inline: var(--discover-gutter);
