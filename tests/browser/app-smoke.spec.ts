@@ -357,6 +357,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     } as typeof IntersectionObserver
   })
   const tmdbRequestPaths = new Set<string>()
+  const runtimeFilterRequests: Array<{ path: string; min: string | null; max: string | null }> = []
   const continuationPages = new Set<number>()
   const animeContinuationResponses: string[] = []
   let animeMovieContinuationFailuresRemaining = 0
@@ -364,6 +365,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.route('https://api.themoviedb.org/**', async (route) => {
     const requestUrl = new URL(route.request().url())
     tmdbRequestPaths.add(requestUrl.pathname)
+    if (requestUrl.searchParams.has('with_runtime.gte') || requestUrl.searchParams.has('with_runtime.lte')) {
+      runtimeFilterRequests.push({ path: requestUrl.pathname, min: requestUrl.searchParams.get('with_runtime.gte'), max: requestUrl.searchParams.get('with_runtime.lte') })
+    }
     if (/^\/3\/trending\/(movie|tv)\/week$/.test(requestUrl.pathname)) {
       const weeklyType = requestUrl.pathname.includes('/movie/') ? 'movie' : 'series'
       const results = Array.from({ length: 8 }, (_, index) => ({
@@ -658,7 +662,6 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   }))
   expect(mobileCardMotion.transform).toBe('none')
   expect(parseFloat(mobileCardMotion.transitionDuration)).toBeGreaterThan(0)
-  await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toHaveCount(0)
   const recommendedShelf = page.locator('.discover-shelf').filter({ has: page.getByRole('heading', { name: 'Top 10 For You', exact: true }) })
   await recommendedShelf.getByRole('button', { name: 'Open Top 10 For You catalog' }).click()
   const recommendedCatalog = page.locator('.catalog-page')
@@ -692,13 +695,20 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.getByRole('heading', { name: 'Your Genres' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Moods for Tonight' })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Pick by Colour' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toBeVisible()
+  const timeOptions = page.getByRole('group', { name: 'Choose film runtime' })
+  await expect(timeOptions.getByRole('button', { name: 'About 2 Hours' })).toHaveAttribute('aria-pressed', 'true')
+  await timeOptions.getByRole('button', { name: 'Under 90 Minutes' }).click()
+  await expect(timeOptions.getByRole('button', { name: 'Under 90 Minutes' })).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => runtimeFilterRequests.some((request) => request.path.endsWith('/discover/movie') && request.max === '90')).toBe(true)
+  await expect(page.getByRole('heading', { name: 'Under 90 Minutes Picks' })).toBeVisible()
   const monoPosters = page.getByRole('button', { name: 'Mono', exact: true })
   await expect(monoPosters).toBeVisible()
   await monoPosters.click()
   await expect(monoPosters).toHaveAttribute('aria-pressed', 'true')
   const discoveryFlow = await page.locator('.discover-page').evaluate((root) => {
     const headings = Array.from(root.querySelectorAll<HTMLElement>('h2, h3')).map((heading) => heading.textContent?.trim() || '')
-    const referenceOrder = ['Your Genres', 'Your Next Binge', 'Sunday Night Moods', 'Pick by Colour']
+    const referenceOrder = ['Your Genres', 'Your Next Binge', 'Sunday Night Moods', 'Pick by Colour', 'How Much Time Tonight?']
     return referenceOrder.filter((title) => headings.includes(title)).map((title) => headings.indexOf(title))
   })
   expect(discoveryFlow.every((position, index) => index === 0 || position > discoveryFlow[index - 1]!), 'Discovery sections should follow the reference flow from genres through mood and colour picks').toBe(true)
@@ -1008,14 +1018,18 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       const poster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
       const binge = page.querySelector<HTMLElement>('.discover-binge__feature')
       const contentSections = Array.from(page.querySelectorAll<HTMLElement>(
-        '.discover-next-hero, .discover-shelf, .discover-refine, .discover-genres, .discover-binge, .discover-more',
+        '.discover-next-hero, .discover-shelf, .discover-refine, .discover-genres, .discover-binge, .discover-time, .discover-more',
       )).map((section) => section.getBoundingClientRect())
+      const time = page.querySelector<HTMLElement>('.discover-time')?.getBoundingClientRect()
       return {
         viewport,
         documentWidth: document.documentElement.scrollWidth,
         page: page.getBoundingClientRect().toJSON(),
         headingFontSize: Number.parseFloat(getComputedStyle(page.querySelector<HTMLElement>('.discover-page__heading h1')!).fontSize),
         heroHeight: hero.getBoundingClientRect().height,
+        timeWidth: time?.width ?? 0,
+        timeLeft: time?.left ?? 0,
+        timeRight: time?.right ?? 0,
         sectionsInside: contentSections.every((bounds) => bounds.left >= -1 && bounds.right <= viewport + 1),
         heroColumnsSeparated: copy.right <= poster.left + 1,
         maxPosterCardRatio: Math.max(...Array.from(page.querySelectorAll<HTMLElement>('.discover-page .discover-shelf .media-row-card-slot'), (card) => card.getBoundingClientRect().height / Math.max(1, card.getBoundingClientRect().width))),
@@ -1026,6 +1040,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopBounds.page.left, `Discovery shifted offscreen at ${width}px`).toBeGreaterThanOrEqual(-1)
     expect(desktopBounds.page.right, `Discovery exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
     expect(desktopBounds.sectionsInside, `a Discovery section exceeds the viewport at ${width}px`).toBe(true)
+    expect(desktopBounds.timeWidth, `time picker should remain a readable width at ${width}px`).toBeGreaterThan(0)
+    expect(desktopBounds.timeLeft, `time picker shifted offscreen at ${width}px`).toBeGreaterThanOrEqual(-1)
+    expect(desktopBounds.timeRight, `time picker exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
     expect(desktopBounds.heroColumnsSeparated, `hero copy overlaps its poster at ${width}px`).toBe(true)
     expect(desktopBounds.headingFontSize, `Discovery heading should stay within its desktop type scale at ${width}px`).toBeGreaterThanOrEqual(28)
     expect(desktopBounds.headingFontSize, `Discovery heading should stay within its desktop type scale at ${width}px`).toBeLessThanOrEqual(44)
@@ -1041,6 +1058,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       const viewport = document.documentElement.clientWidth
       const page = document.querySelector<HTMLElement>('.discover-page')!
       const hero = document.querySelector<HTMLElement>('.discover-next-hero')!
+      const time = page.querySelector<HTMLElement>('.discover-time')!.getBoundingClientRect()
       const copy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
       const poster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
       return {
@@ -1049,6 +1067,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         page: page.getBoundingClientRect().toJSON(),
         headingFontSize: Number.parseFloat(getComputedStyle(page.querySelector<HTMLElement>('.discover-page__heading h1')!).fontSize),
         heroHeight: hero.getBoundingClientRect().height,
+        timeWidth: time.width,
+        timeLeft: time.left,
+        timeRight: time.right,
         heroColumnsSeparated: copy.right <= poster.left + 1,
         maxPosterCardRatio: Math.max(...Array.from(page.querySelectorAll<HTMLElement>('.discover-shelf .media-row-card-slot'), (card) => card.getBoundingClientRect().height / Math.max(1, card.getBoundingClientRect().width))),
       }
@@ -1056,6 +1077,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopBounds.documentWidth, `Tauri document overflow at ${width}px`).toBeLessThanOrEqual(width + 1)
     expect(desktopBounds.page.left, `Tauri Discovery shifted offscreen at ${width}px`).toBeGreaterThanOrEqual(-1)
     expect(desktopBounds.page.right, `Tauri Discovery exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
+    expect(desktopBounds.timeWidth, `Tauri time picker should remain visible at ${width}px`).toBeGreaterThan(0)
+    expect(desktopBounds.timeLeft, `Tauri time picker shifted offscreen at ${width}px`).toBeGreaterThanOrEqual(-1)
+    expect(desktopBounds.timeRight, `Tauri time picker exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
     expect(desktopBounds.heroColumnsSeparated, `Tauri hero copy overlaps its poster at ${width}px`).toBe(true)
     expect(desktopBounds.headingFontSize, `Tauri Discovery heading should stay within its desktop type scale at ${width}px`).toBeGreaterThanOrEqual(28)
     expect(desktopBounds.headingFontSize, `Tauri Discovery heading should stay within its desktop type scale at ${width}px`).toBeLessThanOrEqual(44)
