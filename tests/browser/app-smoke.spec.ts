@@ -1566,6 +1566,21 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
   await expect(page.getByRole('heading', { name: 'Hidden Gems', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toBeVisible()
 
+  const trendingShelf = page.locator('.discover-shelf--trending')
+  const trendingTrack = trendingShelf.locator('[data-media-row-track]')
+  const scrollRight = trendingShelf.getByRole('button', { name: 'Scroll right' })
+  const scrollLeft = trendingShelf.getByRole('button', { name: 'Scroll left' })
+  const initialRail = await trendingTrack.evaluate((track) => ({ left: track.scrollLeft, max: track.scrollWidth - track.clientWidth }))
+  expect(initialRail.max, 'the trending rail should expose real overflow before enabling scroll arrows').toBeGreaterThan(1)
+  await scrollRight.click()
+  await expect.poll(() => trendingTrack.evaluate((track) => track.scrollLeft)).toBeGreaterThan(initialRail.left)
+  await expect.poll(() => trendingTrack.evaluate((track) => Math.abs(track.scrollLeft - (track.scrollWidth - track.clientWidth)) <= 2)).toBe(true)
+  await expect(scrollRight).toBeDisabled()
+  const endRail = await trendingTrack.evaluate((track) => track.scrollLeft)
+  await scrollLeft.click()
+  await expect.poll(() => trendingTrack.evaluate((track) => track.scrollLeft)).toBeLessThan(endRail)
+  await expect.poll(() => trendingTrack.evaluate((track) => track.scrollLeft)).toBeLessThanOrEqual(2)
+
   for (const platform of ['web', 'tauri'] as const) {
     await page.evaluate((runtime) => { document.documentElement.dataset.runtimePlatform = runtime }, platform)
     for (const width of [320, 390, 768, 1024, 1440, 1920, 2560]) {
