@@ -1454,11 +1454,17 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
     }))
     await route.fulfill({ json: { page: Number(url.searchParams.get('page') || 1), total_pages: 1, total_results: results.length, results } })
   })
-  await page.route('https://image.tmdb.org/**', (route) => route.fulfill({
-    headers: { 'Access-Control-Allow-Origin': '*' },
-    contentType: 'image/svg+xml',
-    body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 3"><rect width="2" height="3" fill="#777"/></svg>',
-  }))
+  await page.route('https://image.tmdb.org/**', (route) => {
+    const isBackdrop = route.request().url().includes('backdrop')
+    const artwork = isBackdrop
+      ? '<defs><linearGradient id="scene" x2="1" y2="1"><stop stop-color="#115761"/><stop offset=".48" stop-color="#cc653c"/><stop offset="1" stop-color="#171b3b"/></linearGradient></defs><rect width="1200" height="675" fill="url(#scene)"/><circle cx="850" cy="170" r="92" fill="#f4c76d" opacity=".86"/><path d="M0 500 260 260l190 160 220-260 530 390v125H0Z" fill="#111d29" opacity=".72"/><path d="M0 560 290 400l220 120 220-190 470 230v120H0Z" fill="#0c121a" opacity=".7"/>'
+      : '<defs><linearGradient id="poster" x2="0" y2="1"><stop stop-color="#df7644"/><stop offset=".52" stop-color="#365e77"/><stop offset="1" stop-color="#111727"/></linearGradient></defs><rect width="400" height="600" fill="url(#poster)"/><circle cx="280" cy="175" r="92" fill="#f5c875" opacity=".78"/><path d="M0 420 110 300l84 80 105-150 101 135v235H0Z" fill="#10202c" opacity=".72"/>'
+    return route.fulfill({
+      headers: { 'Access-Control-Allow-Origin': '*' },
+      contentType: 'image/svg+xml',
+      body: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${isBackdrop ? '1200 675' : '400 600'}">${artwork}</svg>`,
+    })
+  })
 
   await page.goto('/discover')
   const selectProfileButton = page.getByRole('button', { name: /select profile/i })
