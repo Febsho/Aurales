@@ -1396,6 +1396,9 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
   await expect(page.locator('.discover-page')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Pick by Colour' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Made for the Big Screen' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Sunday Night Moods' })).toBeVisible()
 
   for (const platform of ['web', 'tauri'] as const) {
     await page.evaluate((runtime) => { document.documentElement.dataset.runtimePlatform = runtime }, platform)
@@ -1415,8 +1418,15 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
         )).filter((element) => getComputedStyle(element).display !== 'none' && element.getBoundingClientRect().height > 0)
           .map((element) => element.getBoundingClientRect())
         const sections = Array.from(root.querySelectorAll<HTMLElement>(
-          '.discover-next-hero, .discover-shelf, .discover-refine, .discover-colors, .discover-genres, .discover-binge, .discover-more',
+          '.discover-next-hero, .discover-time, .discover-shelf, .discover-refine, .discover-colors, .discover-genres, .discover-binge, .discover-more',
         )).map((section) => section.getBoundingClientRect())
+        const editorialHeaders = Array.from(root.querySelectorAll<HTMLElement>('.discover-editorial-heading')).map((header) => {
+          const section = header.closest<HTMLElement>('.discover-time, .discover-shelf')!
+          const title = header.querySelector<HTMLElement>('h2')!.getBoundingClientRect()
+          const tabs = header.querySelector<HTMLElement>('.discover-editorial-tabs')!.getBoundingClientRect()
+          return { section: section.getBoundingClientRect(), title: title.toJSON(), tabs: tabs.toJSON(), tabsSeparated: tabs.top >= title.bottom - 1 || tabs.left >= title.right - 1 }
+        })
+        const editorialButtonHeights = Array.from(root.querySelectorAll<HTMLElement>('.discover-editorial-tabs button')).map((button) => button.getBoundingClientRect().height)
         const posterCards = Array.from(root.querySelectorAll<HTMLElement>('.discover-shelf .media-row-card-slot'))
           .map((card) => card.getBoundingClientRect())
           .filter((bounds) => bounds.width > 0)
@@ -1433,6 +1443,9 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
           heroTextStacked: textBlocks.every((bounds, index) => index === 0 || textBlocks[index - 1]!.bottom <= bounds.top + 2),
           sectionsInside: sections.every((bounds) => bounds.left >= -1 && bounds.right <= document.documentElement.clientWidth + 1),
           sectionsStacked: sections.every((bounds, index) => index === 0 || bounds.height === 0 || sections[index - 1]!.height === 0 || sections[index - 1]!.bottom <= bounds.top + 1),
+          editorialControlsInside: editorialHeaders.every(({ section, tabs }) => tabs.left >= section.left - 1 && tabs.right <= section.right + 1),
+          editorialControlsSeparated: editorialHeaders.every(({ tabsSeparated }) => tabsSeparated),
+          minEditorialButtonHeight: Math.min(...editorialButtonHeights),
           maxPosterRatio: Math.max(0, ...posterCards.map((bounds) => bounds.height / bounds.width)),
         }
       })
@@ -1441,6 +1454,9 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
       expect(layout.page.right, `${platform} Discovery exceeds the viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
       expect(layout.sectionsInside, `${platform} Discovery sections exceed ${width}px`).toBe(true)
       expect(layout.sectionsStacked, `${platform} Discovery sections overlap at ${width}px`).toBe(true)
+      expect(layout.editorialControlsInside, `${platform} time/mood controls escape their section at ${width}px`).toBe(true)
+      expect(layout.editorialControlsSeparated, `${platform} time/mood headings overlap their controls at ${width}px`).toBe(true)
+      expect(layout.minEditorialButtonHeight, `${platform} time/mood touch targets are too small at ${width}px`).toBeGreaterThanOrEqual(44)
       expect(layout.controls.left, `${platform} controls shift at ${width}px`).toBeGreaterThanOrEqual(-1)
       expect(layout.controls.right, `${platform} controls exceed the viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
       expect(Math.abs((layout.tabs.top + layout.tabs.bottom) / 2 - (layout.modes.top + layout.modes.bottom) / 2), `${platform} tabs and actions should share a row at ${width}px`).toBeLessThanOrEqual(2)

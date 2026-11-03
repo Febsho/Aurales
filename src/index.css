@@ -6647,7 +6647,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-editorial-heading { align-items: flex-start; flex-direction: column; gap: .45rem; margin-block: .8rem .45rem; }
   .discover-editorial-heading h2 { font-size: 1.08rem; }
   .discover-editorial-tabs { width: 100%; gap: .35rem; }
-  .discover-editorial-tabs button { min-height: 40px; padding-inline: .65rem; font-size: .68rem; }
+  .discover-editorial-tabs button { min-height: 44px; padding-inline: .65rem; font-size: .68rem; }
   .discover-time { margin-block: .65rem .95rem; }
   .discover-shelf--big-screen, .discover-shelf--gems, .discover-shelf--moods, .discover-shelf--recent { margin-block: .65rem .9rem; }
   .discover-genres__grid { gap: .5rem; margin-block: .65rem .8rem; }
