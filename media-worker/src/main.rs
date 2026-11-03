@@ -8144,6 +8144,39 @@ mod tests {
         ));
         tokio::fs::create_dir_all(&dir).await.unwrap();
         let h264_opus = dir.join("h264-opus.mkv");
+        let high_fps_mobile_input = dir.join("high-fps-mobile-input.mp4");
+        let mut make_high_fps_input = tokio::process::Command::new(&ffmpeg);
+        make_high_fps_input
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=640x360:rate=60:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:sample_rate=48000:duration=1",
+                "-c:v",
+                "mpeg4",
+                "-q:v",
+                "5",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-shortest",
+            ])
+            .arg(&high_fps_mobile_input);
+        let generated = make_high_fps_input.output().await.unwrap();
+        assert!(
+            generated.status.success(),
+            "failed to prepare a high-frame-rate mobile fixture"
+        );
+
         let mut make_opus = tokio::process::Command::new(&ffmpeg);
         make_opus
             .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
@@ -8167,17 +8200,17 @@ mod tests {
             ("audio-aac", h264_opus, ConversionMode::AudioAac),
             (
                 "h264-aac",
-                fixtures.join("vp8-opus.webm"),
+                high_fps_mobile_input.clone(),
                 ConversionMode::H264Aac,
             ),
             (
                 "h264-aac-low",
-                fixtures.join("vp8-opus.webm"),
+                high_fps_mobile_input.clone(),
                 ConversionMode::H264AacLow,
             ),
             (
                 "h264-aac-compat",
-                fixtures.join("vp8-opus.webm"),
+                high_fps_mobile_input.clone(),
                 ConversionMode::H264AacCompat,
             ),
         ];
@@ -8219,17 +8252,22 @@ mod tests {
                     "-v",
                     "error",
                     "-show_entries",
-                    "stream=codec_name",
+                    "stream=codec_type,codec_name,profile,level,width,height,pix_fmt,r_frame_rate",
                     "-of",
-                    "csv=p=0",
+                    "json",
                 ])
                 .arg(&output)
                 .output()
                 .await
                 .unwrap();
             assert!(probe.status.success(), "ffprobe rejected {name} output");
-            let codecs = String::from_utf8_lossy(&probe.stdout);
-            let output_codecs = codecs.lines().map(str::to_owned).collect::<Vec<_>>();
+            let output_info: Value = serde_json::from_slice(&probe.stdout).unwrap();
+            let output_streams = output_info["streams"].as_array().unwrap();
+            let output_codecs = output_streams
+                .iter()
+                .filter_map(|stream| stream["codec_name"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>();
+            let codecs = output_codecs.join("\n");
             if mode == ConversionMode::Remux {
                 assert_eq!(
                     output_codecs, source_codecs,
@@ -8261,6 +8299,57 @@ mod tests {
                 codecs.lines().any(|codec| codec == "aac"),
                 "{name} output is not AAC: {codecs}"
             );
+            if matches!(
+                mode,
+                ConversionMode::H264Aac
+                    | ConversionMode::H264AacLow
+                    | ConversionMode::H264AacCompat
+            ) {
+                let video = output_streams
+                    .iter()
+                    .find(|stream| stream["codec_type"] == "video")
+                    .unwrap();
+                assert!(
+                    video["profile"]
+                        .as_str()
+                        .is_some_and(|profile| profile.contains("Baseline")),
+                    "{name} output must use an H.264 Baseline profile: {video}"
+                );
+                assert_eq!(video["pix_fmt"], "yuv420p", "{name} pixel format");
+                let level = video["level"].as_u64().unwrap();
+                let (max_level, max_width, max_height) = match mode {
+                    ConversionMode::H264AacLow => (31, 1280, 720),
+                    ConversionMode::H264AacCompat => (30, 720, 480),
+                    _ => (42, 1920, 1080),
+                };
+                assert!(
+                    level <= max_level,
+                    "{name} H.264 level {level} exceeds {max_level}"
+                );
+                let width = video["width"].as_u64().unwrap();
+                let height = video["height"].as_u64().unwrap();
+                assert!(
+                    (width <= max_width && height <= max_height)
+                        || (width <= max_height && height <= max_width),
+                    "{name} dimensions {width}x{height} exceed the mobile profile bound"
+                );
+                let frame_rate = video["r_frame_rate"]
+                    .as_str()
+                    .and_then(|value| value.split_once('/'))
+                    .and_then(|(numerator, denominator)| {
+                        Some(numerator.parse::<f64>().ok()? / denominator.parse::<f64>().ok()?)
+                    })
+                    .unwrap();
+                let max_frame_rate = if mode == ConversionMode::H264Aac {
+                    60.0
+                } else {
+                    30.0
+                };
+                assert!(
+                    frame_rate <= max_frame_rate,
+                    "{name} frame rate {frame_rate} exceeds {max_frame_rate} fps"
+                );
+            }
         }
         let materialized_playlist = dir.join("materialized.m3u8");
         let materialized_assets = dir.join("materialized.input-assets");
