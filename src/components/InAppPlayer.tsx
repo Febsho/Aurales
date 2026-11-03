@@ -286,6 +286,9 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   const [headerSessionUrl, setHeaderSessionUrl] = useState<string | null>(null)
   const [workerPlaybackUrl, setWorkerPlaybackUrl] = useState<string | null>(null)
   const needsHeaderProxy = Object.keys(playbackRequestHeaders).length > 0
+  const sourceContainer = sourceMediaInfo?.container
+  const sourceVideoCodec = sourceMediaInfo?.videoCodec
+  const sourceAudioCodec = sourceMediaInfo?.audioCodec
   const playbackSourceUrl = workerPlaybackUrl || (needsHeaderProxy ? headerSessionUrl : url)
   const openExternalPlayer = (player: ExternalPlayer) => {
     let targetUrl = playbackSourceUrl || url
@@ -420,8 +423,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       && browserCapabilities.platform === 'web'
       && getMediaConversionOutputFormat() === 'mp4'
       && getMediaWorkerConfig()
-      && sourceMediaInfo
-      && browserRejectsKnownMedia(video, sourceUrl, sourceMediaInfo)
+      && (sourceContainer || sourceVideoCodec || sourceAudioCodec)
+      && browserRejectsKnownMedia(video, sourceUrl, { container: sourceContainer, videoCodec: sourceVideoCodec, audioCodec: sourceAudioCodec })
       && requestWorkerConversionRef.current?.(video, browserCapabilities.nativeHls)) {
       return
     }
@@ -646,7 +649,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       video.removeAttribute('src')
       video.load()
     }
-  }, [url, playbackSourceUrl, workerPlaybackUrl, needsHeaderProxy, playbackRequestHeaders, playbackItem?.isAnime, sourceMediaInfo?.container, sourceMediaInfo?.videoCodec, sourceMediaInfo?.audioCodec])
+  }, [url, playbackSourceUrl, workerPlaybackUrl, needsHeaderProxy, playbackRequestHeaders, playbackItem?.isAnime, sourceContainer, sourceVideoCodec, sourceAudioCodec])
   const SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const
   const [playbackSpeed, setPlaybackSpeed] = useState(1)
   const [showSpeedMenu, setShowSpeedMenu] = useState(false)
@@ -1221,7 +1224,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     wtPause(video.currentTime)
   }
 
-  const refreshAudioTracks = () => {
+  const refreshAudioTracks = useCallback(() => {
     const hlsTracks = hlsTracksRef.current
     if (hlsTracks?.audioTracks.length) {
       const next = hlsTracks.audioTracks.map((track, index) => ({
@@ -1235,7 +1238,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       setSelectedAudio(String(hlsTracks.audioTrack >= 0 ? hlsTracks.audioTrack : 0))
       return
     }
-    const video = videoRef.current as (HTMLVideoElement & { audioTracks?: Array<{ enabled: boolean; id?: string; label?: string; language?: string }> }) | null
+    const video = videoRef.current as (HTMLVideoElement & { audioTracks?: Array<{ enabled: boolean; id?: string; label?: string; language?: string }> & EventTarget }) | null
     const tracks = video?.audioTracks
     if (!tracks?.length) {
       const serverTracks = serverTrackInfo?.provider === 'jellyfin' ? serverTrackInfo.audioTracks || [] : []
@@ -1293,7 +1296,23 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
 
     setAudioTracks(next)
     setSelectedAudio(String(next.find((track) => track.enabled)?.index ?? 0))
-  }
+  }, [playbackItem?.isAnime, selectedAudio, serverTrackInfo])
+
+  useEffect(() => {
+    const video = videoRef.current as (HTMLVideoElement & { audioTracks?: Array<{ enabled: boolean; id?: string; label?: string; language?: string }> & EventTarget }) | null
+    const tracks = video?.audioTracks
+    if (!tracks) return
+    const refresh = () => refreshAudioTracks()
+    tracks.addEventListener('addtrack', refresh)
+    tracks.addEventListener('removetrack', refresh)
+    tracks.addEventListener('change', refresh)
+    refresh()
+    return () => {
+      tracks.removeEventListener('addtrack', refresh)
+      tracks.removeEventListener('removetrack', refresh)
+      tracks.removeEventListener('change', refresh)
+    }
+  }, [url, playbackSourceUrl, workerPlaybackUrl, refreshAudioTracks])
 
   const refreshNativeSubtitleTracks = useCallback(() => {
     const video = videoRef.current
