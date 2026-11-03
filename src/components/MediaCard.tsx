@@ -1187,9 +1187,15 @@ function MediaCard({ item, cardIndex, layout = 'poster', disableArtOverride = fa
     : trailerExpanded ? expandedPosterWidthClass : widthClass
   // A ranked row must not change its block height when preview details appear;
   // otherwise every catalog below it gets reflowed on hover.
-  const cardSlotHeightClass = ranked ? rankedSlotHeightClass : trailerExpanded ? expandedTrailerSlotHeightClass : posterSlotHeightClass
-  const posterHoverClass = suppressPosterHover ? '' : 'group-hover:-translate-y-2 group-hover:scale-[1.04]'
-  const posterImageHoverClass = suppressPosterHover ? '' : 'group-hover:scale-105'
+  // Mobile posters already have an intrinsic 2:3 artwork height. Let the
+  // title and optional rating add only the space they need instead of holding
+  // every card to a desktop-sized minimum slot.
+  const mobilePosterSlotHeightClass = isMobileWebViewport() && !ranked && !trailerExpanded ? 'h-auto' : null
+  const cardSlotHeightClass = ranked ? rankedSlotHeightClass : trailerExpanded ? expandedTrailerSlotHeightClass : mobilePosterSlotHeightClass || posterSlotHeightClass
+  // Touch browsers can keep :hover active after a tap, leaving a poster
+  // permanently lifted and scaled. Keep the artwork geometry static there.
+  const posterHoverClass = suppressPosterHover || isMobileWebViewport() ? '' : 'group-hover:-translate-y-2 group-hover:scale-[1.04]'
+  const posterImageHoverClass = suppressPosterHover || isMobileWebViewport() ? '' : 'group-hover:scale-105'
 
   return (
     <button
