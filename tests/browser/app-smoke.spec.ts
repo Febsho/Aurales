@@ -939,7 +939,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopDiscovery.height).toBeLessThanOrEqual(500)
     expect(desktopDiscovery.poster).toBe(true)
   }
-  for (const width of [768, 1024, 1280, 1440, 1920]) {
+  for (const width of [768, 1024, 1280, 1440, 1920, 2560]) {
     await page.setViewportSize({ width, height: 900 })
     const desktopBounds = await page.evaluate(() => {
       const viewport = document.documentElement.clientWidth
@@ -955,6 +955,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         viewport,
         documentWidth: document.documentElement.scrollWidth,
         page: page.getBoundingClientRect().toJSON(),
+        headingFontSize: Number.parseFloat(getComputedStyle(page.querySelector<HTMLElement>('.discover-page__heading h1')!).fontSize),
+        heroHeight: hero.getBoundingClientRect().height,
         sectionsInside: contentSections.every((bounds) => bounds.left >= -1 && bounds.right <= viewport + 1),
         heroColumnsSeparated: copy.right <= poster.left + 1,
         maxPosterCardRatio: Math.max(...Array.from(page.querySelectorAll<HTMLElement>('.discover-page .discover-shelf .media-row-card-slot'), (card) => card.getBoundingClientRect().height / Math.max(1, card.getBoundingClientRect().width))),
@@ -966,11 +968,15 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopBounds.page.right, `Discovery exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
     expect(desktopBounds.sectionsInside, `a Discovery section exceeds the viewport at ${width}px`).toBe(true)
     expect(desktopBounds.heroColumnsSeparated, `hero copy overlaps its poster at ${width}px`).toBe(true)
+    expect(desktopBounds.headingFontSize, `Discovery heading should stay within its desktop type scale at ${width}px`).toBeGreaterThanOrEqual(28)
+    expect(desktopBounds.headingFontSize, `Discovery heading should stay within its desktop type scale at ${width}px`).toBeLessThanOrEqual(44)
+    expect(desktopBounds.heroHeight, `Discovery spotlight should retain its desktop composition at ${width}px`).toBeGreaterThanOrEqual(300)
+    expect(desktopBounds.heroHeight, `Discovery spotlight should not dominate the desktop page at ${width}px`).toBeLessThanOrEqual(500)
     expect(desktopBounds.maxPosterCardRatio, `Discovery poster cards should follow their artwork height at ${width}px`).toBeLessThanOrEqual(2.4)
     if (width >= 900 && desktopBounds.bingeColumns > 0) expect(desktopBounds.bingeColumns, `binge feature should use a horizontal desktop composition at ${width}px`).toBe(2)
   }
   await page.evaluate(() => { document.documentElement.dataset.runtimePlatform = 'tauri' })
-  for (const width of [1024, 1440, 1920]) {
+  for (const width of [768, 1024, 1440, 1920, 2560]) {
     await page.setViewportSize({ width, height: 900 })
     const desktopBounds = await page.evaluate(() => {
       const viewport = document.documentElement.clientWidth
@@ -982,6 +988,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         viewport,
         documentWidth: document.documentElement.scrollWidth,
         page: page.getBoundingClientRect().toJSON(),
+        headingFontSize: Number.parseFloat(getComputedStyle(page.querySelector<HTMLElement>('.discover-page__heading h1')!).fontSize),
+        heroHeight: hero.getBoundingClientRect().height,
         heroColumnsSeparated: copy.right <= poster.left + 1,
         maxPosterCardRatio: Math.max(...Array.from(page.querySelectorAll<HTMLElement>('.discover-shelf .media-row-card-slot'), (card) => card.getBoundingClientRect().height / Math.max(1, card.getBoundingClientRect().width))),
       }
@@ -990,6 +998,10 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopBounds.page.left, `Tauri Discovery shifted offscreen at ${width}px`).toBeGreaterThanOrEqual(-1)
     expect(desktopBounds.page.right, `Tauri Discovery exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
     expect(desktopBounds.heroColumnsSeparated, `Tauri hero copy overlaps its poster at ${width}px`).toBe(true)
+    expect(desktopBounds.headingFontSize, `Tauri Discovery heading should stay within its desktop type scale at ${width}px`).toBeGreaterThanOrEqual(28)
+    expect(desktopBounds.headingFontSize, `Tauri Discovery heading should stay within its desktop type scale at ${width}px`).toBeLessThanOrEqual(44)
+    expect(desktopBounds.heroHeight, `Tauri spotlight should retain its desktop composition at ${width}px`).toBeGreaterThanOrEqual(300)
+    expect(desktopBounds.heroHeight, `Tauri spotlight should not dominate the desktop page at ${width}px`).toBeLessThanOrEqual(500)
     expect(desktopBounds.maxPosterCardRatio, `Tauri Discovery poster cards should follow their artwork height at ${width}px`).toBeLessThanOrEqual(2.4)
   }
   await page.evaluate(() => { document.documentElement.dataset.runtimePlatform = 'web' })
