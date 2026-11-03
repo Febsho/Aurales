@@ -100,6 +100,29 @@ test('mobile web hides desktop navigation and Home hero layout preferences', asy
   await expect(page.getByText('Card focus animations')).toHaveCount(0)
 })
 
+test('Discovery stays visible and stops motion when the system requests reduced motion', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.goto('/')
+  await page.getByRole('button', { name: /select profile/i }).click()
+  await page.getByRole('link', { name: 'Discover' }).click()
+
+  const discovery = page.locator('.discover-page')
+  await expect(discovery).toBeVisible()
+  const firstReveal = discovery.locator('.discover-reveal').first()
+  await expect.poll(() => firstReveal.getAttribute('data-revealed')).toBe('true')
+  const motion = await firstReveal.evaluate((element) => ({
+    reduced: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    opacity: getComputedStyle(element).opacity,
+    transformIsIdentity: new DOMMatrixReadOnly(getComputedStyle(element).transform).isIdentity,
+    transitionDurationSeconds: Number.parseFloat(getComputedStyle(element).transitionDuration),
+  }))
+  expect(motion.reduced).toBe(true)
+  expect(motion.opacity).toBe('1')
+  expect(motion.transformIsIdentity).toBe(true)
+  expect(motion.transitionDurationSeconds).toBeLessThanOrEqual(0.0001)
+})
+
 test('mobile Search uses compact system typography without horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/')
