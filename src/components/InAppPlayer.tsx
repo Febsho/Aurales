@@ -37,7 +37,7 @@ import { audioLanguageOrder, selectPreferredLanguageTrack, selectStartupSubtitle
 import { subtitleToVtt } from '../services/player/subtitleFormats'
 import { getPlatformCapabilities, isDashUrl, isHlsUrl, togglePictureInPicture } from '../platform/capabilities'
 import { getHttpText } from '../platform/httpText'
-import { AUTOPLAY_GESTURE_MESSAGE, browserPlaybackFailureMessage, isAutoplayGestureError, isMediaSessionExpired, isPlaybackInterruptedError, nextPlaybackConversionAfterDecodeFailure } from '../services/player/browserPlayback'
+import { AUTOPLAY_GESTURE_MESSAGE, browserPlaybackFailureMessage, browserRejectsKnownMedia, isAutoplayGestureError, isMediaSessionExpired, isPlaybackInterruptedError, nextPlaybackConversionAfterDecodeFailure } from '../services/player/browserPlayback'
 import { cancelMediaConversion, createMediaSession, getSupportedMediaConversionOutputFormat, getMediaConversionOutputFormat, getMediaConversionStatus, getMediaWorkerCapabilities, getMediaWorkerConfig, MediaWorkerHttpError, startMediaConversion, type MediaConversionMode, type MediaConversionOutputFormat, type PlaybackRequestHeaders, type MediaConversionStatus } from '../services/mediaWorker'
 import { buildExternalPlayerUrl, getPreferredExternalPlayer, setPreferredExternalPlayer, type ExternalPlayer } from '../services/player/externalPlayers'
 import { createExternalPlaybackReturnUrl } from '../services/player/externalPlaybackReturn'
@@ -60,6 +60,7 @@ interface InAppPlayerProps {
     mediaSourceId?: string
     audioTracks?: Record<string, unknown>[]
   }
+  sourceMediaInfo?: { container?: string; videoCodec?: string; audioCodec?: string }
   playbackItem?: PlaybackItem
   startTime?: number
   poster?: string
@@ -206,7 +207,7 @@ async function requestSubtitleTranslation(apiKey: string, model: string, content
   return blocks.join('\n\n')
 }
 
-export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_REQUEST_HEADERS, title, subtitle, subtitles = NO_SUBTITLES, serverTrackInfo, playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError, onPlaybackStarted, onNextEpisode, nextEpisodeHint }: InAppPlayerProps) {
+export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_REQUEST_HEADERS, title, subtitle, subtitles = NO_SUBTITLES, serverTrackInfo, sourceMediaInfo, playbackItem, startTime, poster, backdrop, onClose, onPickAnother, onPlaybackError, onPlaybackStarted, onNextEpisode, nextEpisodeHint }: InAppPlayerProps) {
   useEffect(() => {
     setRequestPlaybackActive(true)
     return () => setRequestPlaybackActive(false)
@@ -414,6 +415,16 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     if (!video) return
     if (needsHeaderProxy && !playbackSourceUrl) return
     const sourceUrl = playbackSourceUrl || url
+    const browserCapabilities = getPlatformCapabilities(video)
+    if (!workerPlaybackUrl
+      && browserCapabilities.platform === 'web'
+      && getMediaConversionOutputFormat() === 'mp4'
+      && getMediaWorkerConfig()
+      && sourceMediaInfo
+      && browserRejectsKnownMedia(video, sourceUrl, sourceMediaInfo)
+      && requestWorkerConversionRef.current?.(video, browserCapabilities.nativeHls)) {
+      return
+    }
     if (video.dataset.auralesSourceUrl !== url) {
       video.dataset.auralesSourceUrl = url
       mediaProxyAttemptedRef.current = false
@@ -635,7 +646,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       video.removeAttribute('src')
       video.load()
     }
-  }, [url, playbackSourceUrl, workerPlaybackUrl, needsHeaderProxy, playbackRequestHeaders, playbackItem?.isAnime])
+  }, [url, playbackSourceUrl, workerPlaybackUrl, needsHeaderProxy, playbackRequestHeaders, playbackItem?.isAnime, sourceMediaInfo?.container, sourceMediaInfo?.videoCodec, sourceMediaInfo?.audioCodec])
   const SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const
   const [playbackSpeed, setPlaybackSpeed] = useState(1)
   const [showSpeedMenu, setShowSpeedMenu] = useState(false)

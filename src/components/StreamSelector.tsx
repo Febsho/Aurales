@@ -1074,6 +1074,11 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
           title={title}
           subtitle={seasonEpisode ? `From S${seasonEpisode.season} E${seasonEpisode.episode}` : undefined}
           subtitles={mergedSubtitles}
+          sourceMediaInfo={{
+            container: playback.stream.container,
+            videoCodec: playback.stream.videoCodec,
+            audioCodec: playback.stream.audioCodec,
+          }}
           serverTrackInfo={playback.stream.provider === 'jellyfin' ? {
             provider: playback.stream.provider,
             sourceItemId: playback.stream.sourceItemId,

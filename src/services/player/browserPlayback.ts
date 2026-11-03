@@ -40,6 +40,62 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   flac: 'audio/flac',
 }
 
+const MIME_BY_CONTAINER: Record<string, string> = {
+  avi: 'video/x-msvideo',
+  flv: 'video/x-flv',
+  mkv: 'video/x-matroska',
+  mpeg: 'video/mpeg',
+  mpg: 'video/mpeg',
+  ts: 'video/mp2t',
+  wmv: 'video/x-ms-wmv',
+}
+
+const MIME_CODEC_BY_NAME: Array<[RegExp, string]> = [
+  [/^(?:h264|avc|avc1|x264)$/, 'avc1.42E01E'],
+  [/^(?:hevc|h265|hev1|hvc1|x265)$/, 'hvc1.1.6.L93.B0'],
+  [/^(?:av1|av01)$/, 'av01.0.04M.08'],
+  [/^(?:vp9|vp09)$/, 'vp09.00.10.08'],
+  [/^(?:vp8|vp08)$/, 'vp8.0'],
+  [/^(?:aac|aaclc|mp4a)$/, 'mp4a.40.2'],
+  [/^(?:eac3|dd|dolbydigitalplus)$/, 'ec-3'],
+  [/^(?:ac3|dolbydigital)$/, 'ac-3'],
+  [/^(?:dts|dca|dtshd)$/, 'dtsc'],
+  [/^(?:truehd|mlp)$/, 'mlpa'],
+  [/^(?:opus)$/i, 'opus'],
+]
+
+function normalizedCodec(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  const normalized = value.toLowerCase().replace(/\([^)]*\)/g, '').replace(/[^a-z0-9]/g, '').trim()
+  return MIME_CODEC_BY_NAME.find(([pattern]) => pattern.test(normalized))?.[1]
+}
+
+/** Return true only when the browser explicitly rejects known source metadata. */
+export function browserRejectsKnownMedia(
+  video: Pick<HTMLVideoElement, 'canPlayType'>,
+  sourceUrl: string,
+  mediaInfo: { container?: string; videoCodec?: string; audioCodec?: string },
+): boolean {
+  const container = mediaInfo.container?.toLowerCase().replace(/^\./, '').trim()
+  const extension = (() => {
+    try {
+      const pathname = new URL(sourceUrl, typeof location !== 'undefined' ? location.href : 'https://aurales.invalid').pathname
+      return pathname.split('.').pop()?.toLowerCase() || ''
+    } catch {
+      return ''
+    }
+  })()
+  const mime = (container && MIME_BY_CONTAINER[container]) || MIME_BY_EXTENSION[container || ''] || MIME_BY_EXTENSION[extension]
+  if (!isHlsUrl(sourceUrl) && mime && video.canPlayType(mime) === '') return true
+
+  const videoCodec = normalizedCodec(mediaInfo.videoCodec)
+  const audioCodec = normalizedCodec(mediaInfo.audioCodec)
+  if (!videoCodec && !audioCodec) return false
+  const codecs = [videoCodec, audioCodec].filter(Boolean).join(',')
+  const codecMime = mime?.startsWith('audio/') ? mime : 'video/mp4'
+  return video.canPlayType(`${codecMime}; codecs="${codecs}"`) === ''
+}
+
 /** Explain what the browser can establish without treating MIME hints as proof. */
 export function browserPlaybackFailureMessage(url: string, video?: Pick<HTMLVideoElement, 'canPlayType'> | null): string {
   if (isHlsUrl(url)) {
