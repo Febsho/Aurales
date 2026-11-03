@@ -58,7 +58,7 @@ export function getPlatformCapabilities(video?: HTMLVideoElement | null): Platfo
     pictureInPicture: supportsPictureInPicture(video),
     airPlay: Boolean((video as (HTMLVideoElement & { webkitShowPlaybackTargetPicker?: () => void }) | undefined)?.webkitShowPlaybackTargetPicker),
     nativeHls,
-    mediaSource: typeof MediaSource !== 'undefined',
+    mediaSource: typeof MediaSource !== 'undefined' || (hasWindow && 'ManagedMediaSource' in window),
   }
 }
 

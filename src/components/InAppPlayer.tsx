@@ -455,7 +455,10 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     let networkRecoveryAttempted = false
     let mediaRecoveryAttempted = false
     const capabilities = getPlatformCapabilities(video)
-    if (capabilities.nativeHls) {
+    const mobileSafari = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+      || (navigator.maxTouchPoints > 1 && /Macintosh/i.test(navigator.userAgent))
+    const useHlsJsForNativeHls = capabilities.nativeHls && capabilities.mediaSource && mobileSafari
+    if (capabilities.nativeHls && !useHlsJsForNativeHls) {
       video.src = sourceUrl
       setPlayerNotice(workerPlaybackDescriptionRef.current || 'Using native HLS playback. Available audio and subtitle tracks depend on this browser and stream.')
       return () => { video.removeAttribute('src'); video.load() }
@@ -469,6 +472,11 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     void import('hls.js').then(({ default: Hls }) => {
       if (disposed) return
       if (!Hls.isSupported()) {
+        if (capabilities.nativeHls) {
+          video.src = sourceUrl
+          setPlayerNotice(workerPlaybackDescriptionRef.current || 'Using native HLS playback. Available audio and subtitle tracks depend on this browser and stream.')
+          return
+        }
         if (!requestWorkerConversionRef.current?.(video, capabilities.nativeHls)) {
           setPlayerNotice('HLS playback is unavailable in this browser. Configure the Aurales media worker to prepare an MP4 copy, or try another stream.')
         }
