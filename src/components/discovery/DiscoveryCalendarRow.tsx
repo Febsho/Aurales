@@ -78,9 +78,10 @@ export default function DiscoveryCalendarRow({ watchProgress, traktConnected, si
     </div>
     {visibleEntries.length > 0 ? <div className="discover-calendar__items">
       {visibleEntries.slice(0, 8).map((entry) => <button key={entry.id} type="button" className="discover-calendar__item" onClick={() => navigate(entry.media.type === 'movie' ? `/movie/${entry.media.id}` : `/series/${entry.media.id}`)} aria-label={`${entry.title}, ${entry.subtitle || entry.date}`}>
-        <span className="discover-calendar__poster">{entry.poster && <img src={entry.poster} alt="" loading="lazy" decoding="async"/>}<small>{new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(`${entry.date}T12:00:00`))}</small></span>
-        <span className="discover-calendar__title">{entry.title}</span>
-        <span className="discover-calendar__subtitle">{entry.subtitle || (entry.kind === 'episode' ? 'New episode' : 'Movie')}</span>
+        <span className="discover-calendar__poster">{entry.poster && <img src={entry.poster} alt="" loading="lazy" decoding="async"/>}
+          <span className="discover-calendar__date"><strong>{new Date(`${entry.date}T12:00:00`).getDate()}</strong><span>{new Intl.DateTimeFormat(undefined, { month: 'short', weekday: 'short' }).format(new Date(`${entry.date}T12:00:00`))}</span></span>
+          <span className="discover-calendar__details"><strong>{entry.title}</strong><small>{entry.subtitle || (entry.kind === 'episode' ? 'New episode' : 'Movie')}</small></span>
+        </span>
       </button>)}
     </div> : <div className="discover-calendar__empty-row">
       <p className="discover-calendar__empty" role="status">{loading ? 'Checking your upcoming releases…' : emptyLabel}</p>

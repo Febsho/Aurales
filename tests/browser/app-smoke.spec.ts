@@ -182,16 +182,39 @@ test('Discovery uses public catalogs when the active profile has no library entr
   await page.locator('.app-scroll-root').evaluate((root) => root.scrollTo({ top: 0, behavior: 'instant' }))
   const calendar = page.locator('.discover-calendar')
   await calendar.evaluate((section) => {
+    const track = document.createElement('div')
+    track.className = 'discover-calendar__items'
     const card = document.createElement('button')
     card.className = 'discover-calendar__item'
-    card.textContent = 'Calendar animation fixture'
-    section.append(card)
+    const poster = document.createElement('span')
+    poster.className = 'discover-calendar__poster'
+    const date = document.createElement('span')
+    date.className = 'discover-calendar__date'
+    const details = document.createElement('span')
+    details.className = 'discover-calendar__details'
+    details.innerHTML = '<strong>Calendar animation fixture</strong><small>Episode 2</small>'
+    poster.append(date, details)
+    card.append(poster)
+    track.append(card)
+    section.append(track)
   })
   const calendarReveal = calendar.locator('xpath=..')
   await calendarReveal.evaluate((section) => section.setAttribute('data-revealed', 'false'))
   await expect.poll(() => calendar.locator('.discover-calendar__item').evaluate((card) => getComputedStyle(card).animationName)).toBe('none')
   await calendarReveal.evaluate((section) => section.setAttribute('data-revealed', 'true'))
   await expect(calendar.locator('.discover-calendar__item')).toHaveCSS('animation-name', 'discover-calendar-item-in')
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 800 })
+    const cardLayout = await calendar.locator('.discover-calendar__item').evaluate((card) => {
+      const bounds = card.getBoundingClientRect()
+      const poster = card.querySelector<HTMLElement>('.discover-calendar__poster')!.getBoundingClientRect()
+      const details = card.querySelector<HTMLElement>('.discover-calendar__details')!.getBoundingClientRect()
+      return { width: bounds.width, ratio: poster.width / poster.height, detailsContained: details.left >= poster.left && details.right <= poster.right && details.top >= poster.top && details.bottom <= poster.bottom }
+    })
+    expect(cardLayout.width, `Calendar cards should be readable at ${width}px`).toBeGreaterThanOrEqual(176)
+    expect(cardLayout.ratio).toBeCloseTo(1.2, 1)
+    expect(cardLayout.detailsContained).toBe(true)
+  }
 })
 
 test('Discovery keeps the taste picker available when only weekly public trends load', async ({ page }) => {
