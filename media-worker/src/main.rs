@@ -9211,10 +9211,37 @@ mod tests {
             .arg(external_audio_assets.join("audio-%03d.ts"))
             .arg(&external_audio_playlist);
         assert!(make_audio_hls.output().await.unwrap().status.success());
+        tokio::fs::copy(
+            &external_audio_playlist,
+            external_audio_assets.join("german-audio.m3u8"),
+        )
+        .await
+        .unwrap();
         let external_audio_master = dir.join("external-audio-input.m3u8");
+        let external_audio_tracks = vec![
+            MaterializedHlsAudio {
+                uri: "external-audio-assets/audio.m3u8".to_owned(),
+                language: Some("eng".to_owned()),
+                label: "English".to_owned(),
+                is_default: false,
+                autoselect: true,
+            },
+            MaterializedHlsAudio {
+                uri: "external-audio-assets/german-audio.m3u8".to_owned(),
+                language: Some("deu".to_owned()),
+                label: "Deutsch".to_owned(),
+                is_default: true,
+                autoselect: true,
+            },
+        ];
         tokio::fs::write(
             &external_audio_master,
-            local_hls_master_manifest("external-audio-assets", 2_000_000),
+            local_hls_master_manifest_with_tracks(
+                "external-audio-assets",
+                2_000_000,
+                &external_audio_tracks,
+                &[],
+            ),
         )
         .await
         .unwrap();
@@ -9245,18 +9272,58 @@ mod tests {
         assert!(external_streams
             .iter()
             .any(|stream| stream["codec_type"] == "video"));
-        assert!(external_streams
-            .iter()
-            .any(|stream| stream["codec_type"] == "audio"));
-        transcode_local_output(
+        assert!(
+            external_streams
+                .iter()
+                .filter(|stream| stream["codec_type"] == "audio")
+                .count()
+                == 2
+        );
+        let preferred_audio =
+            ordered_audio_track_indices(&external_audio_info, &["de".to_owned(), "en".to_owned()]);
+        assert_eq!(preferred_audio, vec![1, 0]);
+        let external_audio_output = dir.join("external-audio-output.mp4");
+        transcode_conversion_candidate(
             &ffmpeg,
             &external_audio_master,
-            &dir.join("external-audio-output.mp4"),
+            &external_audio_output,
             ConversionMode::Remux,
+            None,
             ConversionOutputFormat::Mp4,
+            true,
+            2,
+            &preferred_audio,
+            false,
+            source_video_frame_rate(&external_audio_info),
         )
         .await
-        .expect("FFmpeg should remux video with external audio renditions");
+        .expect("mobile MP4 should preserve and prioritize external HLS audio renditions");
+        let output_probe = tokio::process::Command::new(&ffprobe)
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type:stream_tags=language:stream_disposition=default",
+                "-of",
+                "json",
+            ])
+            .arg(&external_audio_output)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output_probe.status.success(),
+            "ffprobe rejected mobile HLS MP4"
+        );
+        let output_info: Value = serde_json::from_slice(&output_probe.stdout).unwrap();
+        let output_languages: Vec<_> = output_info["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|stream| stream["codec_type"] == "audio")
+            .map(|stream| stream["tags"]["language"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(output_languages, vec!["deu", "eng"]);
 
         let dash_source_mpd = dir.join("dash-source.mpd");
         let mut make_dash = tokio::process::Command::new(&ffmpeg);
