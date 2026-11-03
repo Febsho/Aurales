@@ -637,6 +637,14 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.locator('.discover-shelf--personal-genre')).toHaveCount(0)
   await expect(page.locator('.discover-shelf--big-screen')).toHaveCount(1)
   await expect(page.getByRole('heading', { name: 'Best in Widescreen' })).toBeVisible()
+  const widescreenRow = page.locator('.discover-shelf--big-screen .media-row--landscape')
+  await expect(widescreenRow).toHaveCount(1)
+  const widescreenArtworkRatio = await widescreenRow.locator('.media-row-card-slot [data-hero-viewport]').first().evaluate((artwork) => {
+    const bounds = artwork.getBoundingClientRect()
+    return bounds.width / bounds.height
+  })
+  expect(widescreenArtworkRatio, 'the Widescreen shelf should use horizontal artwork').toBeGreaterThan(1.65)
+  expect(widescreenArtworkRatio).toBeLessThan(1.95)
   await expect(page.locator('.discover-shelf--gems, .discover-shelf--recent, .discover-shelf--top-rated')).toHaveCount(0)
   await expect.poll(() => tmdbRequestPaths.has('/3/discover/tv')).toBe(true)
   await expect(page.getByRole('heading', { name: 'Your Next Binge', exact: true })).toBeVisible()
@@ -933,6 +941,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const bigScreenShelf = page.locator('.discover-shelf--big-screen')
   await expect(bigScreenShelf).toHaveCount(1)
   await expect(bigScreenShelf.getByRole('heading', { name: 'Best in Widescreen' })).toBeVisible()
+  await expect(bigScreenShelf.locator('.media-row--landscape')).toHaveCount(1)
   const bigScreenLayout = await bigScreenShelf.evaluate((shelf) => {
     const rect = shelf.getBoundingClientRect()
     const firstCard = shelf.querySelector<HTMLElement>('.media-row-card-slot')?.getBoundingClientRect()
