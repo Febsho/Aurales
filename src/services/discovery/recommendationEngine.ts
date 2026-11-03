@@ -193,6 +193,28 @@ export function sortRecommendationsByPopularity(ranked: RankedRecommendation[]):
   })
 }
 
+/** Keep the live weekly chart's position; rank only the non-live fallback by popularity. */
+export function prioritizeLiveTrends(
+  currentTrends: RankedRecommendation[],
+  recommendations: RankedRecommendation[],
+): RankedRecommendation[] {
+  const seen = new Set<string>()
+  const ordered: RankedRecommendation[] = []
+  for (const entry of currentTrends) {
+    const key = mediaKey(entry.item)
+    if (seen.has(key)) continue
+    seen.add(key)
+    ordered.push(entry)
+  }
+  for (const entry of sortRecommendationsByPopularity(recommendations)) {
+    const key = mediaKey(entry.item)
+    if (seen.has(key)) continue
+    seen.add(key)
+    ordered.push(entry)
+  }
+  return ordered
+}
+
 /** Keep the upstream order for a live editorial feed after personalization metadata is attached. */
 export function orderRecommendationsBySource(ranked: RankedRecommendation[], sourceItems: SearchResult[]): RankedRecommendation[] {
   const sourcePosition = new Map(sourceItems.map((item, index) => [mediaKey(item), index]))

@@ -960,6 +960,13 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(weeklyTrendTitles).not.toContain(heroTitle)
   expect(new Set(weeklyTrendTitles).size).toBe(weeklyTrendTitles.length)
   expect(weeklyTrendPositions).toEqual([...weeklyTrendPositions].sort((left, right) => left - right))
+  const moodTrendTitles = await page.locator('.discover-shelf--moods .media-row-card-slot img').evaluateAll((images) => images
+    .map((image) => image.getAttribute('alt') || '')
+    .filter((title) => /^Weekly trend \d+$/.test(title)))
+  const moodTrendPositions = moodTrendTitles.map((title) => Number(title.match(/\d+/)?.[0]))
+  expect(moodTrendPositions, 'secondary discovery shelves should keep the live weekly chart rank even when popularity metadata conflicts').toEqual([
+    ...moodTrendPositions,
+  ].sort((left, right) => left - right))
   await trendingShelf.scrollIntoViewIfNeeded()
   await expect.poll(() => trendingShelf.evaluate((element) => element.parentElement?.getAttribute('data-revealed'))).toBe('true')
   await expect.poll(() => trendingShelf.locator('.media-row-card-slot').first().evaluate((card) => getComputedStyle(card).animationName)).toBe('discover-card-arrive')

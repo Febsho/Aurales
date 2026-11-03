@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SearchResult, WatchProgress } from '../../types'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, orderRecommendationsBySource, orderSpotlightCandidates, rankCandidates, reconcileTrendingSignals, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, orderRecommendationsBySource, orderSpotlightCandidates, prioritizeLiveTrends, rankCandidates, reconcileTrendingSignals, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
 import type { DiscoveryActivity, RecommendationCandidate, RecommendationFeedback } from './types'
 
 const sciFi: SearchResult = { id:'seed',title:'Seed',type:'movie',provider:'tmdb',tmdbId:1,genreIds:[878],year:2020,rating:8 }
@@ -129,6 +129,25 @@ describe('discovery recommendation engine', () => {
 
     expect(orderRecommendationsBySource([...ranked].reverse(), sourceOrder.map((entry) => entry.item)).map((entry) => entry.item.tmdbId))
       .toEqual([143, 144, 145])
+  })
+  it('keeps live trends in source order before popularity-ranked fallback titles', () => {
+    const profile = buildTasteProfile(activity())
+    const firstTrend = candidate(146, { title: 'Trend rank one' })
+    const secondTrend = candidate(147, { title: 'Trend rank two' })
+    firstTrend.source = secondTrend.source = 'tmdb-trending'
+    firstTrend.popularity = 14
+    secondTrend.popularity = 240
+    const lowFallback = candidate(148, { title: 'Less popular fallback' })
+    lowFallback.popularity = 20
+    const highFallback = candidate(149, { title: 'Popular fallback' })
+    highFallback.popularity = 210
+    const ranked = rankCandidates([firstTrend, secondTrend, lowFallback, highFallback], profile, activity(), [], 'for-you')
+    const byId = new Map(ranked.map((entry) => [entry.item.tmdbId, entry]))
+
+    expect(prioritizeLiveTrends(
+      [byId.get(146)!, byId.get(147)!],
+      [byId.get(146)!, byId.get(147)!, byId.get(148)!, byId.get(149)!],
+    ).map((entry) => entry.item.tmdbId)).toEqual([146, 147, 149, 148])
   })
   it('lets an established popular title beat an obscure new release in Surprise Me', () => {
     const oldHit = candidate(107, { year: new Date().getFullYear() - 10, rating: 8 })

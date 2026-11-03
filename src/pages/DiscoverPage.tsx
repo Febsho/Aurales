@@ -14,7 +14,7 @@ import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
 import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, orderRecommendationsBySource, orderSpotlightCandidates, rankCandidates, reconcileTrendingSignals, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, orderRecommendationsBySource, orderSpotlightCandidates, prioritizeLiveTrends, rankCandidates, reconcileTrendingSignals, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
 import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktWatchedShows, getRatings as getTraktRatings } from '../services/trakt/sync'
@@ -1148,7 +1148,7 @@ export default function DiscoverPage() {
     return () => observer.disconnect()
   }, [continuationScope, moreToDiscoverStatus, viewState])
   const genreTileCandidates = useMemo(
-    () => sortRecommendationsByPopularity([...currentTrendingRanked, ...tabRanked])
+    () => prioritizeLiveTrends(currentTrendingRanked, tabRanked)
       .filter((entry) => mediaIdentity(entry.item) !== heroMediaKey),
     [currentTrendingRanked, heroMediaKey, tabRanked],
   )
@@ -1290,7 +1290,7 @@ export default function DiscoverPage() {
       ...(trendingSection ? trendingSection.items.map((entry) => mediaIdentity(entry.item)) : []),
     ])
     const seen = new Set<string>()
-    return sortRecommendationsByPopularity([...currentTrendingRanked, ...tabRanked]).map((entry) => entry.item).filter((item) => {
+    return prioritizeLiveTrends(currentTrendingRanked, tabRanked).map((entry) => entry.item).filter((item) => {
       const key = mediaIdentity(item)
       if (!item.poster || featured.has(key) || seen.has(key) || !matchesDiscoverTab(item, tab)) return false
       seen.add(key)
@@ -1300,7 +1300,7 @@ export default function DiscoverPage() {
   const activeDiscoveryMood = DISCOVERY_MOODS.find((mood) => mood.id === selectedDiscoveryMoodId) ?? DISCOVERY_MOODS[2]
   const moodItems = useMemo(() => {
     const seen = new Set<string>()
-    return sortRecommendationsByPopularity([...currentTrendingRanked, ...tabRanked]).map((entry) => entry.item).filter((item) => {
+    return prioritizeLiveTrends(currentTrendingRanked, tabRanked).map((entry) => entry.item).filter((item) => {
       const key = mediaIdentity(item)
       if (!item.poster || !matchesDiscoverTab(item, tab) || seen.has(key) || !item.genreIds?.some((genreId) => activeDiscoveryMood.genres.some((id) => id === genreId))) return false
       seen.add(key)
