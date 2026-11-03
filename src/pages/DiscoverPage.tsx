@@ -1183,7 +1183,9 @@ export default function DiscoverPage() {
   const activeBingeItem = bingeRecommendations.length ? bingeRecommendations[bingeIndex % bingeRecommendations.length] : undefined
   const pickerPool = useMemo(() => {
     const seen = new Set<string>()
-    return ranked.filter((entry) => {
+    // Live weekly trends lead the randomizer too; a still-valid daily snapshot
+    // must not hide newly popular choices until the next Berlin day boundary.
+    return [...currentTrendingRanked, ...ranked].filter((entry) => {
       const key = mediaIdentity(entry.item)
       // The spotlight is an extra editorial recommendation, not one of the
       // randomizer's choices. Keep its title and the randomizer pool distinct.
@@ -1191,7 +1193,7 @@ export default function DiscoverPage() {
       seen.add(key)
       return true
     })
-  }, [heroMediaKey, ranked])
+  }, [currentTrendingRanked, heroMediaKey, ranked])
   const pickerRecommendation = (pickerSelectionKey ? pickerPool.find((entry) => mediaIdentity(entry.item) === pickerSelectionKey) : undefined) || pickerPool[0]
   const pickerItem = pickerRecommendation?.item
   const pickerFrameId = pickerItem ? mediaIdentity(pickerItem) : null

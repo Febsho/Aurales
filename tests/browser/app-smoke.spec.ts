@@ -753,6 +753,11 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(surpriseButton).toBeEnabled()
   const startingTitle = await obsessionCard.getAttribute('data-title')
   const startingHeroTitle = await heroSpotlight.getAttribute('data-title')
+  await page.evaluate(() => {
+    const target = window as Window & { __auralesOriginalRandom?: () => number }
+    target.__auralesOriginalRandom = Math.random
+    Math.random = () => 0
+  })
   // Trigger in-page because a real Playwright click waits for smooth-scroll completion,
   // which is longer than the roulette and can miss the transient busy state.
   await surpriseButton.evaluate((button: HTMLButtonElement) => button.click())
@@ -782,6 +787,12 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(pickerDialog.locator('.discover-picker__poster > img')).toHaveCount(1)
   const firstPickerTitle = await pickerDialog.locator('.discover-picker__copy').getAttribute('data-title')
   expect(firstPickerTitle).not.toBe(startingTitle)
+  expect(firstPickerTitle, 'Surprise Me should draw from the freshest current weekly trends before a stale daily snapshot').toBe(expectedWeeklyTrendOrder[1])
+  await page.evaluate(() => {
+    const target = window as Window & { __auralesOriginalRandom?: () => number }
+    if (target.__auralesOriginalRandom) Math.random = target.__auralesOriginalRandom
+    delete target.__auralesOriginalRandom
+  })
   await expect(obsessionCard).toHaveAttribute('data-title', startingTitle!)
   await expect(heroSpotlight).toHaveAttribute('data-title', startingHeroTitle!)
   await expect(surpriseButton).toBeEnabled()
