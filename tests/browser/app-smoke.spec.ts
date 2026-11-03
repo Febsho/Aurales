@@ -1877,6 +1877,20 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
     }
   }
   await page.evaluate(() => { document.documentElement.dataset.runtimePlatform = 'web' })
+  await page.setViewportSize({ width: 320, height: 568 })
+  await page.evaluate(() => document.querySelector<HTMLElement>('.app-scroll-root')?.scrollTo({ top: 0, behavior: 'instant' }))
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+  const compactViewportActions = await page.evaluate(() => {
+    const hero = document.querySelector<HTMLElement>('.discover-spotlight')!
+    const nav = document.querySelector<HTMLElement>('.mobile-web-nav')!
+    const actions = Array.from(hero.querySelectorAll<HTMLElement>('.discover-spotlight__actions > button'))
+      .filter((button) => getComputedStyle(button).display !== 'none')
+      .map((button) => ({ label: button.textContent?.trim(), bottom: button.getBoundingClientRect().bottom }))
+    return { navTop: nav.getBoundingClientRect().top, actions }
+  })
+  expect(compactViewportActions.actions).toHaveLength(4)
+  expect(compactViewportActions.actions.every((action) => action.bottom <= compactViewportActions.navTop - 4),
+    `short mobile viewport should keep every Tonight action above the fixed nav: ${JSON.stringify(compactViewportActions)}`).toBe(true)
   await page.setViewportSize({ width: 390, height: 844 })
   const keepExploring = page.locator('.discover-more')
   await keepExploring.scrollIntoViewIfNeeded()

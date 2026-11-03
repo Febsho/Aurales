@@ -6793,6 +6793,14 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-spotlight__actions > button { padding-inline: .35rem; font-size: .62rem; }
 }
 
+@media (max-width: 370px) and (max-height: 620px) {
+  /* Keep the Tonight actions clear of the fixed mobile navigation on short phones. */
+  .discover-spotlight { min-height: 13.5rem; }
+  .discover-spotlight__top { margin-bottom: .2rem; }
+  .discover-spotlight__actions { margin-top: .2rem; }
+  .discover-spotlight__actions .discover-spotlight__change { height: 44px; min-height: 44px; }
+}
+
 @media (max-width: 640px) {
   .discover-picker-backdrop { align-items: end; padding: 0; }
   .discover-picker { width: 100%; max-height: 88svh; border-right: 0; border-bottom: 0; border-left: 0; border-radius: 1.35rem 1.35rem 0 0; animation: discover-picker-sheet-enter .34s cubic-bezier(.2,.8,.25,1) both; }
