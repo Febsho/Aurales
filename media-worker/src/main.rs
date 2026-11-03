@@ -1406,7 +1406,6 @@ async fn run_media_conversion(
                 Vec::new()
             };
             let tone_map_hdr = mobile_compatibility
-                && output_format == ConversionOutputFormat::Mp4
                 && state.ffmpeg_caps.is_some_and(|caps| caps.hdr_tone_mapping)
                 && source_contains_hdr_video(&source_info);
             // Let FFmpeg inspect the actual container and streams. Each attempt maps
