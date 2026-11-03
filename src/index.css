@@ -5610,8 +5610,8 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 
   html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] > .mobile-home-hero {
     width: calc(100% - 2rem);
-    height: clamp(31rem, 62svh, 36rem) !important;
-    margin: 0 auto 1.8rem;
+    height: clamp(40rem, 80svh, 56rem) !important;
+    margin: 0 auto;
     overflow: visible !important;
     border: 1px solid rgba(255,255,255,.13);
     border-radius: 1.55rem;
