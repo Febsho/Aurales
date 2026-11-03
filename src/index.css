@@ -6504,11 +6504,19 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-taste-pick__year { margin-top: .12rem; color: rgba(255,255,255,.48); font-size: .75rem; }
 .discover-genres__grid { display: flex; gap: .7rem; margin: .75rem 0 1rem; padding: .15rem .1rem .55rem; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; scrollbar-width: none; }
 .discover-genres__grid::-webkit-scrollbar { display: none; }
-.discover-genres__grid button { display: flex; flex: 0 0 clamp(11rem, 20vw, 15rem); min-width: 0; min-height: 8rem; flex-direction: column; justify-content: end; align-items: flex-start; gap: .28rem; padding: 1rem; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 1rem; background-color: #25252a; background-position: center; background-size: cover; color: #fff; text-align: left; cursor: pointer; scroll-snap-align: start; transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease; }
+.discover-genres__grid button { position: relative; display: flex; flex: 0 0 clamp(15rem, 20vw, 19rem); min-width: 0; min-height: 10rem; align-items: stretch; justify-content: flex-start; padding: 1rem; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 1rem; background-color: #25252a; background-position: center; background-size: cover; color: #fff; text-align: left; cursor: pointer; scroll-snap-align: start; transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease; }
+.discover-genres__grid button::before { position: absolute; inset: 0; border-radius: inherit; background: linear-gradient(110deg, rgba(14,14,18,.55), rgba(14,14,18,.12) 75%); content: ''; pointer-events: none; }
 .discover-genres__grid button:hover { transform: translateY(-2px); }
 .discover-genres__grid button.is-active { border-color: rgba(255,255,255,.72); box-shadow: inset 0 0 0 1px rgba(255,255,255,.38), 0 12px 26px rgba(0,0,0,.22); }
-.discover-genres__grid button > span { max-width: 100%; overflow-wrap: anywhere; font-size: 1.05rem; font-weight: 700; line-height: 1.15; }
-.discover-genres__grid button > small { max-width: 100%; overflow: hidden; color: rgba(255,255,255,.68); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
+.discover-genres__tile-copy { position: relative; z-index: 2; display: grid; max-width: 62%; align-content: start; gap: .24rem; }
+.discover-genres__tile-title { max-width: 100%; overflow-wrap: anywhere; color: #fff; font-size: clamp(1.1rem, 1.65vw, 1.55rem); font-weight: 750; letter-spacing: -.025em; line-height: 1.08; }
+.discover-genres__tile-copy small { color: rgba(255,255,255,.68); font-size: .76rem; font-weight: 550; }
+.discover-genres__tile-art { position: absolute; right: -.1rem; bottom: -.2rem; z-index: 1; display: flex; width: 63%; height: 82%; align-items: flex-end; justify-content: flex-end; padding-right: .7rem; pointer-events: none; }
+.discover-genres__tile-art img { display: block; width: 38%; height: 92%; flex: 0 1 38%; object-fit: cover; border: 1px solid rgba(255,255,255,.38); border-radius: .5rem; box-shadow: 0 8px 20px rgba(0,0,0,.42); }
+.discover-genres__tile-art img + img { margin-left: -19%; }
+.discover-genres__tile-art img:nth-child(1) { z-index: 0; transform: rotate(-12deg) translateY(3%); }
+.discover-genres__tile-art img:nth-child(2) { z-index: 1; transform: rotate(-1deg) translateY(-3%); }
+.discover-genres__tile-art img:nth-child(3) { z-index: 2; transform: rotate(11deg) translateY(1%); }
 .discover-genre-picks__empty { margin: .25rem 0 1rem; color: rgba(255,255,255,.58); font-size: .85rem; }
 .discover-genre-picks__loading { display: flex; min-height: 2.75rem; align-items: center; gap: .55rem; margin: .3rem 0 .8rem; color: rgba(255,255,255,.65); font-size: .82rem; }
 .discover-genre-picks__loading::before { width: .9rem; height: .9rem; border: 2px solid rgba(255,255,255,.2); border-top-color: rgba(255,255,255,.8); border-radius: 50%; content: ''; animation: discover-loading-spin .7s linear infinite; }
@@ -6685,9 +6693,9 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-shelf--moods { margin-block: .65rem .9rem; }
   .discover-shelf--big-screen, .discover-shelf--gems, .discover-shelf--recent { margin-block: .45rem .75rem; }
   .discover-genres__grid { gap: .5rem; margin-block: .65rem .8rem; }
-  .discover-genres__grid button { flex-basis: min(44vw, 11rem); min-height: 6rem; padding: .75rem; border-radius: .8rem; }
-  .discover-genres__grid button > span { font-size: .88rem; }
-  .discover-genres__grid button > small { font-size: .63rem; }
+  .discover-genres__grid button { flex-basis: clamp(14rem, 72vw, 18rem); min-height: 9.5rem; padding: .8rem; border-radius: .8rem; }
+  .discover-genres__tile-title { font-size: 1.12rem; }
+  .discover-genres__tile-copy small { font-size: .68rem; }
   .discover-binge { margin-block: .85rem 1.25rem; }
   .discover-binge__heading { align-items: flex-start; flex-direction: column; gap: .25rem; }
   .discover-binge__heading h2 { font-size: 1.1rem; }
@@ -6746,7 +6754,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-refine__tools { display: flex; }
   .discover-refine__search { max-width: 28rem; }
   .discover-taste-picks { grid-auto-columns: clamp(5rem, 6vw, 6rem); gap: .7rem .6rem; }
-  .discover-genres__grid button { min-height: 7rem; }
+  .discover-genres__grid button { min-height: 9.5rem; }
 }
 
 @media (max-width: 700px) {

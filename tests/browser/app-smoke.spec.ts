@@ -322,6 +322,16 @@ test('Discovery genre tiles open the matching provider results and full catalog'
   await page.goto('/discover')
   const genreTile = page.locator('.discover-genres__grid button').filter({ hasText: /^Action/ })
   await expect(genreTile).toBeVisible()
+  await expect(genreTile.locator('.discover-genres__tile-art img')).toHaveCount(3)
+  await page.setViewportSize({ width: 390, height: 844 })
+  const mobileGenreTileLayout = await genreTile.evaluate((tile) => {
+    const bounds = tile.getBoundingClientRect()
+    return { width: bounds.width, height: bounds.height, documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth }
+  })
+  expect(mobileGenreTileLayout.width, 'mobile genre collage cards should remain large enough to read').toBeGreaterThanOrEqual(224)
+  expect(mobileGenreTileLayout.height, 'mobile genre collage cards should retain the reference artwork space').toBeGreaterThanOrEqual(144)
+  expect(mobileGenreTileLayout.documentWidth, 'the horizontal genre rail should not overflow the mobile viewport').toBeLessThanOrEqual(mobileGenreTileLayout.viewportWidth + 1)
+  await page.setViewportSize({ width: 1280, height: 900 })
   await genreTile.click()
   const genreRow = page.locator('#discover-genre-picks')
   await expect(genreRow.getByRole('heading', { name: 'Action Picks', exact: true })).toBeVisible()

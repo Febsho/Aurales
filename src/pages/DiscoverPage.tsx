@@ -1161,7 +1161,10 @@ export default function DiscoverPage() {
   )
   const genreTiles = useMemo(() => genreOptions.map((genre) => ({
     option: { title: genre.title, genres: [genre.id] },
-    item: genreTileCandidates.find((entry) => entry.item.genreIds?.includes(genre.id))?.item,
+    items: genreTileCandidates
+      .filter((entry) => entry.item.genreIds?.includes(genre.id) && Boolean(entry.item.poster))
+      .slice(0, 3)
+      .map((entry) => entry.item),
   })), [genreOptions, genreTileCandidates])
   const genreSelectionItems = useMemo(() => {
     if (selectedGenreId == null) return []
@@ -1868,7 +1871,27 @@ export default function DiscoverPage() {
           <DiscoveryReveal><section className="discover-genres row-contain" aria-labelledby="discover-genres-title">
             <div className="discover-genres__heading"><div><p className="discover-section-eyebrow">Browse by category</p><h2 id="discover-genres-title">Your Genres</h2></div></div>
             <div className="discover-genres__grid" role="group" aria-label="Genres">
-              {genreTiles.map(({ option, item }) => <button type="button" key={option.title} aria-pressed={selectedGenreId === option.genres[0]} aria-controls="discover-genre-picks" className={selectedGenreId === option.genres[0] ? 'is-active' : ''} onClick={() => setSelectedGenreId(option.genres[0]!)} style={item?.backdrop || item?.poster ? { backgroundImage: `linear-gradient(90deg, rgba(9,9,12,.88), rgba(9,9,12,.3)), url("${item.backdrop || item.poster}")` } : undefined}><span>{option.title}</span><small>{option.genres[0] === selectedGenreId && genreSelectionItems.length ? genreSelectionItems.length : filteredCandidates.filter((entry) => entry.item.genreIds?.includes(option.genres[0]!)).length} titles to explore</small></button>)}
+              {genreTiles.map(({ option, items }) => {
+                const featured = items[0]
+                const artwork = featured?.backdrop || featured?.poster
+                return <button
+                  type="button"
+                  key={option.title}
+                  aria-pressed={selectedGenreId === option.genres[0]}
+                  aria-controls="discover-genre-picks"
+                  className={selectedGenreId === option.genres[0] ? 'is-active' : ''}
+                  onClick={() => setSelectedGenreId(option.genres[0]!)}
+                  style={artwork ? { backgroundImage: `linear-gradient(90deg, rgba(9,9,12,.9), rgba(9,9,12,.58)), url("${artwork}")` } : undefined}
+                >
+                  <span className="discover-genres__tile-copy">
+                    <span className="discover-genres__tile-title">{option.title}</span>
+                    <small>{option.genres[0] === selectedGenreId && genreSelectionItems.length ? genreSelectionItems.length : filteredCandidates.filter((entry) => entry.item.genreIds?.includes(option.genres[0]!)).length} titles</small>
+                  </span>
+                  <span className="discover-genres__tile-art" aria-hidden="true">
+                    {items.map((item) => <img key={mediaIdentity(item)} src={item.poster} alt="" loading="lazy" decoding="async" />)}
+                  </span>
+                </button>
+              })}
             </div>
             <div id="discover-genre-picks" ref={genrePicksRef} className="discover-genre-picks" aria-live="polite">
               {selectedGenreId != null && genreLoading && genreSelectionItems.length === 0 && <p className="discover-genre-picks__loading" role="status">Finding {genreMap[selectedGenreId] || 'genre'} titles…</p>}
