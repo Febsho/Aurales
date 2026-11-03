@@ -1753,13 +1753,18 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         if (status.status === 'failed') {
           const failureMessages: Record<string, string> = {
             source_unavailable: 'The media worker could not fetch this source. Check its signed URL, request headers, and allowed hostname.',
+            source_unauthorized: 'The source rejected the media worker credentials (HTTP 401). Refresh the stream and check its provider headers or sign-in.',
+            source_forbidden: 'The source denied the media worker request (HTTP 403). The stream may have expired or the provider may reject worker access.',
+            source_not_found: 'The source returned HTTP 404. Refresh the stream URL or choose another source.',
+            source_gone: 'The source URL has expired or is no longer available (HTTP 410). Refresh the stream or choose another source.',
+            source_rate_limited: 'The source is rate limiting the media worker (HTTP 429). Wait before retrying or choose another stream.',
             unsupported_input: 'The media worker could not identify a supported video or playlist in this source.',
             no_compatible_output: 'FFmpeg could not create a compatible copy with its available codecs and output formats.',
             conversion_timed_out: 'The media worker conversion exceeded its time limit. Aurales will try a smaller mobile profile if one is available.',
             conversion_internal_error: 'The media worker encountered an internal error while preparing this source. Check its logs.',
           }
           const message = failureMessages[status.error] || `The media worker could not convert this stream (${status.error}).`
-          if (status.error === 'source_unavailable' || status.error === 'unsupported_input') {
+          if (['source_unavailable', 'source_unauthorized', 'source_forbidden', 'source_not_found', 'source_gone', 'source_rate_limited', 'unsupported_input'].includes(status.error)) {
             conversionFatalErrorRef.current = message
           }
           throw new Error(message)

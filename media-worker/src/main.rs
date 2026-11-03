@@ -142,6 +142,11 @@ enum ConversionStatus {
 #[derive(Clone, Copy)]
 enum ConversionFailure {
     SourceUnavailable,
+    SourceUnauthorized,
+    SourceForbidden,
+    SourceNotFound,
+    SourceGone,
+    SourceRateLimited,
     UnsupportedInput,
     NoCompatibleOutput,
     TimedOut,
@@ -152,6 +157,11 @@ impl ConversionFailure {
     fn code(self) -> &'static str {
         match self {
             Self::SourceUnavailable => "source_unavailable",
+            Self::SourceUnauthorized => "source_unauthorized",
+            Self::SourceForbidden => "source_forbidden",
+            Self::SourceNotFound => "source_not_found",
+            Self::SourceGone => "source_gone",
+            Self::SourceRateLimited => "source_rate_limited",
             Self::UnsupportedInput => "unsupported_input",
             Self::NoCompatibleOutput => "no_compatible_output",
             Self::TimedOut => "conversion_timed_out",
@@ -1412,9 +1422,7 @@ async fn run_media_conversion(
                 .await
                 .map_err(|_| ConversionFailure::SourceUnavailable)?
             } else {
-                download_allowlisted_media(&state, &url, &request_headers, &input_path)
-                    .await
-                    .map_err(|_| ConversionFailure::SourceUnavailable)?;
+                download_allowlisted_media(&state, &url, &request_headers, &input_path).await?;
                 false
             };
             let source_info = probe_local_media(ffmpeg.as_ref(), &input_path)
@@ -2734,9 +2742,10 @@ async fn download_allowlisted_media(
     initial_url: &url::Url,
     request_headers: &HashMap<String, String>,
     path: &PathBuf,
-) -> Result<(), ()> {
+) -> Result<(), ConversionFailure> {
     let credential_origin = initial_url.origin();
-    let (_, content_type, _) = download_allowlisted_resource(
+    let mut upstream_status = None;
+    let downloaded = download_allowlisted_resource_with_range(
         state,
         initial_url,
         &credential_origin,
@@ -2744,10 +2753,25 @@ async fn download_allowlisted_media(
         path,
         max_conversion_bytes(),
         false,
+        None,
+        Some(&mut upstream_status),
     )
-    .await?;
+    .await;
+    let (_, content_type, _) = match downloaded {
+        Ok(result) => result,
+        Err(()) => {
+            return Err(match upstream_status {
+                Some(401) => ConversionFailure::SourceUnauthorized,
+                Some(403) => ConversionFailure::SourceForbidden,
+                Some(404) => ConversionFailure::SourceNotFound,
+                Some(410) => ConversionFailure::SourceGone,
+                Some(429) => ConversionFailure::SourceRateLimited,
+                _ => ConversionFailure::SourceUnavailable,
+            });
+        }
+    };
     if content_type.starts_with("text/") || content_type.contains("mpegurl") {
-        return Err(());
+        return Err(ConversionFailure::UnsupportedInput);
     }
     Ok(())
 }
@@ -2770,6 +2794,7 @@ async fn download_allowlisted_resource(
         max_bytes,
         allow_text,
         None,
+        None,
     )
     .await
 }
@@ -2783,6 +2808,7 @@ async fn download_allowlisted_resource_with_range(
     max_bytes: u64,
     allow_text: bool,
     byte_range: Option<(u64, u64)>,
+    mut upstream_status: Option<&mut Option<u16>>,
 ) -> Result<(url::Url, String, u64), ()> {
     let mut url = initial_url.clone();
     for redirect in 0..=MAX_MEDIA_REDIRECTS {
@@ -2839,6 +2865,9 @@ async fn download_allowlisted_resource_with_range(
             }
         }
         if !response.status().is_success() {
+            if let Some(status) = upstream_status.as_deref_mut() {
+                *status = Some(response.status().as_u16());
+            }
             return Err(());
         }
         let content_type = response
@@ -5238,6 +5267,7 @@ async fn materialize_dash_track(
                 expected,
                 false,
                 Some((start, end)),
+                None,
             )
             .await?
         } else {
@@ -6338,6 +6368,7 @@ async fn materialize_hls_byte_ranges(
             length,
             false,
             Some((request.start, request.end)),
+            None,
         )
         .await?;
         if received != length {
