@@ -121,6 +121,72 @@ test('mobile HLS decoder failures are converted to a native MP4 by the worker', 
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime), { timeout: 10_000 }).toBeGreaterThan(1.4)
 })
 
+test('mobile playback stalls retry through the worker proxy without an error event', async ({ page }, testInfo) => {
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'This verifies mobile direct-media stall recovery.')
+  await page.clock.install()
+  const sourcePath = '/stalled-mobile-source.mp4'
+  const mediaId = 'dededededededededededededededede'
+  const outputMediaId = 'efefefefefefefefefefefefefefefef'
+  const jobId = 'abababababababababababababababab'
+  const fixture = await readFile(resolve(process.cwd(), 'tests/browser/fixtures/mobile-h264-compat.mp4'))
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+  })
+  let sessionRequest: Record<string, unknown> | null = null
+  await page.route(`**${sourcePath}`, async (route) => {
+    await route.fulfill({ status: 200, contentType: 'video/mp4', body: fixture })
+  })
+  await page.route('**/v1/media/sessions', async (route) => {
+    sessionRequest = JSON.parse(route.request().postData() || '{}')
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify({ url: `/v1/media/${mediaId}?expires=1893456000&signature=stall-recovery`, expiresAt: 1893456000 }),
+    })
+  })
+  await page.route('**/v1/capabilities', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ streamRanking: true, mediaDirectProxy: true, pmdbProxy: true, mediaRemux: true, mediaMp4: true, mediaHls: false, audioTranscode: true, videoTranscode: true, mobileSafeVideoTranscode: true }),
+  }))
+  let conversionRequest: Record<string, unknown> | null = null
+  await page.route('**/v1/media/conversions', async (route) => {
+    conversionRequest = JSON.parse(route.request().postData() || '{}')
+    await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId, status: 'processing' }) })
+  })
+  await page.route(`**/v1/media/conversions/${jobId}`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ jobId, status: 'ready', mode: 'h264Aac', bytes: fixture.length, url: `/v1/media/${outputMediaId}?expires=1893456000&signature=stall-conversion`, subtitles: [] }),
+  }))
+  await page.route(`**/v1/media/${mediaId}?*`, async (route) => {
+    await route.fulfill({ status: 200, contentType: 'video/mp4', body: fixture })
+  })
+  await page.route(`**/v1/media/${outputMediaId}?*`, async (route) => {
+    await route.fulfill({ status: 200, contentType: 'video/mp4', body: fixture })
+  })
+
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent(sourcePath)}`)
+  const video = page.locator('video')
+  await expect(page.locator('body')).toHaveAttribute('data-playback-started', 'true')
+  await video.evaluate((element: HTMLVideoElement) => {
+    element.loop = true
+    Object.defineProperties(element, {
+      readyState: { configurable: true, get: () => HTMLMediaElement.HAVE_CURRENT_DATA },
+      currentTime: { configurable: true, get: () => 1.5, set: () => undefined },
+      paused: { configurable: true, get: () => false },
+    })
+    element.dispatchEvent(new Event('waiting'))
+  })
+  await page.clock.fastForward(15_100)
+  await expect.poll(() => sessionRequest).toMatchObject({ url: sourcePath, headers: {} })
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${mediaId}?`)
+  await video.evaluate((element: HTMLVideoElement) => element.dispatchEvent(new Event('waiting')))
+  await page.clock.fastForward(15_100)
+  await expect.poll(() => conversionRequest).toMatchObject({ url: sourcePath, mode: 'auto', outputFormat: 'mp4', mobileCompatibility: true })
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputMediaId}?`)
+})
+
 test('unsupported media tries remux, AAC audio copy, then H.264/AAC automatically', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name.includes('webkit'), 'WebKit does not reliably expose a synthetic unsupported-format error.')
   await page.addInitScript(() => {

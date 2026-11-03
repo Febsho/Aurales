@@ -42,6 +42,8 @@ import { cancelMediaConversion, createMediaSession, getSupportedMediaConversionO
 import { buildExternalPlayerUrl, getPreferredExternalPlayer, setPreferredExternalPlayer, type ExternalPlayer } from '../services/player/externalPlayers'
 import { createExternalPlaybackReturnUrl } from '../services/player/externalPlaybackReturn'
 
+const MOBILE_MEDIA_STALL_RECOVERY_MS = 15_000
+
 interface InAppPlayerProps {
   url: string
   playbackRequestHeaders?: PlaybackRequestHeaders
@@ -212,6 +214,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   const [nativeSubtitleTracks, setNativeSubtitleTracks] = useState<Array<{ label: string; language?: string; index: number }>>([])
   const [playerNotice, setPlayerNotice] = useState('')
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const mobileStallRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const mobileStallRecoveryInFlightRef = useRef(false)
   const lastSavedTimeRef = useRef(0)
   const lastAniListPlaybackSaveRef = useRef(0)
   const lastPmdbPlaybackSaveRef = useRef(0)
@@ -357,6 +361,9 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     return () => { disposed = true; controller.abort() }
   }, [url, needsHeaderProxy, playbackRequestHeaders])
   useEffect(() => {
+    if (mobileStallRecoveryTimerRef.current) clearTimeout(mobileStallRecoveryTimerRef.current)
+    mobileStallRecoveryTimerRef.current = null
+    mobileStallRecoveryInFlightRef.current = false
     workerPlaybackDescriptionRef.current = null
     setWorkerPlaybackUrl(null)
     workerConversionActiveRef.current = false
@@ -378,6 +385,10 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     conversionControllerRef.current?.abort()
     conversionControllerRef.current = null
   }, [updateConversionModes, url])
+
+  useEffect(() => () => {
+    if (mobileStallRecoveryTimerRef.current) clearTimeout(mobileStallRecoveryTimerRef.current)
+  }, [])
 
   // HLS.js is loaded only for browsers that need Media Source Extensions.
   // Safari/iOS uses its native HLS implementation, which has stricter gesture
@@ -1929,12 +1940,67 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           const video = videoRef.current
           reportJellyfinEvent('pause', video?.currentTime || 0, video?.duration || 0, true)
         }}
-        onWaiting={() => { bufferingRef.current = true; if (!videoRef.current?.error && !error) setLoading(true); showControlsTemporarily(); const wt = useWatchTogetherStore.getState(); if (wt.currentRoom) wtSendBuffering(true, videoRef.current?.currentTime ?? 0) }}
+        onWaiting={() => {
+          bufferingRef.current = true
+          const video = videoRef.current
+          if (!video?.error && !error) setLoading(true)
+          showControlsTemporarily()
+          const wt = useWatchTogetherStore.getState()
+          if (wt.currentRoom) wtSendBuffering(true, video?.currentTime ?? 0)
+
+          // Mobile Safari/Chromium can leave a source in `waiting` without
+          // ever dispatching `error`. After playback has genuinely stalled,
+          // move it through the worker proxy and then conversion if the
+          // proxied source stalls too. Startup has its own shorter guard.
+          if (!video || !playbackStartedRef.current
+            || getMediaConversionOutputFormat() !== 'mp4'
+            || !getMediaWorkerConfig()
+            || mobileStallRecoveryInFlightRef.current
+            || workerLiveSnapshotActiveRef.current) return
+          if (mobileStallRecoveryTimerRef.current) clearTimeout(mobileStallRecoveryTimerRef.current)
+          const stalledAt = video.currentTime
+          const playbackRun = playbackRunRef.current
+          mobileStallRecoveryTimerRef.current = window.setTimeout(() => {
+            mobileStallRecoveryTimerRef.current = null
+            const currentVideo = videoRef.current
+            if (playbackRun !== playbackRunRef.current || currentVideo !== video
+              || currentVideo.paused || currentVideo.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA
+              || Math.abs(currentVideo.currentTime - stalledAt) > 0.25) return
+            mobileStallRecoveryInFlightRef.current = true
+
+            if (workerConversionActiveRef.current) {
+              if (!retryWorkerConversionRef.current?.(currentVideo)) mobileStallRecoveryInFlightRef.current = false
+              return
+            }
+            if (mediaProxyAttemptedRef.current || mediaProxySessionRef.current || needsHeaderProxy) {
+              if (!requestWorkerConversionRef.current?.(currentVideo)) mobileStallRecoveryInFlightRef.current = false
+              return
+            }
+
+            mediaProxyAttemptedRef.current = true
+            mediaProxyResumeRef.current = Number.isFinite(currentVideo.currentTime) ? currentVideo.currentTime : 0
+            setPlayerNotice('Playback stalled. Retrying this video through the Aurales media worker…')
+            void createMediaSession(url, undefined, playbackRequestHeaders).then((session) => {
+              if (playbackRun !== playbackRunRef.current || videoRef.current !== currentVideo) return
+              mediaProxySessionRef.current = session
+              mobileStallRecoveryInFlightRef.current = false
+              currentVideo.src = session.url
+              currentVideo.load()
+            }).catch(() => {
+              if (playbackRun === playbackRunRef.current) {
+                if (!requestWorkerConversionRef.current?.(currentVideo)) mobileStallRecoveryInFlightRef.current = false
+              }
+            })
+          }, MOBILE_MEDIA_STALL_RECOVERY_MS)
+        }}
         onCanPlay={() => {
           bufferingRef.current = false
           setLoading(false)
         }}
         onPlaying={() => {
+          if (mobileStallRecoveryTimerRef.current) clearTimeout(mobileStallRecoveryTimerRef.current)
+          mobileStallRecoveryTimerRef.current = null
+          mobileStallRecoveryInFlightRef.current = false
           bufferingRef.current = false
           setLoading(false)
           setPaused(false)
