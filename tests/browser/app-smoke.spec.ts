@@ -837,6 +837,10 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   })
   expect(discoveryFlow.every((position, index) => index === 0 || position > discoveryFlow[index - 1]!), 'Discovery shelves should follow the order shown in the reference video').toBe(true)
   await expect(page.locator('.discover-taste-pick')).toHaveCount(10)
+  const tastePickTitles = await page.locator('.discover-taste-pick__title').allTextContents()
+  const tasteSpotlightTitle = await page.locator('.discover-next-hero').getAttribute('data-title')
+  expect(tastePickTitles.some((title) => /^Weekly trend \d+$/.test(title)), 'Pick Three should use the live weekly trend feed ahead of an older daily snapshot').toBe(true)
+  expect(tastePickTitles).not.toContain(tasteSpotlightTitle)
   await expect(page.getByText(/Daily picks\s*·\s*US\s*·\s*6\+ rating/i)).toHaveCount(0)
   const mobileTabLayout = await page.locator('.discover-page__tabs button').evaluateAll((buttons) => buttons.map((button) => {
     const element = button as HTMLElement

@@ -1434,12 +1434,18 @@ export default function DiscoverPage() {
     })
   }, [pickerFrameId, surpriseSpinning])
   const tastePickPool = useMemo(() => {
-    if (!tabRanked.length) return []
+    if (!tabRanked.length && !currentTrendingRanked.length) return []
     const query = tasteQuery.trim().toLocaleLowerCase()
-    return tabRanked
-      .filter((entry) => entry.item.poster && !pickedIds.includes(mediaIdentity(entry.item)) && (!query || `${entry.item.title} ${entry.item.genres?.join(' ') || ''} ${entry.item.year || ''}`.toLocaleLowerCase().includes(query)))
+    const seen = new Set<string>()
+    return [...currentTrendingRanked, ...tabRanked]
+      .filter((entry) => {
+        const key = mediaIdentity(entry.item)
+        if (!entry.item.poster || key === heroMediaKey || pickedIds.includes(key) || seen.has(key)) return false
+        seen.add(key)
+        return !query || `${entry.item.title} ${entry.item.genres?.join(' ') || ''} ${entry.item.year || ''}`.toLocaleLowerCase().includes(query)
+      })
       .map((entry) => entry.item)
-  }, [pickedIds, tabRanked, tasteQuery])
+  }, [currentTrendingRanked, heroMediaKey, pickedIds, tabRanked, tasteQuery])
   const tastePickCandidates = useMemo(() => tastePickPool.slice(0, 10 + pickOffset), [tastePickPool, pickOffset])
   useEffect(() => { setPickerSelectionKey(null); setPickerLogoError(false); setHeroLogoError(false) }, [tab, mode, discoveryQueryKey])
   useEffect(() => { setSpotlightSelectionKey(null) }, [tab, mode, discoveryQueryKey])
