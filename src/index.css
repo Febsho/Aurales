@@ -6762,8 +6762,8 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-spotlight__actions > button:not(.discover-spotlight__play) { min-height: 44px; padding-inline: .45rem; border-color: rgba(255,255,255,.1); background: rgba(255,255,255,.06); }
   .discover-spotlight__actions > .discover-spotlight__secondary,
   .discover-spotlight__actions > .discover-spotlight__feedback { width: 44px; height: 44px; flex: 0 0 44px; justify-content: center; padding: 0; border-radius: 50%; }
-  .discover-spotlight__actions .discover-spotlight__change { flex: 1 0 100%; justify-content: flex-start; }
-  .discover-spotlight__actions > .discover-spotlight__change { width: auto; height: 44px; padding-inline: .2rem; border-color: transparent; background: transparent; }
+  .discover-spotlight__actions .discover-spotlight__change { width: max-content; flex: 0 0 auto; justify-content: flex-start; }
+  .discover-spotlight__actions > .discover-spotlight__change { width: auto; height: 46px; min-height: 46px; padding-inline: .2rem; border-color: transparent; background: transparent; }
   .discover-spotlight__secondary span, .discover-spotlight__feedback span { display: none; }
   .discover-spotlight__poster { position: relative; z-index: 1; grid-column: 2; grid-row: 1; width: 100%; min-width: 0; height: auto; align-self: center; aspect-ratio: 2 / 3; margin: 0; border-radius: .65rem; box-shadow: 0 8px 22px rgba(0,0,0,.32); }
   .discover-spotlight__trailer { display: none; }
