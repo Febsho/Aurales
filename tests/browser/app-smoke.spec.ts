@@ -327,6 +327,15 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.emulateMedia({ reducedMotion: 'no-preference' })
   await page.addInitScript(() => {
+    const profileId = 'playwright-discovery-profile'
+    localStorage.setItem('aurales_profiles_v1', JSON.stringify([{
+      id: profileId,
+      name: 'Default',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      isDefault: true,
+    }]))
+    localStorage.setItem('aurales_active_profile_v1', profileId)
     localStorage.setItem('aurales_app_managed_metadata', 'false')
     localStorage.setItem('tmdb_api_key', 'playwright-public-test-key')
     if (location.pathname === '/movie/mobile-layout-fixture') {
