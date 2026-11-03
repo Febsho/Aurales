@@ -1280,7 +1280,7 @@ export default function DiscoverPage() {
       ...(trendingSection ? trendingSection.items.map((entry) => mediaIdentity(entry.item)) : []),
     ])
     const seen = new Set<string>()
-    return [...currentTrendingRanked, ...tabRanked].map((entry) => entry.item).filter((item) => {
+    return sortRecommendationsByPopularity([...currentTrendingRanked, ...tabRanked]).map((entry) => entry.item).filter((item) => {
       const key = mediaIdentity(item)
       if (!item.poster || featured.has(key) || seen.has(key) || !matchesDiscoverTab(item, tab)) return false
       seen.add(key)
@@ -1290,7 +1290,7 @@ export default function DiscoverPage() {
   const activeDiscoveryMood = DISCOVERY_MOODS.find((mood) => mood.id === selectedDiscoveryMoodId) ?? DISCOVERY_MOODS[2]
   const moodItems = useMemo(() => {
     const seen = new Set<string>()
-    return [...currentTrendingRanked, ...tabRanked].map((entry) => entry.item).filter((item) => {
+    return sortRecommendationsByPopularity([...currentTrendingRanked, ...tabRanked]).map((entry) => entry.item).filter((item) => {
       const key = mediaIdentity(item)
       if (!item.poster || !matchesDiscoverTab(item, tab) || seen.has(key) || !item.genreIds?.some((genreId) => activeDiscoveryMood.genres.some((id) => id === genreId))) return false
       seen.add(key)
