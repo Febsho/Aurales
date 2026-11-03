@@ -1387,6 +1387,7 @@ async fn run_media_conversion(
                 false
             };
             let source_info = probe_local_media(ffmpeg.as_ref(), &input_path).await?;
+            let source_frame_rate = source_video_frame_rate(&source_info);
             let source_audio_track_count = source_info
                 .get("streams")
                 .and_then(Value::as_array)
@@ -1445,6 +1446,7 @@ async fn run_media_conversion(
                             source_audio_track_count,
                             &preferred_audio_track_indices,
                             tone_map_hdr,
+                            source_frame_rate,
                         )
                         .await
                         {
@@ -1493,6 +1495,7 @@ async fn run_media_conversion(
                         source_audio_track_count,
                         &preferred_audio_track_indices,
                         tone_map_hdr,
+                        source_frame_rate,
                     )
                     .await?;
                     Ok((bytes, mode, output_path.clone(), audio_tracks_reduced))
@@ -1724,6 +1727,10 @@ async fn transcode_local_output_using_encoder(
     hardware_encoder: Option<&str>,
     output_format: ConversionOutputFormat,
 ) -> Result<u64, ()> {
+    let source_frame_rate = probe_local_media(ffmpeg, input_path)
+        .await
+        .ok()
+        .and_then(|source| source_video_frame_rate(&source));
     transcode_local_output_using_encoder_with_audio_policy(
         ffmpeg,
         input_path,
@@ -1735,6 +1742,7 @@ async fn transcode_local_output_using_encoder(
         None,
         &[],
         false,
+        source_frame_rate,
     )
     .await
 }
@@ -1750,6 +1758,7 @@ async fn transcode_local_output_using_encoder_with_audio_policy(
     audio_track_index: Option<usize>,
     preferred_audio_track_indices: &[usize],
     tone_map_hdr: bool,
+    source_frame_rate: Option<f64>,
 ) -> Result<u64, ()> {
     let mut command = tokio::process::Command::new(ffmpeg);
     command
@@ -1828,19 +1837,19 @@ async fn transcode_local_output_using_encoder_with_audio_policy(
             if mode == ConversionMode::H264AacCompat {
                 command
                     .arg("-vf")
-                    .arg(h264_video_filter(mode, tone_map_hdr).ok_or(())?)
+                    .arg(h264_video_filter(mode, tone_map_hdr, source_frame_rate).ok_or(())?)
                     .args(["-profile:v", "baseline", "-level:v", "3.0"]);
             } else if mode == ConversionMode::H264AacLow {
                 command
                     .arg("-vf")
-                    .arg(h264_video_filter(mode, tone_map_hdr).ok_or(())?)
+                    .arg(h264_video_filter(mode, tone_map_hdr, source_frame_rate).ok_or(())?)
                     .args(["-profile:v", "baseline", "-level:v", "3.1"]);
             } else if output_format == ConversionOutputFormat::Mp4 || mobile_compatibility {
                 // Keep mobile fallback output within Level 4.2 frame-size
                 // limits, including HLS, square and portrait sources.
                 command
                     .arg("-vf")
-                    .arg(h264_video_filter(mode, tone_map_hdr).ok_or(())?)
+                    .arg(h264_video_filter(mode, tone_map_hdr, source_frame_rate).ok_or(())?)
                     // H.264 Level 4.2 tops out at 522,240 macroblocks per
                     // second. The fps filter caps high-frame-rate sources
                     // without depending on the newer -fpsmax output option.
@@ -1927,6 +1936,7 @@ async fn transcode_conversion_candidate(
     source_audio_track_count: usize,
     preferred_audio_track_indices: &[usize],
     tone_map_hdr: bool,
+    source_frame_rate: Option<f64>,
 ) -> Result<(u64, bool), ()> {
     if let Ok(bytes) = transcode_conversion_with_encoder_fallback(
         ffmpeg,
@@ -1939,6 +1949,7 @@ async fn transcode_conversion_candidate(
         None,
         preferred_audio_track_indices,
         tone_map_hdr,
+        source_frame_rate,
     )
     .await
     {
@@ -1970,6 +1981,7 @@ async fn transcode_conversion_candidate(
             Some(audio_track_index),
             preferred_audio_track_indices,
             tone_map_hdr,
+            source_frame_rate,
         )
         .await
         {
@@ -2039,20 +2051,67 @@ fn source_contains_hdr_video(source_info: &Value) -> bool {
         })
 }
 
-fn h264_video_filter(mode: ConversionMode, tone_map_hdr: bool) -> Option<String> {
+fn frame_rate_value(value: &Value) -> Option<f64> {
+    let value = value.as_str()?;
+    let (numerator, denominator) = value.split_once('/')?;
+    let numerator = numerator.parse::<f64>().ok()?;
+    let denominator = denominator.parse::<f64>().ok()?;
+    let rate = numerator / denominator;
+    (rate.is_finite() && rate > 0.0 && rate <= 1000.0).then_some(rate)
+}
+
+fn source_video_frame_rate(source_info: &Value) -> Option<f64> {
+    source_info
+        .get("streams")?
+        .as_array()?
+        .iter()
+        .find(|stream| {
+            stream.get("codec_type").and_then(Value::as_str) == Some("video")
+                && stream.get("attached_pic").and_then(Value::as_bool) != Some(true)
+        })
+        .and_then(|stream| {
+            stream
+                .get("avg_frame_rate")
+                .and_then(frame_rate_value)
+                .or_else(|| stream.get("r_frame_rate").and_then(frame_rate_value))
+        })
+}
+
+fn h264_video_filter(
+    mode: ConversionMode,
+    tone_map_hdr: bool,
+    source_frame_rate: Option<f64>,
+) -> Option<String> {
     let scale_filter = match mode {
-        ConversionMode::H264AacCompat => "scale=w='if(gte(iw,ih),min(720,iw),min(480,iw))':h='if(gte(iw,ih),min(480,ih),min(720,ih))':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=fps='if(gt(source_fps,0),min(source_fps,30),30)'",
-        ConversionMode::H264AacLow => "scale=w='if(gte(iw,ih),min(1280,iw),min(720,iw))':h='if(gte(iw,ih),min(720,ih),min(1280,ih))':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=fps='if(gt(source_fps,0),min(source_fps,30),30)'",
-        ConversionMode::H264Aac => "scale=w='if(gte(iw,ih),min(1920,iw),min(1080,iw))':h='if(gte(iw,ih),min(1080,ih),min(1920,ih))':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=fps='if(gt(source_fps,0),min(source_fps,60),30)'",
+        ConversionMode::H264AacCompat => "scale=w='if(gte(iw,ih),min(720,iw),min(480,iw))':h='if(gte(iw,ih),min(480,ih),min(720,ih))':force_original_aspect_ratio=decrease:force_divisible_by=2",
+        ConversionMode::H264AacLow => "scale=w='if(gte(iw,ih),min(1280,iw),min(720,iw))':h='if(gte(iw,ih),min(720,ih),min(1280,ih))':force_original_aspect_ratio=decrease:force_divisible_by=2",
+        ConversionMode::H264Aac => "scale=w='if(gte(iw,ih),min(1920,iw),min(1080,iw))':h='if(gte(iw,ih),min(1080,ih),min(1920,ih))':force_original_aspect_ratio=decrease:force_divisible_by=2",
         _ => return None,
     };
+    let mut filters = Vec::new();
     if tone_map_hdr {
-        Some(format!(
+        filters.push(format!(
             "zscale=transfer=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=transfer=bt709:primaries=bt709:matrix=bt709:range=tv,{scale_filter}"
-        ))
+        ));
     } else {
-        Some(scale_filter.to_owned())
+        filters.push(scale_filter.to_owned());
     }
+    let frame_rate_cap = match mode {
+        ConversionMode::H264Aac => 60.0,
+        ConversionMode::H264AacLow | ConversionMode::H264AacCompat => 30.0,
+        _ => return None,
+    };
+    if source_frame_rate.is_some_and(|rate| rate > frame_rate_cap) {
+        filters.push(
+            if frame_rate_cap == 60.0 {
+                "fps=60"
+            } else {
+                "fps=30"
+            }
+            .to_owned(),
+        );
+    }
+    Some(filters.join(","))
 }
 
 fn ordered_audio_track_indices(source_info: &Value, preferences: &[String]) -> Vec<usize> {
@@ -2093,6 +2152,7 @@ async fn transcode_conversion_with_encoder_fallback(
     audio_track_index: Option<usize>,
     preferred_audio_track_indices: &[usize],
     tone_map_hdr: bool,
+    source_frame_rate: Option<f64>,
 ) -> Result<u64, ()> {
     if let Some(encoder) = hardware_encoder {
         match transcode_local_output_using_encoder_with_audio_policy(
@@ -2106,6 +2166,7 @@ async fn transcode_conversion_with_encoder_fallback(
             audio_track_index,
             preferred_audio_track_indices,
             tone_map_hdr,
+            source_frame_rate,
         )
         .await
         {
@@ -2124,6 +2185,7 @@ async fn transcode_conversion_with_encoder_fallback(
         audio_track_index,
         preferred_audio_track_indices,
         tone_map_hdr,
+        source_frame_rate,
     )
     .await;
     if result.is_err() {
@@ -2145,7 +2207,7 @@ async fn probe_local_media(ffmpeg: &FsPath, input_path: &FsPath) -> Result<Value
                 "-protocol_whitelist",
                 "file,pipe,crypto,data",
                 "-show_entries",
-                "format=format_name:stream=index,codec_type,codec_name,profile,width,height,sample_rate,channels,color_transfer,color_primaries,color_space:stream_tags=language,title:stream_disposition=forced",
+                "format=format_name:stream=index,codec_type,codec_name,profile,width,height,sample_rate,channels,avg_frame_rate,r_frame_rate,color_transfer,color_primaries,color_space:stream_tags=language,title:stream_disposition=forced,attached_pic",
                 "-of",
                 "json",
             ])
@@ -2184,6 +2246,8 @@ async fn probe_local_media(ffmpeg: &FsPath, input_path: &FsPath) -> Result<Value
                 "height",
                 "sample_rate",
                 "channels",
+                "avg_frame_rate",
+                "r_frame_rate",
                 "color_transfer",
                 "color_primaries",
                 "color_space",
@@ -2214,6 +2278,13 @@ async fn probe_local_media(ffmpeg: &FsPath, input_path: &FsPath) -> Result<Value
                     "forced".to_owned(),
                     Value::Bool(forced.as_i64().is_some_and(|value| value != 0)),
                 );
+            }
+            if let Some(attached_pic) = stream
+                .get("disposition")
+                .and_then(|disposition| disposition.get("attached_pic"))
+                .and_then(Value::as_i64)
+            {
+                info.insert("attached_pic".to_owned(), Value::Bool(attached_pic != 0));
             }
             Value::Object(info)
         })
@@ -8349,11 +8420,35 @@ mod tests {
             "zscale"
         ));
         assert!(!ffmpeg_filter_available(" ..C scale V->V", "zscale"));
-        let tone_mapped = h264_video_filter(ConversionMode::H264Aac, true).unwrap();
+        let tone_mapped = h264_video_filter(ConversionMode::H264Aac, true, Some(24.0)).unwrap();
         assert!(tone_mapped.starts_with("zscale=transfer=linear:npl=100,format=gbrpf32le,tonemap="));
-        assert!(h264_video_filter(ConversionMode::H264AacCompat, false)
-            .unwrap()
-            .starts_with("scale="));
+        assert!(
+            h264_video_filter(ConversionMode::H264AacCompat, false, Some(24.0))
+                .unwrap()
+                .starts_with("scale=")
+        );
+        assert!(
+            h264_video_filter(ConversionMode::H264Aac, false, Some(120.0))
+                .unwrap()
+                .ends_with(",fps=60")
+        );
+        assert!(
+            h264_video_filter(ConversionMode::H264AacCompat, false, Some(60.0))
+                .unwrap()
+                .ends_with(",fps=30")
+        );
+        assert_eq!(
+            frame_rate_value(&serde_json::json!("30000/1001")),
+            Some(30000.0 / 1001.0)
+        );
+        assert_eq!(frame_rate_value(&serde_json::json!("0/0")), None);
+        assert_eq!(
+            source_video_frame_rate(&serde_json::json!({"streams": [
+                {"codec_type": "audio", "avg_frame_rate": "48/1"},
+                {"codec_type": "video", "avg_frame_rate": "120/1", "r_frame_rate": "120/1"}
+            ]})),
+            Some(120.0)
+        );
     }
 
     #[tokio::test]
@@ -8446,6 +8541,7 @@ mod tests {
             audio_count,
             &preferred_order,
             false,
+            source_video_frame_rate(&source_info),
         )
         .await
         .expect("preferred audio order should produce a mobile MP4");
@@ -8560,6 +8656,7 @@ mod tests {
             audio_count,
             &[],
             true,
+            source_video_frame_rate(&source_info),
         )
         .await
         .expect("HDR source should transcode to mobile MP4");
