@@ -215,6 +215,18 @@ export function prioritizeLiveTrends(
   return ordered
 }
 
+/** Apply live rank inside a preselected personal shelf without adding titles to that shelf. */
+export function prioritizeLiveTrendsWithin(
+  currentTrends: RankedRecommendation[],
+  recommendations: RankedRecommendation[],
+): RankedRecommendation[] {
+  const recommendationKeys = new Set(recommendations.map((entry) => mediaKey(entry.item)))
+  return prioritizeLiveTrends(
+    currentTrends.filter((entry) => recommendationKeys.has(mediaKey(entry.item))),
+    recommendations,
+  )
+}
+
 /** Keep the upstream order for a live editorial feed after personalization metadata is attached. */
 export function orderRecommendationsBySource(ranked: RankedRecommendation[], sourceItems: SearchResult[]): RankedRecommendation[] {
   const sourcePosition = new Map(sourceItems.map((item, index) => [mediaKey(item), index]))

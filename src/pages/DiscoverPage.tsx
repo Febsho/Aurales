@@ -14,7 +14,7 @@ import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
 import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, orderRecommendationsBySource, orderSpotlightCandidates, prioritizeLiveTrends, rankCandidates, reconcileTrendingSignals, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, orderRecommendationsBySource, orderSpotlightCandidates, prioritizeLiveTrends, prioritizeLiveTrendsWithin, rankCandidates, reconcileTrendingSignals, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
 import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktWatchedShows, getRatings as getTraktRatings } from '../services/trakt/sync'
@@ -1803,10 +1803,10 @@ export default function DiscoverPage() {
             const isPersonalGenre = section.id.startsWith('because-genre-')
             const genreTitle = isPersonalGenre ? section.title.replace(/^Because You Love /i, '') : ''
             const title = isTopTen ? (mode === 'for-you' ? 'Top 10 For You' : section.title) : isPersonalGenre ? `${genreTitle} Picks` : section.title.replace(/\s+for you$/i, '')
-            const items = (isTopTen ? section.items : isPersonalGenre ? sortRecommendationsByPopularity(section.items) : section.items).map((entry) => entry.item).slice(0, isTopTen || isPersonalGenre ? 10 : undefined)
+            const items = (isTopTen ? section.items : isPersonalGenre ? prioritizeLiveTrendsWithin(currentTrendingRanked, section.items) : section.items).map((entry) => entry.item).slice(0, isTopTen || isPersonalGenre ? 10 : undefined)
             // A Top 10 catalog must stay a ten-title collection even when the
             // recommendation engine exposes a larger backing catalog.
-            const sourceCatalogItems = isPersonalGenre ? sortRecommendationsByPopularity(section.catalogItems ?? section.items) : section.catalogItems ?? section.items
+            const sourceCatalogItems = isPersonalGenre ? prioritizeLiveTrendsWithin(currentTrendingRanked, section.catalogItems ?? section.items) : section.catalogItems ?? section.items
             const catalogItems = sourceCatalogItems.map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
             const eyebrow = isPersonalGenre ? `Because you love ${genreTitle.toLocaleLowerCase()}` : undefined
             return <DiscoveryReveal key={section.id}><div className={`row-contain discover-shelf${isPersonalGenre ? ' discover-shelf--personal-genre' : ''}`}><MediaRow title={title} headerEyebrow={eyebrow} items={items} showAllItems={catalogItems} layout={isTopTen ? 'ranked' : 'poster'} previewLimit={isTopTen ? 10 : undefined} renderAllPreviewItems={isTopTen} disableCinematic forceShowAll showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div></DiscoveryReveal>
@@ -1819,8 +1819,8 @@ export default function DiscoverPage() {
                 const seedTitle = section.title.replace(/^Because You (?:Favorited|Watched) /i, '').replace(/\s+\(\d{4}\)$/, '')
                 return <button key={section.id} type="button" aria-pressed={section.id === activeSimilaritySection.id} onClick={() => setSelectedSimilaritySectionId(section.id)}>{seedTitle}</button>
               })}</div>}
-              items={sortRecommendationsByPopularity(activeSimilaritySection.items).map((entry) => entry.item)}
-              showAllItems={sortRecommendationsByPopularity(activeSimilaritySection.catalogItems ?? activeSimilaritySection.items).map((entry) => entry.item)}
+              items={prioritizeLiveTrendsWithin(currentTrendingRanked, activeSimilaritySection.items).map((entry) => entry.item)}
+              showAllItems={prioritizeLiveTrendsWithin(currentTrendingRanked, activeSimilaritySection.catalogItems ?? activeSimilaritySection.items).map((entry) => entry.item)}
               layout="poster"
               disableCinematic
               forceShowAll

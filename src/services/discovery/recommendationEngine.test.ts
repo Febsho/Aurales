@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SearchResult, WatchProgress } from '../../types'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, orderRecommendationsBySource, orderSpotlightCandidates, prioritizeLiveTrends, rankCandidates, reconcileTrendingSignals, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, orderRecommendationsBySource, orderSpotlightCandidates, prioritizeLiveTrends, prioritizeLiveTrendsWithin, rankCandidates, reconcileTrendingSignals, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
 import type { DiscoveryActivity, RecommendationCandidate, RecommendationFeedback } from './types'
 
 const sciFi: SearchResult = { id:'seed',title:'Seed',type:'movie',provider:'tmdb',tmdbId:1,genreIds:[878],year:2020,rating:8 }
@@ -148,6 +148,26 @@ describe('discovery recommendation engine', () => {
       [byId.get(146)!, byId.get(147)!],
       [byId.get(146)!, byId.get(147)!, byId.get(148)!, byId.get(149)!],
     ).map((entry) => entry.item.tmdbId)).toEqual([146, 147, 149, 148])
+  })
+  it('preserves live rank inside a personal shelf without adding unrelated trends', () => {
+    const profile = buildTasteProfile(activity())
+    const firstTrend = candidate(150, { title: 'Trend rank one' })
+    const secondTrend = candidate(151, { title: 'Trend rank two' })
+    firstTrend.source = secondTrend.source = 'tmdb-trending'
+    firstTrend.popularity = 12
+    secondTrend.popularity = 245
+    const personalPick = candidate(152, { title: 'Personal pick' })
+    personalPick.popularity = 200
+    const unrelatedTrend = candidate(153, { title: 'Not part of this shelf' })
+    unrelatedTrend.source = 'tmdb-trending'
+    const ranked = rankCandidates([firstTrend, secondTrend, personalPick, unrelatedTrend], profile, activity(), [], 'for-you')
+    const byId = new Map(ranked.map((entry) => [entry.item.tmdbId, entry]))
+    const personalShelf = [byId.get(152)!, byId.get(151)!, byId.get(150)!]
+
+    expect(prioritizeLiveTrendsWithin(
+      [byId.get(150)!, byId.get(151)!, byId.get(153)!],
+      personalShelf,
+    ).map((entry) => entry.item.tmdbId)).toEqual([150, 151, 152])
   })
   it('lets an established popular title beat an obscure new release in Surprise Me', () => {
     const oldHit = candidate(107, { year: new Date().getFullYear() - 10, rating: 8 })
