@@ -653,6 +653,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const tonightTitle = await tonightCard.getAttribute('data-active-title')
   await tonightCard.getByRole('button', { name: /Another option/ }).click()
   await expect.poll(() => tonightCard.getAttribute('data-active-title')).not.toBe(tonightTitle)
+  await expect(tonightCard.locator('.discover-tonight__ambient')).toHaveCSS('animation-name', 'discover-tonight-backdrop-enter')
   await page.getByRole('button', { name: 'Not for me' }).click()
   await expect(page.locator('.discover-picker')).toHaveCount(0)
   const discoverySettings = page.getByRole('button', { name: 'Discovery settings' })
