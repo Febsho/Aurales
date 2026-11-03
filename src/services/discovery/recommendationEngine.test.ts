@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SearchResult, WatchProgress } from '../../types'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, rankCandidates, selectTopRatedRecommendations, trendingScopeFingerprint } from './recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, rankCandidates, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
 import type { DiscoveryActivity, RecommendationCandidate, RecommendationFeedback } from './types'
 
 const sciFi: SearchResult = { id:'seed',title:'Seed',type:'movie',provider:'tmdb',tmdbId:1,genreIds:[878],year:2020,rating:8 }
@@ -96,6 +96,16 @@ describe('discovery recommendation engine', () => {
     const draws = Array.from({ length: 1000 }, (_, index) => (index + 0.5) / 1000)
     const recentWins = draws.filter((draw) => chooseSurpriseRecommendation(ranked, undefined, () => draw)?.item.tmdbId === 134).length
     expect(recentWins).toBeGreaterThan(500)
+  })
+  it('keeps verified weekly trends ahead in the explicit popularity sort when their popularity field is missing', () => {
+    const popularArchive = candidate(139, { year: 2018, rating: 8 })
+    popularArchive.popularity = 900
+    const weeklyTrend = candidate(140, { year: 2025, rating: 8 })
+    weeklyTrend.popularity = undefined
+    weeklyTrend.source = 'tmdb-trending'
+    const ranked = rankCandidates([popularArchive, weeklyTrend], buildTasteProfile(activity()), activity(), [], 'for-you')
+
+    expect(sortRecommendationsByPopularity(ranked).map((entry) => entry.item.tmdbId)).toEqual([140, 139])
   })
   it('lets an established popular title beat an obscure new release in Surprise Me', () => {
     const oldHit = candidate(107, { year: new Date().getFullYear() - 10, rating: 8 })

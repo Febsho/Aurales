@@ -179,6 +179,20 @@ export function dedupeCandidates(candidates: RecommendationCandidate[]): Recomme
   return [...merged.values()]
 }
 
+/**
+ * Honor the explicit popularity sort without letting missing provider
+ * popularity metadata bury titles from the verified weekly trend feed.
+ */
+export function sortRecommendationsByPopularity(ranked: RankedRecommendation[]): RankedRecommendation[] {
+  return [...ranked].sort((left, right) => {
+    const leftIsTrending = left.trendSignal || left.source === 'tmdb-trending'
+    const rightIsTrending = right.trendSignal || right.source === 'tmdb-trending'
+    return Number(rightIsTrending) - Number(leftIsTrending)
+      || (right.popularity || 0) - (left.popularity || 0)
+      || right.score.total - left.score.total
+  })
+}
+
 export interface RankingWeightOverrides {
   genre?: number
   keyword?: number
