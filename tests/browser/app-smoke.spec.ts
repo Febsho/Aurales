@@ -682,6 +682,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(obsessionLayout.change.height, 'the alternate editorial pick should keep a comfortable touch target').toBeGreaterThanOrEqual(44)
   expect(obsessionLayout.change.width, 'the alternate editorial pick should remain a compact link instead of filling a gray row').toBeLessThan(obsessionLayout.copy.width * .65)
   expect(obsessionLayout.change.backgroundColor, 'the alternate editorial pick should look like a compact text action, not a filled button row').toBe('rgba(0, 0, 0, 0)')
+  await expect.poll(() => heroSpotlight.evaluate((hero) => hero.closest<HTMLElement>('.discover-reveal')?.dataset.revealed)).toBe('true')
+  await expect.poll(() => heroSpotlight.evaluate((hero) => getComputedStyle(hero.closest<HTMLElement>('.discover-reveal')!).opacity)).toBe('1')
   await expect(heroSpotlight.getByText('Tonight', { exact: true })).toBeVisible()
   await expect(heroSpotlight.locator('.discover-spotlight__accolade')).toBeVisible()
   await expect(heroSpotlight.locator('.discover-spotlight__accolade')).toHaveText(/^(In Cinema|New Movie|Top Rated)$/)
