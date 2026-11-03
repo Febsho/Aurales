@@ -540,6 +540,13 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(contentTypeControls.getByRole('button', { name: 'Anime' })).toHaveAttribute('aria-pressed', 'false')
   await expect.poll(() => tmdbRequestPaths.has('/3/trending/movie/week')).toBe(true)
   await expect(page.getByRole('heading', { name: /Settle in,/ })).toBeVisible()
+  const colourSection = page.locator('.discover-colors')
+  await expect(colourSection).toBeVisible({ timeout: 15_000 })
+  const monochromeFilter = colourSection.getByRole('button', { name: 'Mono', exact: true })
+  await expect(monochromeFilter).toBeVisible()
+  await monochromeFilter.click()
+  await expect(colourSection.locator('.media-row h2')).toHaveText('Mono Posters')
+  await expect(monochromeFilter).toHaveAttribute('aria-pressed', 'true')
   const heroSpotlight = page.locator('.discover-next-hero')
   const obsessionCard = heroSpotlight
   await expect(page.locator('.discover-spotlight-heading').getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
@@ -641,6 +648,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   })
   expect(mobileSpotlightMotion, 'the independent editorial Tonight pick and its poster should animate together').toEqual([true, true])
   await expect(mobileSpotlight.locator('.discover-spotlight__ambient img')).toHaveCSS('animation-name', 'discover-art-enter')
+  await expect.poll(() => mobileSpotlight.locator('.discover-spotlight__copy').evaluate((copy) => copy.getAnimations().every((animation) => animation.playState !== 'running'))).toBe(true)
   await page.getByRole('button', { name: 'Not for me' }).click()
   await expect(page.locator('.discover-picker')).toHaveCount(0)
   const discoverySettings = page.getByRole('button', { name: 'Discovery settings' })
@@ -749,7 +757,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.getByRole('heading', { name: 'Moods for Tonight' })).toHaveCount(0)
   await expect(page.locator('.discover-moods, .discover-color, .discover-time, .discover-calendar, .discover-shelf--big-screen')).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Sunday Night Moods' })).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: 'Pick by Colour' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Pick by Colour' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toHaveCount(0)
   await contentTypeControls.getByRole('button', { name: 'Anime', exact: true }).click()
   await expect(page.locator('.discover-next-hero .discover-spotlight__meta')).toContainText('Anime')
@@ -1073,7 +1081,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       const poster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
       const binge = page.querySelector<HTMLElement>('.discover-binge__feature')
       const contentSections = Array.from(page.querySelectorAll<HTMLElement>(
-        '.discover-next-hero, .discover-shelf, .discover-refine, .discover-genres, .discover-binge, .discover-more',
+        '.discover-next-hero, .discover-shelf, .discover-refine, .discover-colors, .discover-genres, .discover-binge, .discover-more',
       )).map((section) => section.getBoundingClientRect())
       return {
         viewport,
@@ -1116,7 +1124,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       const modes = page.querySelector<HTMLElement>('.discover-page__modes')!.getBoundingClientRect()
       const hero = document.querySelector<HTMLElement>('.discover-next-hero')!
       const contentSections = Array.from(page.querySelectorAll<HTMLElement>(
-        '.discover-next-hero, .discover-shelf, .discover-refine, .discover-genres, .discover-binge, .discover-more',
+        '.discover-next-hero, .discover-shelf, .discover-refine, .discover-colors, .discover-genres, .discover-binge, .discover-more',
       )).map((section) => section.getBoundingClientRect())
       const copy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
       const poster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()

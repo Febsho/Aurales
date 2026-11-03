@@ -6454,6 +6454,18 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-refine { width: min(calc(100% - 2 * var(--discover-gutter, 1.5rem)), 74rem); margin: 1.5rem auto 1.7rem; }
 .discover-refine__heading, .discover-genres__heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 .discover-refine__heading h2, .discover-genres__heading h2 { margin: 0; color: #fff; font-size: clamp(1.1rem, 2vw, 1.45rem); font-weight: 700; letter-spacing: -.025em; }
+.discover-colors { width: min(calc(100% - 2 * var(--discover-gutter, 1.5rem)), 90rem); margin: 1.35rem auto 1.5rem; }
+.discover-colors__heading { display: flex; align-items: end; justify-content: space-between; gap: .75rem; }
+.discover-colors__heading h2 { margin: 0; color: #fff; font-size: clamp(1.1rem, 2vw, 1.45rem); font-weight: 700; letter-spacing: -.025em; }
+.discover-colors__heading > span { color: rgba(255,255,255,.45); font-size: .75rem; }
+.discover-colors__filters { display: flex; gap: .45rem; margin: .7rem 0 .55rem; padding: .1rem .1rem .25rem; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+.discover-colors__filters::-webkit-scrollbar { display: none; }
+.discover-colors__filters button { display: inline-flex; flex: 0 0 auto; min-height: 44px; align-items: center; justify-content: center; gap: .4rem; padding: .45rem .75rem; border: 1px solid rgba(255,255,255,.11); border-radius: 999px; background: rgba(255,255,255,.045); color: rgba(255,255,255,.64); font: inherit; font-size: .78rem; font-weight: 650; cursor: pointer; transition: color .18s ease, border-color .18s ease, background .18s ease, transform .18s ease; }
+.discover-colors__filters button:hover { transform: translateY(-1px); color: #fff; }
+.discover-colors__filters button.is-active { border-color: rgba(255,255,255,.55); background: rgba(255,255,255,.13); color: #fff; }
+.discover-colors__filters button > span { width: .72rem; height: .72rem; flex: 0 0 .72rem; border: 1px solid rgba(255,255,255,.35); border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); }
+.discover-colors__row .media-row { margin-bottom: 0 !important; }
+.discover-colors__filters button:focus-visible { outline: 2px solid rgba(255,255,255,.9); outline-offset: 2px; }
 .discover-refine__progress { display: flex; align-items: center; gap: .3rem; color: rgba(255,255,255,.55); font-size: .77rem; }
 .discover-refine__progress > span:not(.discover-refine__count) { width: 1.15rem; height: .28rem; border-radius: 999px; background: rgba(255,255,255,.16); }
 .discover-refine__progress > span.is-complete { background: #fff; }
@@ -6570,6 +6582,12 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-taste-picks::-webkit-scrollbar { display: none; }
   .discover-taste-pick__title { font-size: .75rem; }
   .discover-taste-pick__year { font-size: .68rem; }
+  .discover-colors { width: calc(100% - 2 * var(--discover-gutter)); margin-block: 1rem 1.2rem; }
+  .discover-colors__heading { align-items: flex-start; flex-direction: column; gap: .2rem; }
+  .discover-colors__heading h2 { font-size: 1.08rem; }
+  .discover-colors__heading > span { font-size: .68rem; }
+  .discover-colors__filters { gap: .35rem; margin-block: .55rem .4rem; }
+  .discover-colors__filters button { min-height: 44px; padding-inline: .65rem; font-size: .72rem; }
   .discover-genres__grid { gap: .5rem; margin-block: .65rem .8rem; }
   .discover-genres__grid button { flex-basis: min(44vw, 11rem); min-height: 6rem; padding: .75rem; border-radius: .8rem; }
   .discover-genres__grid button > span { font-size: .88rem; }

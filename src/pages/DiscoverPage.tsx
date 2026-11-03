@@ -6,6 +6,8 @@ import { discoverTmdbPageWithCache, discoverTmdbWithCache, getTmdbPerson, getTre
 import MediaRow from '../components/MediaRow'
 import MediaCard from '../components/MediaCard'
 import { applySearchResultArt, resolveArtFromProviders } from '../services/artwork'
+import { loadAmbientColor } from '../services/ambientColor'
+import { classifyPosterColor, POSTER_COLOR_GROUPS, selectPosterColorItems, type PosterColorGroup } from '../services/discovery/posterColor'
 import { useAppStore } from '../stores/appStore'
 import { useCatalogStore } from '../stores/catalogStore'
 import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
@@ -425,6 +427,10 @@ export default function DiscoverPage() {
   const [selectedGenreId, setSelectedGenreId] = useState<number | null>(null)
   const [tasteQuery, setTasteQuery] = useState('')
   const [bingeIndex, setBingeIndex] = useState(0)
+  const [selectedPosterColor, setSelectedPosterColor] = useState<PosterColorGroup | 'all'>('all')
+  const [posterColors, setPosterColors] = useState<Record<string, PosterColorGroup>>({})
+  const posterColorCacheRef = useRef<Record<string, PosterColorGroup>>({})
+  const unavailablePosterColorsRef = useRef(new Set<string>())
   const [moreToDiscover, setMoreToDiscover] = useState<SearchResult[]>([])
   const [moreToDiscoverStatus, setMoreToDiscoverStatus] = useState<'idle' | 'loading' | 'error' | 'done'>('idle')
   const moreToDiscoverSentinelRef = useRef<HTMLDivElement>(null)
@@ -522,6 +528,7 @@ export default function DiscoverPage() {
   // silently reuse results fetched for the previous query.
   const discoveryPrefsKey = opaqueScope(prefsSignature(prefs))
   const discoveryQueryKey = `${preferenceKey}-${discoveryPrefsKey}`
+  useEffect(() => { setSelectedPosterColor('all') }, [tab, discoveryQueryKey])
   const continuationScope = `${tab}:${discoveryQueryKey}`
   useEffect(() => {
     moreToDiscoverScopeRef.current = continuationScope
@@ -1204,6 +1211,57 @@ export default function DiscoverPage() {
       return true
     })
   }, [currentTrendingRanked, heroMediaKey, ranked])
+  const colorCandidateItems = useMemo(() => {
+    const seen = new Set<string>()
+    return [...currentTrendingRanked, ...ranked]
+      .map((entry) => entry.item)
+      .filter((item) => {
+        const key = mediaIdentity(item)
+        if (!item.poster || key === heroMediaKey || seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      .slice(0, 24)
+  }, [currentTrendingRanked, heroMediaKey, ranked])
+  useEffect(() => {
+    const controller = new AbortController()
+    const pending = [...new Set(colorCandidateItems.flatMap((item) => item.poster ? [item.poster] : []))]
+      .filter((poster) => !posterColorCacheRef.current[poster] && !unavailablePosterColorsRef.current.has(poster))
+    if (!pending.length) {
+      setPosterColors(posterColorCacheRef.current)
+      return () => controller.abort()
+    }
+    let cursor = 0
+    const classifyNext = async () => {
+      while (!controller.signal.aborted && cursor < pending.length) {
+        const poster = pending[cursor++]!
+        try {
+          const color = await loadAmbientColor(poster, controller.signal)
+          if (controller.signal.aborted) return
+          if (color) posterColorCacheRef.current[poster] = classifyPosterColor(color)
+          else unavailablePosterColorsRef.current.add(poster)
+        } catch { /* Colour browsing is optional when remote artwork blocks CORS. */ }
+      }
+    }
+    void Promise.all(Array.from({ length: Math.min(4, pending.length) }, () => classifyNext())).then(() => {
+      if (!controller.signal.aborted) setPosterColors({ ...posterColorCacheRef.current })
+    })
+    return () => controller.abort()
+  }, [colorCandidateItems])
+  const colorSamples = useMemo(() => colorCandidateItems.flatMap((item) => {
+    const color = item.poster ? posterColors[item.poster] : undefined
+    return color ? [{ item, color }] : []
+  }), [colorCandidateItems, posterColors])
+  const colorSelectionItems = useMemo(
+    () => selectPosterColorItems(colorSamples, selectedPosterColor),
+    [colorSamples, selectedPosterColor],
+  )
+  const colorCatalogTitle = selectedPosterColor === 'all'
+    ? 'Popular Posters'
+    : `${POSTER_COLOR_GROUPS.find((group) => group.id === selectedPosterColor)?.label || 'Colour'} Posters`
+  const colorPreviewItems = useMemo(() => colorSelectionItems.slice(0, 10), [colorSelectionItems])
+  const availablePosterColors = useMemo(() => new Set(colorSamples.map((sample) => sample.color)), [colorSamples])
+  const colorRowId = `discover-color-${tab}-${selectedPosterColor}`
   const pickerRecommendation = (pickerSelectionKey ? pickerPool.find((entry) => mediaIdentity(entry.item) === pickerSelectionKey) : undefined) || pickerPool[0]
   const pickerItem = pickerRecommendation?.item
   const pickerFrameId = pickerItem ? mediaIdentity(pickerItem) : null
@@ -1548,6 +1606,14 @@ export default function DiscoverPage() {
               })}
               {tastePickCandidates.length === 0 && <p className="discover-taste-picks__empty">No matching titles. Try another search.</p>}
             </div>
+          </section></DiscoveryReveal>}
+          {viewState === 'content' && colorPreviewItems.length >= 3 && <DiscoveryReveal><section className="discover-colors row-contain" aria-labelledby="discover-colors-title">
+            <div className="discover-colors__heading"><div><p className="discover-section-eyebrow">Browse by poster colour</p><h2 id="discover-colors-title">Pick by Colour</h2></div><span>Popular titles, grouped by their artwork</span></div>
+            <div className="discover-colors__filters" role="group" aria-label="Poster colour">
+              <button type="button" className={selectedPosterColor === 'all' ? 'is-active' : ''} aria-pressed={selectedPosterColor === 'all'} onClick={() => setSelectedPosterColor('all')}>All</button>
+              {POSTER_COLOR_GROUPS.filter((group) => availablePosterColors.has(group.id)).map((group) => <button key={group.id} type="button" className={selectedPosterColor === group.id ? 'is-active' : ''} aria-pressed={selectedPosterColor === group.id} onClick={() => setSelectedPosterColor(group.id)}><span aria-hidden="true" style={{ backgroundColor: group.color }} />{group.label}</button>)}
+            </div>
+            <div className="discover-colors__row"><MediaRow title={colorCatalogTitle} items={colorPreviewItems} showAllItems={colorSelectionItems} layout="poster" disableCinematic showAllPath={`/catalog/${colorRowId}?title=${encodeURIComponent(colorCatalogTitle)}`} /></div>
           </section></DiscoveryReveal>}
           <DiscoveryReveal><section className="discover-genres row-contain" aria-labelledby="discover-genres-title">
             <div className="discover-genres__heading"><div><p className="discover-section-eyebrow">Browse by category</p><h2 id="discover-genres-title">Your Genres</h2></div></div>
