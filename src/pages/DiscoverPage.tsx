@@ -961,6 +961,13 @@ export default function DiscoverPage() {
   // recommendation instead of a repeated catalog card.
   const spotlightCandidates = useMemo(() => ranked.filter((entry) => Boolean(entry.item.poster)), [ranked])
   const heroRecommendation = spotlightCandidates.find((entry) => mediaIdentity(entry.item) === spotlightSelectionKey) ?? spotlightCandidates[0] ?? ranked[0]
+  // Lock the first available editorial pick for this Discovery scope. Catalog
+  // sources settle at different times across browsers; without a selected key,
+  // a late response can silently replace the hero while the user is reading it.
+  useEffect(() => {
+    if (spotlightSelectionKey || !spotlightCandidates.length) return
+    setSpotlightSelectionKey(mediaIdentity(spotlightCandidates[0]!.item))
+  }, [spotlightCandidates, spotlightSelectionKey])
   const heroItem = heroRecommendation?.item
   const heroMediaKey = heroItem ? mediaIdentity(heroItem) : null
   useEffect(() => {
@@ -1272,7 +1279,6 @@ export default function DiscoverPage() {
   useEffect(() => { setPickerSelectionKey(null); setPickerLogoError(false); setHeroLogoError(false) }, [tab, mode, discoveryQueryKey])
   useEffect(() => { setSpotlightSelectionKey(null) }, [tab, mode, discoveryQueryKey])
   useEffect(() => { setHeroLogoError(false) }, [heroItem?.id])
-  useEffect(() => { setLoadedHeroBackdrop(null) }, [heroItem?.id])
   useEffect(() => { setPickerLogoError(false) }, [pickerItem?.id])
 
   // Resolve the two editorial surfaces independently from the roulette.
