@@ -14,7 +14,7 @@ import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
 import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, rankCandidates, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, rankCandidates, reconcileTrendingSignals, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
 import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktWatchedShows, getRatings as getTraktRatings } from '../services/trakt/sync'
@@ -939,7 +939,7 @@ export default function DiscoverPage() {
   // A persisted provider snapshot can briefly outlive a content-tab switch
   // while its replacement loads. Keep every Discovery surface scoped to the
   // active tab so another media type never flashes into the recommendations.
-  const tabRanked = useMemo(() => ranked.filter((entry) => matchesDiscoverTab(entry.item, tab)), [ranked, tab])
+  const snapshotTabRanked = useMemo(() => ranked.filter((entry) => matchesDiscoverTab(entry.item, tab)), [ranked, tab])
   const currentTrendingRanked = useMemo(() => sortRecommendationsByPopularity(rankCandidates(
     currentTrending
       .filter((item) => item.poster && matchesDiscoverTab(item, tab) && candidatePassesPrefs(item, prefs))
@@ -956,6 +956,17 @@ export default function DiscoverPage() {
   // the randomizer. Personal taste, feedback and watch history still break ties
   // through score.total in sortRecommendationsByPopularity.
   [activity, currentTrending, feedback, impressions, mode, prefs, rankingNow, tab, tasteProfile])
+  const tabRanked = useMemo(() => reconcileTrendingSignals(
+    snapshotTabRanked,
+    currentTrendingRanked,
+    tasteProfile,
+    activity,
+    feedback,
+    mode,
+    rankingNow,
+    impressions,
+    prefsWeights(prefs),
+  ), [activity, currentTrendingRanked, feedback, impressions, mode, prefs, rankingNow, snapshotTabRanked, tasteProfile])
   // Wait for either personalized results or current trends before making an
   // additional runtime request, so a browser-only session can use whichever
   // source is available without blocking the main Discovery feed.

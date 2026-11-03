@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SearchResult, WatchProgress } from '../../types'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, rankCandidates, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, rankCandidates, reconcileTrendingSignals, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
 import type { DiscoveryActivity, RecommendationCandidate, RecommendationFeedback } from './types'
 
 const sciFi: SearchResult = { id:'seed',title:'Seed',type:'movie',provider:'tmdb',tmdbId:1,genreIds:[878],year:2020,rating:8 }
@@ -449,6 +449,29 @@ describe('discovery recommendation engine', () => {
     const ranked=rankCandidates(trending,profile,activity(),[],'for-you').reverse()
     const weekly=generateDiscoverySections(ranked,profile,'for-you').find((section)=>section.id==='trending-this-week')
     expect(weekly?.items.map((entry)=>entry.popularity)).toEqual([60,50,40,30,20,10])
+  })
+  it('removes expired weekly-trending boosts from saved titles when the live feed changes', () => {
+    const profile = buildTasteProfile(activity())
+    const stale = candidate(452, { year: 2017 })
+    stale.source = 'tmdb-trending'
+    stale.popularity = 0
+    const live = candidate(453, { year: 2017 })
+    live.source = 'tmdb-trending'
+    live.popularity = 0
+    const snapshot = rankCandidates([stale, live], profile, activity(), [], 'for-you')
+    const currentFeed = rankCandidates([live], profile, activity(), [], 'for-you')
+    const reconciled = reconcileTrendingSignals(snapshot, currentFeed, profile, activity(), [], 'for-you')
+    const staleEntry = reconciled.find((entry) => entry.item.tmdbId === 452)!
+    const liveEntry = reconciled.find((entry) => entry.item.tmdbId === 453)!
+    const draws = Array.from({ length: 1000 }, (_, index) => (index + 0.5) / 1000)
+    const liveWins = draws.filter((draw) => chooseSurpriseRecommendation(reconciled, undefined, () => draw)?.item.tmdbId === 453).length
+
+    expect(staleEntry.source).toBe('tmdb-discover')
+    expect(staleEntry.trendSignal).toBe(false)
+    expect(staleEntry.reasons.some((reason) => reason.code === 'trend')).toBe(false)
+    expect(liveEntry.trendSignal).toBe(true)
+    expect(liveEntry.reasons.some((reason) => reason.code === 'trend')).toBe(true)
+    expect(liveWins).toBeGreaterThan(900)
   })
   it('keeps the trending shelf compact while preserving the full public feed for Show all', () => {
     const profile = buildTasteProfile(activity([], []))

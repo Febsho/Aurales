@@ -193,6 +193,48 @@ export function sortRecommendationsByPopularity(ranked: RankedRecommendation[]):
   })
 }
 
+/**
+ * A persisted daily snapshot can outlive the weekly feed that produced it.
+ * Keep a title's trend boost only while the current feed still contains it;
+ * rerank expired trend entries as ordinary discoveries using today's signals.
+ */
+export function reconcileTrendingSignals(
+  snapshot: RankedRecommendation[],
+  currentTrends: RankedRecommendation[],
+  profile: TasteProfile,
+  activity: DiscoveryActivity,
+  feedback: RecommendationFeedback[],
+  mode: DiscoveryMode,
+  now = Date.now(),
+  impressions: Record<string, number> = {},
+  weights: RankingWeightOverrides = {},
+): RankedRecommendation[] {
+  const currentTrendByKey = new Map(currentTrends.map((entry) => [mediaKey(entry.item), entry]))
+  return snapshot.map((entry) => {
+    const key = mediaKey(entry.item)
+    const currentTrend = currentTrendByKey.get(key)
+    if (currentTrend) return {
+      ...entry,
+      ...currentTrend,
+      item: { ...entry.item, ...currentTrend.item },
+      trendSignal: true,
+    }
+    if (!entry.trendSignal && entry.source !== 'tmdb-trending') return entry
+
+    const candidate: RecommendationCandidate = {
+      ...entry,
+      source: entry.source === 'tmdb-trending' ? 'tmdb-discover' : entry.source,
+      trendSignal: false,
+    }
+    return rankCandidates([candidate], profile, activity, feedback, mode, now, impressions, weights)[0] ?? {
+      ...entry,
+      source: candidate.source,
+      trendSignal: false,
+      reasons: entry.reasons.filter((reason) => reason.code !== 'trend'),
+    }
+  })
+}
+
 /** Prefer a concrete personal explanation in editorial cards, then public signals. */
 export function selectEditorialReason(reasons: RecommendationReason[]): RecommendationReason | undefined {
   const preferred = [
