@@ -1257,11 +1257,12 @@ export default function DiscoverPage() {
     return { id: 'trending-this-week', title: 'OR TRY', items: catalogItems.slice(0, 10), catalogItems }
   }, [currentTrendingRanked, heroItem, tabRanked, visiblePersonalizedSections])
   const hiddenGemsSection = personalizedSections.find((section) => section.id === 'hidden-gems')
-  const hiddenGemItems = useMemo(
-    () => (hiddenGemsSection?.catalogItems ?? hiddenGemsSection?.items ?? []).map((entry) => entry.item).filter((item) => Boolean(item.poster)).slice(0, 10),
+  const hiddenGemCatalogItems = useMemo(
+    () => (hiddenGemsSection?.catalogItems ?? hiddenGemsSection?.items ?? []).map((entry) => entry.item).filter((item) => Boolean(item.poster)),
     [hiddenGemsSection],
   )
-  const timeTonightItems = useMemo(() => {
+  const hiddenGemItems = useMemo(() => hiddenGemCatalogItems.slice(0, 10), [hiddenGemCatalogItems])
+  const timeTonightCatalogItems = useMemo(() => {
     const seen = new Set<string>()
     const runtimeItems = tab === 'anime' ? [...timeTonight, ...timeTonightAnimeMovies] : timeTonight
     const eligibleItems = runtimeItems.filter((item) => {
@@ -1270,11 +1271,12 @@ export default function DiscoverPage() {
       seen.add(key)
       return true
     })
-    return orderRuntimeCandidates(eligibleItems, currentTrendingRanked.map((entry) => entry.item)).slice(0, 10)
+    return orderRuntimeCandidates(eligibleItems, currentTrendingRanked.map((entry) => entry.item))
   }, [currentTrendingRanked, tab, timeTonight, timeTonightAnimeMovies])
+  const timeTonightItems = useMemo(() => timeTonightCatalogItems.slice(0, 10), [timeTonightCatalogItems])
   const timeTonightLoading = discoveryRowLoads[`discover-time-${tab}-${selectedRuntimeBucket.id}-${discoveryQueryKey}`]
     || (tab === 'anime' && discoveryRowLoads[`discover-time-anime-movies-${selectedRuntimeBucket.id}-${discoveryQueryKey}`])
-  const bigScreenItems = useMemo(() => {
+  const bigScreenCatalogItems = useMemo(() => {
     const featured = new Set([
       ...(heroItem ? [mediaIdentity(heroItem)] : []),
       ...visiblePersonalizedSections.flatMap((section) => section.items.slice(0, 10).map((entry) => mediaIdentity(entry.item))),
@@ -1286,22 +1288,25 @@ export default function DiscoverPage() {
       if (!item.poster || featured.has(key) || seen.has(key) || !matchesDiscoverTab(item, tab)) return false
       seen.add(key)
       return true
-    }).slice(0, 10)
+    })
   }, [currentTrendingRanked, heroItem, tab, tabRanked, trendingSection, visiblePersonalizedSections])
+  const bigScreenItems = useMemo(() => bigScreenCatalogItems.slice(0, 10), [bigScreenCatalogItems])
   const activeDiscoveryMood = DISCOVERY_MOODS.find((mood) => mood.id === selectedDiscoveryMoodId) ?? DISCOVERY_MOODS[2]
-  const moodItems = useMemo(() => {
+  const moodCatalogItems = useMemo(() => {
     const seen = new Set<string>()
     return prioritizeLiveTrends(currentTrendingRanked, tabRanked).map((entry) => entry.item).filter((item) => {
       const key = mediaIdentity(item)
       if (!item.poster || !matchesDiscoverTab(item, tab) || seen.has(key) || !item.genreIds?.some((genreId) => activeDiscoveryMood.genres.some((id) => id === genreId))) return false
       seen.add(key)
       return true
-    }).slice(0, 10)
+    })
   }, [activeDiscoveryMood, currentTrendingRanked, tab, tabRanked])
-  const newLibraryItems = useMemo(
-    () => buildNewLibraryItems(localWatchlist, connectedActivity.watchlist, (item) => matchesDiscoverTab(item, tab)).slice(0, 10),
+  const moodItems = useMemo(() => moodCatalogItems.slice(0, 10), [moodCatalogItems])
+  const newLibraryCatalogItems = useMemo(
+    () => buildNewLibraryItems(localWatchlist, connectedActivity.watchlist, (item) => matchesDiscoverTab(item, tab)),
     [connectedActivity.watchlist, localWatchlist, tab],
   )
+  const newLibraryItems = useMemo(() => newLibraryCatalogItems.slice(0, 10), [newLibraryCatalogItems])
   const bingeRecommendations = useMemo(() => {
     const bingeRanked = tab === 'movies'
       ? (() => {
@@ -1503,13 +1508,13 @@ export default function DiscoverPage() {
     catalogSetCache(genreRowId, { items: genreSelectionItems, page: 0, hasMore: false, scrollTop: 0 })
   }, [catalogSetCache, genreRowId, genreSelectionItems])
   useEffect(() => {
-    catalogSetCache(`discover-time-${tab}-${selectedRuntimeBucket.id}-${discoveryQueryKey}`, { items: timeTonightItems, page: 0, hasMore: false, scrollTop: 0 })
+    catalogSetCache(`discover-time-${tab}-${selectedRuntimeBucket.id}-${discoveryQueryKey}`, { items: timeTonightCatalogItems, page: 0, hasMore: false, scrollTop: 0 })
     if (tab === 'anime') catalogSetCache(`discover-time-anime-movies-${selectedRuntimeBucket.id}-${discoveryQueryKey}`, { items: timeTonightAnimeMovies, page: 0, hasMore: false, scrollTop: 0 })
-    catalogSetCache(`discover-big-screen-${tab}-${discoveryQueryKey}`, { items: bigScreenItems, page: 0, hasMore: false, scrollTop: 0 })
-    catalogSetCache(`discover-mood-${tab}-${activeDiscoveryMood.id}-${discoveryQueryKey}`, { items: moodItems, page: 0, hasMore: false, scrollTop: 0 })
-    catalogSetCache(`discover-new-library-${tab}-${discoveryQueryKey}`, { items: newLibraryItems, page: 0, hasMore: false, scrollTop: 0 })
-    if (hiddenGemItems.length) catalogSetCache(`discover-hidden-gems-${tab}-${discoveryQueryKey}`, { items: hiddenGemItems, page: 0, hasMore: false, scrollTop: 0 })
-  }, [activeDiscoveryMood.id, bigScreenItems, catalogSetCache, discoveryQueryKey, hiddenGemItems, moodItems, newLibraryItems, selectedRuntimeBucket.id, tab, timeTonightAnimeMovies, timeTonightItems])
+    catalogSetCache(`discover-big-screen-${tab}-${discoveryQueryKey}`, { items: bigScreenCatalogItems, page: 0, hasMore: false, scrollTop: 0 })
+    catalogSetCache(`discover-mood-${tab}-${activeDiscoveryMood.id}-${discoveryQueryKey}`, { items: moodCatalogItems, page: 0, hasMore: false, scrollTop: 0 })
+    catalogSetCache(`discover-new-library-${tab}-${discoveryQueryKey}`, { items: newLibraryCatalogItems, page: 0, hasMore: false, scrollTop: 0 })
+    if (hiddenGemCatalogItems.length) catalogSetCache(`discover-hidden-gems-${tab}-${discoveryQueryKey}`, { items: hiddenGemCatalogItems, page: 0, hasMore: false, scrollTop: 0 })
+  }, [activeDiscoveryMood.id, bigScreenCatalogItems, catalogSetCache, discoveryQueryKey, hiddenGemCatalogItems, moodCatalogItems, newLibraryCatalogItems, selectedRuntimeBucket.id, tab, timeTonightAnimeMovies, timeTonightCatalogItems])
   useEffect(() => {
     const key = `${berlinDateKey}:${tab}:${mode}`
     if (!tabRanked.length || IMPRESSIONS_RECORDED.has(key)) return
@@ -1830,7 +1835,7 @@ export default function DiscoverPage() {
                   {DISCOVERY_RUNTIME_BUCKETS.map((bucket) => <button key={bucket.id} type="button" aria-pressed={selectedRuntimeBucket.id === bucket.id} onClick={() => setSelectedRuntimeBucketId(bucket.id)}>{bucket.label}</button>)}
                 </div>}
                 items={timeTonightItems}
-                showAllItems={timeTonightItems}
+                showAllItems={timeTonightCatalogItems}
                 layout="poster"
                 disableCinematic
                 showAllPath={`/catalog/discover-time-${tab}-${selectedRuntimeBucket.id}-${discoveryQueryKey}?title=${encodeURIComponent('How Much Time Tonight?')}`}
@@ -1892,12 +1897,12 @@ export default function DiscoverPage() {
               <div className="discover-editorial-tabs" role="group" aria-label="Choose a mood">{DISCOVERY_MOODS.map((mood) => <button key={mood.id} type="button" aria-pressed={activeDiscoveryMood.id === mood.id} onClick={() => setSelectedDiscoveryMoodId(mood.id)}>{mood.label}</button>)}</div>
             </div>
             {moodItems.length > 0
-              ? <MediaRow title={`${activeDiscoveryMood.label} Picks`} items={moodItems} showAllItems={moodItems} layout="poster" disableCinematic forceShowAll showAllPath={`/catalog/discover-mood-${tab}-${activeDiscoveryMood.id}-${discoveryQueryKey}?title=${encodeURIComponent(`${activeDiscoveryMood.label} Picks`)}`} />
+              ? <MediaRow title={`${activeDiscoveryMood.label} Picks`} items={moodItems} showAllItems={moodCatalogItems} layout="poster" disableCinematic forceShowAll showAllPath={`/catalog/discover-mood-${tab}-${activeDiscoveryMood.id}-${discoveryQueryKey}?title=${encodeURIComponent(`${activeDiscoveryMood.label} Picks`)}`} />
               : <p className="discover-editorial-empty" role="status">No titles found for this mood yet.</p>}
           </section></DiscoveryReveal>}
-          {bigScreenItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--big-screen"><MediaRow title="Made for the Big Screen" headerEyebrow="Best in widescreen" items={bigScreenItems} showAllItems={bigScreenItems} layout="poster" disableCinematic showAllPath={`/catalog/discover-big-screen-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Made for the Big Screen')}`} /></div></DiscoveryReveal>}
-          {hiddenGemItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--gems"><MediaRow title="Hidden Gems" headerEyebrow="Highly rated, waiting for you" items={hiddenGemItems} showAllItems={hiddenGemItems} layout="poster" disableCinematic showAllPath={`/catalog/discover-hidden-gems-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Hidden Gems')}`} /></div></DiscoveryReveal>}
-          {newLibraryItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--recent"><MediaRow title="New in Your Library" headerEyebrow="Just arrived in your library" items={newLibraryItems} showAllItems={newLibraryItems} layout="poster" disableCinematic showAllPath={`/catalog/discover-new-library-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('New in Your Library')}`} /></div></DiscoveryReveal>}
+          {bigScreenItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--big-screen"><MediaRow title="Made for the Big Screen" headerEyebrow="Best in widescreen" items={bigScreenItems} showAllItems={bigScreenCatalogItems} layout="poster" disableCinematic showAllPath={`/catalog/discover-big-screen-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Made for the Big Screen')}`} /></div></DiscoveryReveal>}
+          {hiddenGemItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--gems"><MediaRow title="Hidden Gems" headerEyebrow="Highly rated, waiting for you" items={hiddenGemItems} showAllItems={hiddenGemCatalogItems} layout="poster" disableCinematic showAllPath={`/catalog/discover-hidden-gems-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Hidden Gems')}`} /></div></DiscoveryReveal>}
+          {newLibraryItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--recent"><MediaRow title="New in Your Library" headerEyebrow="Just arrived in your library" items={newLibraryItems} showAllItems={newLibraryCatalogItems} layout="poster" disableCinematic showAllPath={`/catalog/discover-new-library-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('New in Your Library')}`} /></div></DiscoveryReveal>}
           {viewState === 'content' && <DiscoveryReveal><section className="discover-more row-contain" aria-labelledby="discover-more-title">
             <div className="discover-more__heading"><div><p className="discover-section-eyebrow">More popular picks</p><h2 id="discover-more-title">Keep Exploring</h2></div><span>{moreToDiscover.length ? `${moreToDiscover.length} titles loaded` : 'Fresh titles load as you scroll'}</span></div>
             {moreToDiscover.length > 0 && <div className="media-grid discover-more__grid">
