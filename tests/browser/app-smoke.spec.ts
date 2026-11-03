@@ -2002,7 +2002,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
         if (layout.bingeLayout) {
           const { feature, copy, gallery, title, actions } = layout.bingeLayout
           expect(copy.left, `${platform} Binge copy should stay inside its feature`).toBeGreaterThanOrEqual(feature.left)
-          if (width >= 1120) {
+          if (width >= 900) {
             expect(copy.right, `${platform} desktop Binge copy should stay beside the poster gallery`).toBeLessThanOrEqual(gallery.left + 1)
           } else {
             expect(copy.bottom, `${platform} compact Binge copy should sit above its poster gallery`).toBeLessThanOrEqual(gallery.top + 1)
