@@ -6214,6 +6214,17 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     margin-inline: var(--discover-gutter);
   }
 }
+
+/* Discovery's Top 10 cards use a compact editorial scale on desktop. The
+   shared MediaCard defaults are intentionally larger for Home/TV layouts. */
+@media (min-width: 701px) {
+  .discover-page .media-row--ranked .media-row-card-slot {
+    height: auto !important;
+  }
+  .discover-page .media-row--ranked .media-row-card-slot > button {
+    --ranked-card-height: clamp(10rem, 16vw, 14rem) !important;
+  }
+}
 .discover-page__notice { padding: 1rem var(--discover-gutter) 0 !important; }
 .discover-page__heading { padding: 1rem var(--discover-gutter) .75rem !important; }
 .discover-page__heading > div:first-child { gap: 1rem; }
@@ -6382,6 +6393,12 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-page .media-row > div:first-child { margin-bottom: .5rem !important; }
 .discover-page .media-row > div:first-child h2 { font-size: clamp(.95rem, 1.25vw, 1.15rem) !important; }
 .discover-page .media-row .cinematic-row-track { gap: clamp(.55rem, 1vw, .85rem) !important; }
+.discover-page .media-row--poster .media-row-card-slot > button,
+.discover-page .media-row--ranked .media-row-card-slot > button {
+  /* MediaCard reserves a fixed desktop poster slot. Discovery disables that
+     focus expansion, so let the clickable card follow its poster and labels. */
+  height: auto !important;
+}
 .discover-page .media-row--poster .cinematic-row-track > .media-row-card-slot { width: clamp(7rem, 11vw, 10rem); }
 .discover-page .media-row--poster:not(.cinematic-media-row) .media-row-card-slot { width: clamp(7.5rem, 9vw, 9rem); }
 .discover-page .media-row--poster:not(.cinematic-media-row) .media-row-card-slot > button { width: 100% !important; }

@@ -682,12 +682,13 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     if (cards.length < 2) return null
     const first = cards[0]!.getBoundingClientRect()
     const second = cards[1]!.getBoundingClientRect()
-    return { firstRight: first.right, secondLeft: second.left, firstWidth: first.width }
+    return { firstRight: first.right, secondLeft: second.left, firstWidth: first.width, firstHeight: first.height }
   })
   expect(mobilePosterSpacing).not.toBeNull()
   expect(mobilePosterSpacing!.secondLeft).toBeGreaterThanOrEqual(mobilePosterSpacing!.firstRight)
   expect(mobilePosterSpacing!.firstWidth).toBeGreaterThanOrEqual(80)
   expect(mobilePosterSpacing!.firstWidth).toBeLessThanOrEqual(100)
+  expect(mobilePosterSpacing!.firstHeight).toBeLessThanOrEqual(mobilePosterSpacing!.firstWidth * 2.4)
   const mobileTasteGrid = await page.locator('.discover-taste-picks').evaluate((grid) => {
     const cards = Array.from(grid.querySelectorAll<HTMLElement>('.discover-taste-pick'))
     const first = cards[0]!.getBoundingClientRect()
@@ -971,6 +972,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         page: page.getBoundingClientRect().toJSON(),
         sectionsInside: contentSections.every((bounds) => bounds.left >= -1 && bounds.right <= viewport + 1),
         heroColumnsSeparated: copy.right <= poster.left + 1,
+        maxPosterCardRatio: Math.max(...Array.from(page.querySelectorAll<HTMLElement>('.discover-page .discover-shelf .media-row-card-slot'), (card) => card.getBoundingClientRect().height / Math.max(1, card.getBoundingClientRect().width))),
         bingeColumns: binge ? getComputedStyle(binge).gridTemplateColumns.split(' ').length : 0,
       }
     })
@@ -979,6 +981,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(desktopBounds.page.right, `Discovery exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
     expect(desktopBounds.sectionsInside, `a Discovery section exceeds the viewport at ${width}px`).toBe(true)
     expect(desktopBounds.heroColumnsSeparated, `hero copy overlaps its poster at ${width}px`).toBe(true)
+    expect(desktopBounds.maxPosterCardRatio, `Discovery poster cards should follow their artwork height at ${width}px`).toBeLessThanOrEqual(2.4)
     if (width >= 900 && desktopBounds.bingeColumns > 0) expect(desktopBounds.bingeColumns, `binge feature should use a horizontal desktop composition at ${width}px`).toBe(2)
   }
   await page.evaluate(() => { document.documentElement.dataset.runtimePlatform = 'tauri' })
@@ -995,12 +998,14 @@ test('mobile Discover and movie details keep text, hero and controls within the 
         documentWidth: document.documentElement.scrollWidth,
         page: page.getBoundingClientRect().toJSON(),
         heroColumnsSeparated: copy.right <= poster.left + 1,
+        maxPosterCardRatio: Math.max(...Array.from(page.querySelectorAll<HTMLElement>('.discover-shelf .media-row-card-slot'), (card) => card.getBoundingClientRect().height / Math.max(1, card.getBoundingClientRect().width))),
       }
     })
     expect(desktopBounds.documentWidth, `Tauri document overflow at ${width}px`).toBeLessThanOrEqual(width + 1)
     expect(desktopBounds.page.left, `Tauri Discovery shifted offscreen at ${width}px`).toBeGreaterThanOrEqual(-1)
     expect(desktopBounds.page.right, `Tauri Discovery exceeds viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
     expect(desktopBounds.heroColumnsSeparated, `Tauri hero copy overlaps its poster at ${width}px`).toBe(true)
+    expect(desktopBounds.maxPosterCardRatio, `Tauri Discovery poster cards should follow their artwork height at ${width}px`).toBeLessThanOrEqual(2.4)
   }
   await page.evaluate(() => { document.documentElement.dataset.runtimePlatform = 'web' })
   await page.setViewportSize({ width: 1440, height: 900 })
