@@ -545,11 +545,12 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const heroSpotlight = page.locator('.discover-next-hero')
   const obsessionCard = heroSpotlight
   await expect(heroSpotlight.locator('.discover-spotlight__eyebrow')).toContainText('Tonight')
-  await expect(heroSpotlight.locator('.discover-spotlight__ambient img')).toHaveAttribute('src', /discovery-fixture-backdrop/)
+  await expect(heroSpotlight.locator('.discover-spotlight__ambient img')).toHaveAttribute('src', /weekly-trend-backdrop/)
   await expect(page.locator('.discover-libraries')).toHaveCount(0)
   await expect(page.locator('.discover-shelf--favorites, .discover-shelf--new-library')).toHaveCount(0)
   const calendar = page.locator('.discover-calendar')
   await expect(calendar.getByRole('heading', { name: 'Calendar', exact: true })).toBeVisible()
+  const calendarTop = (await calendar.boundingBox())!.y
   if (await calendar.locator('.discover-calendar__item').count() > 0) {
     await expect(calendar.getByRole('button', { name: 'Today' })).toHaveAttribute('aria-pressed', 'false')
     await expect(calendar.getByRole('button', { name: 'Next 30 days' })).toHaveAttribute('aria-pressed', 'true')
@@ -576,14 +577,36 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const heroBackdrop = heroSpotlight.locator('.discover-spotlight__ambient img')
   await expect(heroBackdrop).toHaveClass(/is-loaded/)
   await expect(heroBackdrop).toHaveCSS('opacity', '1')
-  const obsessionTop = (await page.getByRole('heading', { name: 'Your Next Obsession' }).boundingBox())!.y
-  const calendarTop = (await calendar.boundingBox())!.y
-  const trendingTop = (await page.getByRole('heading', { name: 'OR TRY', exact: true }).boundingBox())!.y
-  const topTenTop = (await page.getByRole('heading', { name: 'Top 10 For You', exact: true }).boundingBox())!.y
-  const profileWelcomeHeading = await page.getByRole('heading', { name: /Settle in,/ }).boundingBox()
-  const obsessionHeading = await page.getByRole('heading', { name: 'Your Next Obsession' }).boundingBox()
-  const weekendCard = await heroSpotlight.boundingBox()
-  const browseControls = await page.locator('.discover-page__tabs').boundingBox()
+  await expect(page.getByRole('heading', { name: 'OR TRY', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Top 10 For You', exact: true })).toBeVisible()
+  const mobileDiscoveryLayout = await page.evaluate(() => {
+    const rect = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector)
+      if (!element) return null
+      const { y, height } = element.getBoundingClientRect()
+      return { y, height }
+    }
+    const headingRect = (label: string) => {
+      const element = [...document.querySelectorAll<HTMLElement>('.discover-shelf h2')]
+        .find((heading) => heading.textContent?.trim() === label)
+      if (!element) return null
+      const { y, height } = element.getBoundingClientRect()
+      return { y, height }
+    }
+    return {
+      profileWelcomeHeading: rect('.discover-page__heading h1'),
+      browseControls: rect('.discover-page__tabs'),
+      obsessionHeading: rect('#discover-next-title'),
+      weekendCard: rect('.discover-next-hero'),
+      trendingHeading: headingRect('OR TRY'),
+      topTenHeading: headingRect('Top 10 For You'),
+    }
+  })
+  const { profileWelcomeHeading, browseControls, obsessionHeading, weekendCard, trendingHeading, topTenHeading } = mobileDiscoveryLayout
+  expect(Object.values(mobileDiscoveryLayout).every(Boolean), 'all major Discovery sections should have layout boxes').toBe(true)
+  const obsessionTop = obsessionHeading!.y
+  const trendingTop = trendingHeading!.y
+  const topTenTop = topTenHeading!.y
   expect(calendarTop).toBeLessThan(obsessionTop)
   expect(obsessionTop).toBeLessThan(trendingTop)
   expect(trendingTop).toBeLessThan(topTenTop)
@@ -603,10 +626,6 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.getByRole('dialog', { name: 'Discovery settings' })).toHaveCount(0)
   await expect(discoverySettings).toBeFocused()
   await expect(page.locator('.discover-spotlight-heading').getByText('A movie for tonight').first()).toBeVisible()
-  expect(profileWelcomeHeading).not.toBeNull()
-  expect(obsessionHeading).not.toBeNull()
-  expect(weekendCard).not.toBeNull()
-  expect(browseControls).not.toBeNull()
   expect(profileWelcomeHeading!.y + profileWelcomeHeading!.height).toBeLessThan(browseControls!.y)
   expect(obsessionHeading!.y).toBeGreaterThan(browseControls!.y)
   expect(obsessionHeading!.y + obsessionHeading!.height).toBeLessThan(weekendCard!.y)
@@ -627,8 +646,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(topTenRow.locator('.media-rank__value').nth(1)).toHaveText('2')
   await expect(page.getByRole('heading', { name: 'OR TRY', exact: true })).toBeVisible()
   const trendingShelf = page.locator('.discover-shelf--trending')
-  const heroTitle = await page.locator('.discover-next-hero').getAttribute('data-title')
   await expect.poll(async () => (await trendingShelf.locator('.media-row-card-slot img').evaluateAll((images) => images.map((image) => image.getAttribute('alt')))).filter((title) => /^Weekly trend \d+$/.test(title || '')).length).toBeGreaterThan(0)
+  await expect(page.locator('.discover-next-hero')).toHaveAttribute('data-title', /^Weekly trend \d+$/)
+  const heroTitle = await page.locator('.discover-next-hero').getAttribute('data-title')
   const weeklyTrendOrder = await trendingShelf.locator('.media-row-card-slot img').evaluateAll((images) => images.map((image) => image.getAttribute('alt')))
   const weeklyTrendTitles = weeklyTrendOrder.filter((title): title is string => /^Weekly trend \d+$/.test(title || ''))
   const weeklyTrendPositions = weeklyTrendTitles.map((title) => Number(title.match(/\d+/)?.[0]))
@@ -999,7 +1019,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   }))
   expect(parseFloat(desktopCardMotion.transitionDuration)).toBeGreaterThan(0)
   expect(desktopCardMotion.transitionProperty).toContain('transform')
-  await expect(page.locator('.discover-spotlight__ambient img')).toHaveAttribute('src', /discovery-fixture-backdrop/)
+  await expect(page.locator('.discover-spotlight__ambient img')).toHaveAttribute('src', /weekly-trend-backdrop/)
   await expect(page.locator('.discover-spotlight__ambient img')).toHaveCSS('opacity', '1')
   const desktopControlWidths = await page.evaluate(() => ({
     tabs: document.querySelector<HTMLElement>('.discover-page__tabs')?.getBoundingClientRect().width ?? 0,

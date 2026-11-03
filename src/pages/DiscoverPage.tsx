@@ -957,17 +957,38 @@ export default function DiscoverPage() {
       ? applyRecommendationFeedback(fallbackRankedSnapshot.filter((entry) => matchesDiscoverTab(entry.item, tab)), feedback)
       : liveRanked,
   [snapshotIsValid, validRankedSnapshot, feedback, dailySnapshotMeta, dailySnapshotKey, fallbackRankedSnapshot, tab, liveRanked])
+  const currentTrendingRanked = useMemo(() => rankCandidates(
+    currentTrending
+      .filter((item) => item.poster && matchesDiscoverTab(item, tab) && candidatePassesPrefs(item, prefs))
+      .map((item) => recommendationCandidate(item, 'tmdb-trending')),
+    tasteProfile,
+    activity,
+    feedback,
+    mode,
+    rankingNow,
+    impressions,
+    prefsWeights(prefs),
+  ).sort((left, right) => (right.popularity || 0) - (left.popularity || 0) || right.score.total - left.score.total), [activity, currentTrending, feedback, impressions, mode, prefs, rankingNow, tab, tasteProfile])
   // Keep the editorial extra out of adjacent shelves so it reads as its own
   // recommendation instead of a repeated catalog card.
-  const spotlightCandidates = useMemo(() => ranked.filter((entry) => Boolean(entry.item.poster)), [ranked])
+  const spotlightCandidates = useMemo(() => {
+    const seen = new Set<string>()
+    return [...currentTrendingRanked, ...ranked].filter((entry) => {
+      const key = mediaIdentity(entry.item)
+      if (!entry.item.poster || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  }, [currentTrendingRanked, ranked])
   const heroRecommendation = spotlightCandidates.find((entry) => mediaIdentity(entry.item) === spotlightSelectionKey) ?? spotlightCandidates[0] ?? ranked[0]
   // Lock the first available editorial pick for this Discovery scope. Catalog
-  // sources settle at different times across browsers; without a selected key,
-  // a late response can silently replace the hero while the user is reading it.
+  // sources settle at different times across browsers. Wait for the live weekly
+  // feed before pinning the first card, so a stale daily snapshot cannot outrank
+  // the current top trend or replace the hero again after it has settled.
   useEffect(() => {
-    if (spotlightSelectionKey || !spotlightCandidates.length) return
+    if (spotlightSelectionKey || trendingReadyScope !== trendingScope || !spotlightCandidates.length) return
     setSpotlightSelectionKey(mediaIdentity(spotlightCandidates[0]!.item))
-  }, [spotlightCandidates, spotlightSelectionKey])
+  }, [spotlightCandidates, spotlightSelectionKey, trendingReadyScope, trendingScope])
   const heroItem = heroRecommendation?.item
   const heroMediaKey = heroItem ? mediaIdentity(heroItem) : null
   useEffect(() => {
@@ -1170,18 +1191,6 @@ export default function DiscoverPage() {
   )
   // The public weekly trend feed powers the reference's OR TRY shelf. It is
   // independent of the user's library and follows the Tonight spotlight.
-  const currentTrendingRanked = useMemo(() => rankCandidates(
-    currentTrending
-      .filter((item) => item.poster && matchesDiscoverTab(item, tab) && candidatePassesPrefs(item, prefs))
-      .map((item) => recommendationCandidate(item, 'tmdb-trending')),
-    tasteProfile,
-    activity,
-    feedback,
-    mode,
-    rankingNow,
-    impressions,
-    prefsWeights(prefs),
-  ).sort((left, right) => (right.popularity || 0) - (left.popularity || 0) || right.score.total - left.score.total), [activity, currentTrending, feedback, impressions, mode, prefs, rankingNow, tab, tasteProfile])
   const trendingSection = useMemo(() => {
     const heroKey = heroItem ? mediaIdentity(heroItem) : undefined
     const alreadyFeatured = new Set(visiblePersonalizedSections
