@@ -1363,12 +1363,16 @@ test('mobile Discover and movie details keep text, hero and controls within the 
 
 test('Discovery remains correctly composed across Web and Tauri screen sizes', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
+  let markTmdbRequestStarted!: () => void
+  const tmdbRequestStarted = new Promise<void>((resolve) => { markTmdbRequestStarted = resolve })
   await page.addInitScript(() => {
     localStorage.setItem('aurales_app_managed_metadata', 'false')
     localStorage.setItem('tmdb_api_key', 'playwright-public-test-key')
   })
   await page.route('https://api.ids.moe/**', (route) => route.fulfill({ json: {} }))
   await page.route('https://api.themoviedb.org/**', async (route) => {
+    markTmdbRequestStarted()
+    await new Promise((resolve) => setTimeout(resolve, 1000))
     const url = new URL(route.request().url())
     const type = url.pathname.includes('/tv/') || url.pathname.endsWith('/trending/tv/week') ? 'series' : 'movie'
     const results = Array.from({ length: 24 }, (_, index) => ({
@@ -1397,6 +1401,9 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
   await page.goto('/discover')
   await page.getByRole('button', { name: /select profile/i }).click()
   await expect(page.locator('.discover-page')).toBeVisible()
+  await tmdbRequestStarted
+  await expect(page.getByRole('heading', { name: 'Calendar', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeHidden()
   await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Pick by Colour' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toBeVisible()
