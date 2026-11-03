@@ -23,6 +23,7 @@ use sha2::Sha256;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path as FsPath, PathBuf};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
@@ -167,6 +168,17 @@ impl ConversionFailure {
             Self::TimedOut => "conversion_timed_out",
             Self::Internal => "conversion_internal_error",
         }
+    }
+}
+
+fn source_fetch_failure(status: u16) -> ConversionFailure {
+    match status {
+        401 => ConversionFailure::SourceUnauthorized,
+        403 => ConversionFailure::SourceForbidden,
+        404 => ConversionFailure::SourceNotFound,
+        410 => ConversionFailure::SourceGone,
+        429 => ConversionFailure::SourceRateLimited,
+        _ => ConversionFailure::SourceUnavailable,
     }
 }
 
@@ -1396,6 +1408,7 @@ async fn run_media_conversion(
         format!("{id}.input")
     });
     let output_path = conversion_output_path(state.conversion_dir.as_ref(), &id, output_format);
+    let upstream_status = AtomicU16::new(0);
     let result = tokio::time::timeout(
         Duration::from_secs(max_conversion_runtime_seconds()),
         async {
@@ -1407,9 +1420,10 @@ async fn run_media_conversion(
                     &input_path,
                     &state.conversion_dir.join(format!("{id}.input-assets")),
                     mobile_compatibility,
+                    &upstream_status,
                 )
                 .await
-                .map_err(|_| ConversionFailure::SourceUnavailable)?
+                .map_err(|_| source_fetch_failure(upstream_status.load(Ordering::Relaxed)))?
             } else if dash_input {
                 download_dash_conversion_input(
                     &state,
@@ -1422,7 +1436,14 @@ async fn run_media_conversion(
                 .await
                 .map_err(|_| ConversionFailure::SourceUnavailable)?
             } else {
-                download_allowlisted_media(&state, &url, &request_headers, &input_path).await?;
+                download_allowlisted_media(
+                    &state,
+                    &url,
+                    &request_headers,
+                    &input_path,
+                    &upstream_status,
+                )
+                .await?;
                 false
             };
             let source_info = probe_local_media(ffmpeg.as_ref(), &input_path)
@@ -2742,9 +2763,9 @@ async fn download_allowlisted_media(
     initial_url: &url::Url,
     request_headers: &HashMap<String, String>,
     path: &PathBuf,
+    upstream_status: &AtomicU16,
 ) -> Result<(), ConversionFailure> {
     let credential_origin = initial_url.origin();
-    let mut upstream_status = None;
     let downloaded = download_allowlisted_resource_with_range(
         state,
         initial_url,
@@ -2754,20 +2775,15 @@ async fn download_allowlisted_media(
         max_conversion_bytes(),
         false,
         None,
-        Some(&mut upstream_status),
+        Some(upstream_status),
     )
     .await;
     let (_, content_type, _) = match downloaded {
         Ok(result) => result,
         Err(()) => {
-            return Err(match upstream_status {
-                Some(401) => ConversionFailure::SourceUnauthorized,
-                Some(403) => ConversionFailure::SourceForbidden,
-                Some(404) => ConversionFailure::SourceNotFound,
-                Some(410) => ConversionFailure::SourceGone,
-                Some(429) => ConversionFailure::SourceRateLimited,
-                _ => ConversionFailure::SourceUnavailable,
-            });
+            return Err(source_fetch_failure(
+                upstream_status.load(Ordering::Relaxed),
+            ));
         }
     };
     if content_type.starts_with("text/") || content_type.contains("mpegurl") {
@@ -2784,6 +2800,7 @@ async fn download_allowlisted_resource(
     path: &PathBuf,
     max_bytes: u64,
     allow_text: bool,
+    upstream_status: Option<&AtomicU16>,
 ) -> Result<(url::Url, String, u64), ()> {
     download_allowlisted_resource_with_range(
         state,
@@ -2794,7 +2811,7 @@ async fn download_allowlisted_resource(
         max_bytes,
         allow_text,
         None,
-        None,
+        upstream_status,
     )
     .await
 }
@@ -2808,7 +2825,7 @@ async fn download_allowlisted_resource_with_range(
     max_bytes: u64,
     allow_text: bool,
     byte_range: Option<(u64, u64)>,
-    mut upstream_status: Option<&mut Option<u16>>,
+    upstream_status: Option<&AtomicU16>,
 ) -> Result<(url::Url, String, u64), ()> {
     let mut url = initial_url.clone();
     for redirect in 0..=MAX_MEDIA_REDIRECTS {
@@ -2865,8 +2882,8 @@ async fn download_allowlisted_resource_with_range(
             }
         }
         if !response.status().is_success() {
-            if let Some(status) = upstream_status.as_deref_mut() {
-                *status = Some(response.status().as_u16());
+            if let Some(status) = upstream_status {
+                status.store(response.status().as_u16(), Ordering::Relaxed);
             }
             return Err(());
         }
@@ -5279,6 +5296,7 @@ async fn materialize_dash_track(
                 &temporary_path,
                 remaining,
                 false,
+                None,
             )
             .await?
         };
@@ -5332,6 +5350,7 @@ async fn download_dash_conversion_input(
         &source_mpd_path,
         MAX_HLS_MANIFEST_BYTES as u64,
         true,
+        None,
     )
     .await?;
     if !is_dash_manifest(&manifest_url, Some(&content_type)) {
@@ -5834,6 +5853,7 @@ async fn materialize_hls_subtitle_renditions(
                 &local_assets,
                 &asset_prefix,
                 total_before_segments,
+                None,
             )
             .await?;
             if total_before_segments.saturating_add(subtitle_bytes) > max_conversion_bytes() {
@@ -5954,6 +5974,7 @@ async fn materialize_hls_audio_renditions(
                 &local_assets,
                 &asset_prefix,
                 total,
+                None,
             )
             .await?;
             let total = total.saturating_add(audio_bytes);
@@ -6029,6 +6050,7 @@ async fn download_hls_conversion_input(
     output_path: &PathBuf,
     assets_dir: &PathBuf,
     mobile_compatibility: bool,
+    upstream_status: &AtomicU16,
 ) -> Result<bool, ()> {
     let credential_origin = initial_url.origin();
     tokio::fs::create_dir(assets_dir).await.map_err(|_| ())?;
@@ -6054,6 +6076,7 @@ async fn download_hls_conversion_input(
             &temporary_manifest,
             MAX_HLS_MANIFEST_BYTES as u64,
             true,
+            Some(upstream_status),
         )
         .await?;
         downloaded_bytes = downloaded_bytes.saturating_add(bytes);
@@ -6140,6 +6163,7 @@ async fn download_hls_conversion_input(
                 &video_assets,
                 "video",
                 downloaded_bytes,
+                Some(upstream_status),
             )
             .await?,
         );
@@ -6192,6 +6216,7 @@ async fn download_hls_conversion_input(
             assets_dir,
             asset_directory_name,
             downloaded_bytes,
+            Some(upstream_status),
         )
         .await?;
     }
@@ -6214,6 +6239,7 @@ async fn download_hls_media_playlist_manifest(
         manifest_path,
         MAX_HLS_MANIFEST_BYTES as u64,
         true,
+        None,
     )
     .await?;
     if !is_hls_playlist(&final_url, Some(&content_type)) {
@@ -6241,6 +6267,7 @@ async fn materialize_hls_media_playlist(
     assets_dir: &PathBuf,
     asset_prefix: &str,
     already_downloaded: u64,
+    upstream_status: Option<&AtomicU16>,
 ) -> Result<u64, ()> {
     tokio::fs::create_dir_all(assets_dir)
         .await
@@ -6255,6 +6282,7 @@ async fn materialize_hls_media_playlist(
         assets_dir,
         asset_prefix,
         already_downloaded,
+        upstream_status,
     )
     .await?;
     let mut downloaded_bytes = already_downloaded.saturating_add(range_bytes);
@@ -6290,6 +6318,7 @@ async fn materialize_hls_media_playlist(
             &temporary_path,
             remaining,
             false,
+            upstream_status,
         )
         .await?;
         if is_key && length != 16 {
@@ -6344,6 +6373,7 @@ async fn materialize_hls_byte_ranges(
     assets_dir: &PathBuf,
     asset_prefix: &str,
     already_downloaded: u64,
+    upstream_status: Option<&AtomicU16>,
 ) -> Result<(String, u64), ()> {
     let (mut output, requests) = rewrite_hls_byte_ranges(manifest, base_url, asset_prefix)?;
     let mut downloaded_bytes = 0u64;
@@ -6368,7 +6398,7 @@ async fn materialize_hls_byte_ranges(
             length,
             false,
             Some((request.start, request.end)),
-            None,
+            upstream_status,
         )
         .await?;
         if received != length {
