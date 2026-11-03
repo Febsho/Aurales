@@ -14,7 +14,7 @@ import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
 import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, rankCandidates, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, rankCandidates, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
 import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktWatchedShows, getRatings as getTraktRatings } from '../services/trakt/sync'
@@ -1019,6 +1019,7 @@ export default function DiscoverPage() {
     rating: heroItem.rating,
     voteCount: heroItem.voteCount,
   }) : null
+  const heroReason = selectEditorialReason(heroRecommendation?.reasons ?? [])
   useEffect(() => {
     const previousKey = previousSpotlightKeyRef.current
     previousSpotlightKeyRef.current = heroMediaKey
@@ -1731,7 +1732,7 @@ export default function DiscoverPage() {
                       {heroRecommendation.item.genres?.slice(0, 1).map((genre) => <span key={genre}>{genre}</span>)}
                       {heroRecommendation.item.rating != null && <span>★ {Number(heroRecommendation.item.rating).toFixed(1)}</span>}
                     </div>
-                    {heroRecommendation.reasons[0] && <p className="discover-spotlight__reason">{heroRecommendation.reasons[0].label.replace(/\btaste\b/gi, 'preferences')}</p>}
+                    {heroReason && <p className="discover-spotlight__reason">{heroReason.label.replace(/\btaste\b/gi, 'preferences')}</p>}
                     {heroRecommendation.item.overview && <p className="discover-spotlight__overview">{heroRecommendation.item.overview}</p>}
                     <div className="discover-spotlight__actions">
                       <button type="button" className="discover-spotlight__play" onClick={() => openHeroDetail(true)}>▶ <span>Play</span></button>

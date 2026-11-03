@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SearchResult, WatchProgress } from '../../types'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, rankCandidates, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, rankCandidates, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
 import type { DiscoveryActivity, RecommendationCandidate, RecommendationFeedback } from './types'
 
 const sciFi: SearchResult = { id:'seed',title:'Seed',type:'movie',provider:'tmdb',tmdbId:1,genreIds:[878],year:2020,rating:8 }
@@ -8,6 +8,14 @@ const activity = (progress: WatchProgress[] = [], recent: SearchResult[] = [sciF
 const candidate = (id:number, overrides:Partial<SearchResult> = {}): RecommendationCandidate => ({ item:{ id:`tmdb-${id}`,title:`Title ${id}`,type:'movie',provider:'tmdb',tmdbId:id,genreIds:[878],rating:8,year:2025,poster:`poster-${id}.jpg`,...overrides },source:'tmdb-discover',voteCount:1000,popularity:20,runtimeMinutes:95 })
 
 describe('discovery recommendation engine', () => {
+  it('shows a personal reason on the editorial spotlight before a stronger trend signal', () => {
+    const recentInterest = { code: 'recent-interest' as const, label: 'Because you watched Seed', strength: 12 }
+    const trend = { code: 'trend' as const, label: 'Trending this week', strength: 34 }
+
+    expect(selectEditorialReason([trend, recentInterest])).toBe(recentInterest)
+    expect(selectEditorialReason([trend, { code: 'quality', label: 'Highly rated by viewers', strength: 7 }])).toBe(trend)
+  })
+
   it('refreshes the daily recommendation scope when live trend order or momentum changes', () => {
     const first = candidate(80, { popularity: 36, voteCount: 120 })
     const second = candidate(81, { popularity: 21, voteCount: 90 })

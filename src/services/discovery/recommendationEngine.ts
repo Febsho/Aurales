@@ -193,6 +193,23 @@ export function sortRecommendationsByPopularity(ranked: RankedRecommendation[]):
   })
 }
 
+/** Prefer a concrete personal explanation in editorial cards, then public signals. */
+export function selectEditorialReason(reasons: RecommendationReason[]): RecommendationReason | undefined {
+  const preferred = [
+    'recent-interest',
+    'person-affinity',
+    'genre-affinity',
+    'keyword-affinity',
+    'trend',
+    'popularity',
+  ] as const
+  for (const code of preferred) {
+    const match = reasons.find((reason) => reason.code === code)
+    if (match) return match
+  }
+  return reasons[0]
+}
+
 export interface RankingWeightOverrides {
   genre?: number
   keyword?: number
