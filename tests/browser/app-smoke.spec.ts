@@ -123,6 +123,62 @@ test('Discovery stays visible and stops motion when the system requests reduced 
   expect(motion.transitionDurationSeconds).toBeLessThanOrEqual(0.0001)
 })
 
+test('Discovery uses public catalogs when the active profile has no library entries', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.addInitScript(() => {
+    const profileId = 'playwright-empty-library-discovery'
+    localStorage.setItem('aurales_profiles_v1', JSON.stringify([{
+      id: profileId,
+      name: 'Default',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      isDefault: true,
+    }]))
+    localStorage.setItem('aurales_active_profile_v1', profileId)
+    localStorage.setItem(`aurales_skip_profile_picker:profile:${profileId}`, 'true')
+    localStorage.setItem('aurales_app_managed_metadata', 'false')
+    localStorage.setItem('tmdb_api_key', 'playwright-public-test-key')
+  })
+  await page.route('https://api.ids.moe/**', (route) => route.fulfill({ json: {} }))
+  await page.route('https://api.themoviedb.org/**', async (route) => {
+    const url = new URL(route.request().url())
+    const isTrending = /^\/3\/trending\/(movie|tv)\/week$/.test(url.pathname)
+    const type = url.pathname.includes('/tv/') || url.pathname.endsWith('/discover/tv') ? 'series' : 'movie'
+    const results = Array.from({ length: isTrending ? 6 : 12 }, (_, index) => ({
+      id: (isTrending ? 98000 : 98100) + index,
+      title: isTrending ? `Weekly public trend ${index + 1}` : `Public catalog fixture ${index + 1}`,
+      name: isTrending ? `Weekly public trend ${index + 1}` : `Public catalog fixture ${index + 1}`,
+      poster_path: `/public-discovery-${isTrending ? 'trend' : 'catalog'}-${index + 1}.jpg`,
+      backdrop_path: `/public-discovery-backdrop-${index + 1}.jpg`,
+      overview: 'A public catalog title used to verify an empty-library Discovery session.',
+      release_date: '2026-10-01',
+      first_air_date: '2026-10-01',
+      vote_average: 8.1,
+      vote_count: 1200,
+      popularity: 180 - index * 8,
+      genre_ids: type === 'movie' ? [18, 35, 878, 14] : [18, 10759, 10765],
+      original_language: 'en',
+    }))
+    await route.fulfill({ json: { page: 1, total_pages: 1, total_results: results.length, results } })
+  })
+  await page.route('https://image.tmdb.org/**', (route) => route.fulfill({
+    headers: { 'Access-Control-Allow-Origin': '*' },
+    contentType: 'image/svg+xml',
+    body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 6"><defs><linearGradient id="g" x2="0" y2="1"><stop stop-color="#d87543"/><stop offset="1" stop-color="#172638"/></linearGradient></defs><rect width="4" height="6" fill="url(#g)"/></svg>',
+  }))
+
+  await page.goto('/discover')
+  await expect(page.locator('.discover-page')).toBeVisible()
+  await expect(page.locator('.discover-next-hero')).toHaveAttribute('data-title', /^Weekly public trend /, { timeout: 15_000 })
+  await expect(page.locator('.discover-shelf--trending')).toBeVisible()
+  await expect(page.locator('.discover-shelf--trending img').first()).toHaveAttribute('alt', /^Weekly public trend /)
+  await expect(page.locator('.discover-refine .discover-taste-pick').first()).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Top 10 For You', exact: true })).toBeVisible()
+  await expect(page.locator('.discover-refine .discover-taste-pick__title').filter({ hasText: 'Public catalog fixture' }).first()).toBeVisible()
+  await expect(page.locator('.discover-more__sentinel')).toContainText('Keep scrolling for more titles')
+  await expect(page.locator('.discover-shelf--new-library')).toHaveCount(0)
+})
+
 test('mobile Search uses compact system typography without horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/')
