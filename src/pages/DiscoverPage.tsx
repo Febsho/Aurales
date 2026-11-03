@@ -1346,10 +1346,20 @@ export default function DiscoverPage() {
       return true
     })
   }, [currentTrendingRanked, heroMediaKey, ranked])
-  // The inline Tonight card is a separate recommendation surface. It draws
-  // from public/popular candidates without sharing selection state with either
-  // the editorial Spotlight or the Surprise Me dialog.
-  const tonightRecommendation = pickerPool.find((entry) => mediaIdentity(entry.item) === tonightSelectionKey) ?? pickerPool[0]
+  // Tonight keeps its own stable candidate list and selection. It does not
+  // read the Surprise Me pool, whose membership intentionally changes with
+  // the editorial Spotlight selection.
+  const tonightCandidates = useMemo(() => {
+    const seen = new Set<string>()
+    return [...currentTrendingRanked, ...ranked].filter((entry) => {
+      const key = mediaIdentity(entry.item)
+      if (!entry.item.poster || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  }, [currentTrendingRanked, ranked])
+  const firstTonightCandidate = tonightCandidates.find((entry) => mediaIdentity(entry.item) !== heroMediaKey) ?? tonightCandidates[0]
+  const tonightRecommendation = tonightCandidates.find((entry) => mediaIdentity(entry.item) === tonightSelectionKey) ?? firstTonightCandidate
   const pickerRecommendation = (pickerSelectionKey ? pickerPool.find((entry) => mediaIdentity(entry.item) === pickerSelectionKey) : undefined) || pickerPool[0]
   const pickerItem = pickerRecommendation?.item
   const pickerFrameId = pickerItem ? mediaIdentity(pickerItem) : null
@@ -1377,6 +1387,10 @@ export default function DiscoverPage() {
   const tastePickCandidates = useMemo(() => tastePickPool.slice(0, 10 + pickOffset), [tastePickPool, pickOffset])
   useEffect(() => { setPickerSelectionKey(null); setTonightSelectionKey(null); setPickerLogoError(false); setHeroLogoError(false) }, [tab, mode, discoveryQueryKey])
   useEffect(() => { setSpotlightSelectionKey(null) }, [tab, mode, discoveryQueryKey])
+  useEffect(() => {
+    if (tonightSelectionKey || trendingReadyScope !== trendingScope || !firstTonightCandidate) return
+    setTonightSelectionKey(mediaIdentity(firstTonightCandidate.item))
+  }, [firstTonightCandidate, tonightSelectionKey, trendingReadyScope, trendingScope])
   useEffect(() => { setHeroLogoError(false) }, [heroItem?.id])
   useEffect(() => { setPickerLogoError(false) }, [pickerItem?.id])
 
@@ -1572,9 +1586,15 @@ export default function DiscoverPage() {
     if (next) setSpotlightSelectionKey(mediaIdentity(next.item))
   }
   const chooseAnotherTonight = () => {
-    if (!tonightRecommendation || pickerPool.length < 2) return
-    const next = chooseSurpriseRecommendation(pickerPool, tonightRecommendation.item.id)
-    if (next) setTonightSelectionKey(mediaIdentity(next.item))
+    if (!tonightRecommendation || tonightCandidates.length < 2) return
+    const currentIndex = tonightCandidates.findIndex((entry) => mediaIdentity(entry.item) === mediaIdentity(tonightRecommendation.item))
+    for (let step = 1; step < tonightCandidates.length; step += 1) {
+      const next = tonightCandidates[(currentIndex + step + tonightCandidates.length) % tonightCandidates.length]!
+      if (mediaIdentity(next.item) !== heroMediaKey) {
+        setTonightSelectionKey(mediaIdentity(next.item))
+        return
+      }
+    }
   }
   const selectTastePick = (item: SearchResult) => {
     const id = mediaIdentity(item)
@@ -1708,7 +1728,7 @@ export default function DiscoverPage() {
               <div className="discover-tonight__actions">
                 <button type="button" className="discover-tonight__play" onClick={() => openItemDetail(tonightRecommendation.item, true)}>▶ <span>Play</span></button>
                 <button type="button" onClick={() => openItemDetail(tonightRecommendation.item)}>Details</button>
-                <button type="button" onClick={chooseAnotherTonight} disabled={pickerPool.length < 2}><Shuffle size={15} aria-hidden="true" />Another option</button>
+                <button type="button" onClick={chooseAnotherTonight} disabled={!tonightRecommendation || !tonightCandidates.some((entry) => mediaIdentity(entry.item) !== mediaIdentity(tonightRecommendation.item) && mediaIdentity(entry.item) !== heroMediaKey)}><Shuffle size={15} aria-hidden="true" />Another option</button>
               </div>
             </div>
             <div key={`poster-${mediaIdentity(tonightRecommendation.item)}`} className="discover-tonight__poster">

@@ -636,9 +636,11 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(promotedTrendTitles.length, 'Top 10 should include fresh weekly trends while keeping the editorial Spotlight separate').toBeGreaterThan(0)
   const mobileSpotlight = page.locator('.discover-next-hero')
   const mobileSpotlightTitle = await mobileSpotlight.getAttribute('data-title')
+  const tonightBeforeSpotlightChange = await tonightCard.getAttribute('data-active-title')
   await page.locator('.discover-spotlight-heading').getByRole('button', { name: 'More spotlight options' }).click()
   await page.getByRole('menuitem', { name: 'Another option' }).click()
   await expect.poll(() => mobileSpotlight.getAttribute('data-title')).not.toBe(mobileSpotlightTitle)
+  await expect(tonightCard).toHaveAttribute('data-active-title', tonightBeforeSpotlightChange!)
   const mobileSpotlightMotion = await mobileSpotlight.evaluate((hero) => {
     const movingSurfaces = [
       hero.querySelector<HTMLElement>('.discover-spotlight__bottom > .discover-spotlight__meta'),
@@ -853,6 +855,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(surpriseButton).toBeEnabled()
   const startingTitle = await obsessionCard.getAttribute('data-title')
   const startingHeroTitle = await heroSpotlight.getAttribute('data-title')
+  const startingTonightTitle = await tonightCard.getAttribute('data-active-title')
   await page.evaluate(() => {
     const target = window as Window & { __auralesOriginalRandom?: () => number }
     target.__auralesOriginalRandom = Math.random
@@ -882,6 +885,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(surpriseButton).toHaveAttribute('aria-busy', 'false', { timeout: 5000 })
   await expect(pickerDialog.getByRole('button', { name: 'Open', exact: true })).toBeVisible()
   await expect(pickerDialog.getByRole('button', { name: 'Spin again', exact: true })).toBeVisible()
+  await expect(tonightCard).toHaveAttribute('data-active-title', startingTonightTitle!)
   expect(await pickerPosterFrame?.evaluate((poster) => poster.isConnected), 'roulette frames should keep the poster surface mounted').toBe(true)
   expect(await pickerPosterImage?.evaluate((image) => image.isConnected), 'roulette frames should update one poster image instead of stacking transitions').toBe(true)
   await expect(pickerDialog.locator('.discover-picker__poster > img')).toHaveCount(1)
