@@ -454,7 +454,7 @@ export default function DiscoverPage() {
   const [localWatchlist, setLocalWatchlist] = useState<LocalWatchlistItem[]>(() => getLocalWatchlist())
   useEffect(() => subscribeLocalWatchlist(() => setLocalWatchlist(getLocalWatchlist())), [])
   const [impressions] = useState(() => loadRecommendationImpressions())
-  const [initialWaitComplete, setInitialWaitComplete] = useState(false)
+  const [discoverySettledScope, setDiscoverySettledScope] = useState('')
   const [genreLoading, setGenreLoading] = useState(false)
   const [discoveryRowLoads, setDiscoveryRowLoads] = useState<Record<string, boolean>>({})
   const reportDiscoveryRowLoading = useCallback((rowId: string, loading: boolean) => {
@@ -606,7 +606,6 @@ export default function DiscoverPage() {
   const dailySnapshot = persistedRankings[dailySnapshotKey]
   const hasDailySnapshot = Boolean(dailySnapshot?.length && dailySnapshotMeta[dailySnapshotKey]?.algorithmVersion === DISCOVERY_ALGORITHM_VERSION)
   const refreshNonce = 0
-  useEffect(() => { const reset=window.setTimeout(()=>setInitialWaitComplete(false),0); const timer=window.setTimeout(()=>setInitialWaitComplete(true),4000); return()=>{window.clearTimeout(reset);window.clearTimeout(timer)} },[tab,discoveryQueryKey,mode])
   const tasteGenre = useMemo(() => getTopGenre(recentlyViewed, contentType), [recentlyViewed, contentType])
   const animeOverrides = tab === 'anime' ? {
     originalLanguage: 'ja',
@@ -952,6 +951,20 @@ export default function DiscoverPage() {
     similarReadyScope === similarScope,
     connectedReadyScope === accountScope,
   ])
+  const discoveryWaitScope = `${tab}:${discoveryQueryKey}:${mode}`
+  useLayoutEffect(() => {
+    // Wait for the real source state instead of replacing skeletons with an
+    // error after an arbitrary four seconds. Keep a hard bound for stalled
+    // providers, and key it to the active query so tab changes cannot reuse
+    // the previous tab's timeout.
+    setDiscoverySettledScope('')
+    const timer = window.setTimeout(() => setDiscoverySettledScope(discoveryWaitScope), 12_000)
+    return () => window.clearTimeout(timer)
+  }, [discoveryWaitScope])
+  useEffect(() => {
+    if (recommendationSourcesReady) setDiscoverySettledScope(discoveryWaitScope)
+  }, [recommendationSourcesReady, discoveryWaitScope])
+  const initialWaitComplete = discoverySettledScope === discoveryWaitScope
   const ranked = useMemo(() => snapshotIsValid
     ? applyRecommendationFeedback(validRankedSnapshot!, feedback.filter((entry) => entry.createdAt > (dailySnapshotMeta[dailySnapshotKey]?.generatedAt ?? 0)))
     : fallbackRankedSnapshot?.filter((entry) => matchesDiscoverTab(entry.item, tab))?.length
@@ -1005,7 +1018,10 @@ export default function DiscoverPage() {
     return () => animations.forEach((animation) => animation.cancel())
   }, [heroMediaKey])
   const shelfRanked = useMemo(() => heroMediaKey ? ranked.filter((entry) => mediaIdentity(entry.item) !== heroMediaKey) : ranked, [heroMediaKey, ranked])
-  const viewState = discoveryViewState(ranked.length, initialWaitComplete)
+  // A successful public weekly feed is useful Discovery content even if every
+  // broad catalog request failed. Do not hide that available content behind a
+  // full-page error state.
+  const viewState = discoveryViewState(ranked.length, initialWaitComplete, currentTrendingRanked.length)
   const loadMoreDiscovery = useCallback(async () => {
     if (moreToDiscoverLoadingRef.current || moreToDiscoverStatusRef.current === 'done' || moreToDiscoverStatusRef.current === 'error') return
     const requestScope = `${tab}:${discoveryQueryKey}`
