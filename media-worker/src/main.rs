@@ -1400,12 +1400,11 @@ async fn run_media_conversion(
                         .count()
                 })
                 .unwrap_or(0);
-            let preferred_audio_track_indices =
-                if mobile_compatibility && output_format == ConversionOutputFormat::Mp4 {
-                    ordered_audio_track_indices(&source_info, &preferred_audio_languages)
-                } else {
-                    Vec::new()
-                };
+            let preferred_audio_track_indices = if mobile_compatibility {
+                ordered_audio_track_indices(&source_info, &preferred_audio_languages)
+            } else {
+                Vec::new()
+            };
             let tone_map_hdr = mobile_compatibility
                 && output_format == ConversionOutputFormat::Mp4
                 && state.ffmpeg_caps.is_some_and(|caps| caps.hdr_tone_mapping)
@@ -1804,8 +1803,12 @@ async fn transcode_local_output_using_encoder_with_audio_policy(
             .arg("-map")
             .arg(format!("0:a:{}?", audio_track_index.unwrap_or(0)));
     } else {
-        // The single-variant HLS output path currently packages one audio track.
-        command.args(["-map", "0:a:0?"]);
+        // The single-variant HLS output path packages one audio track. On
+        // mobile, honor the requested language order when selecting it.
+        let audio_track_index = preferred_audio_track_indices.first().copied().unwrap_or(0);
+        command
+            .arg("-map")
+            .arg(format!("0:a:{audio_track_index}?"));
     }
     command.args(["-sn", "-dn", "-map_metadata", "0"]);
     // Some mobile demuxers reject files whose first DTS/PTS is negative even
