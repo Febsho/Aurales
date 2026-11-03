@@ -270,6 +270,58 @@ test('mobile DASH sources go straight to a worker MP4 and play', async ({ page }
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime), { timeout: 10_000 }).toBeGreaterThan(1.4)
 })
 
+test('a stale mobile DASH capability response cannot replace a newly selected source', async ({ page }, testInfo) => {
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'This checks mobile DASH source changes.')
+  const oldSource = new URL('/old-mobile-source.mpd', String(testInfo.project.use.baseURL)).toString()
+  const currentSource = new URL('/current-mobile-source.mpd', String(testInfo.project.use.baseURL)).toString()
+  const jobId = 'abababababababababababababababab'
+  const mediaId = 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd'
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+  })
+  let capabilityRequests = 0
+  let releaseOldCapabilities!: () => void
+  let markOldCapabilitiesDone!: () => void
+  const oldCapabilitiesBlocked = new Promise<void>((resolve) => { releaseOldCapabilities = resolve })
+  const oldCapabilitiesDone = new Promise<void>((resolve) => { markOldCapabilitiesDone = resolve })
+  await page.route('**/v1/capabilities', async (route) => {
+    const requestNumber = ++capabilityRequests
+    if (requestNumber === 1) await oldCapabilitiesBlocked
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ streamRanking: true, mediaDirectProxy: true, pmdbProxy: true, mediaRemux: true, mediaMp4: true, mediaHls: false, audioTranscode: true, videoTranscode: true, mobileSafeVideoTranscode: true }),
+    })
+    if (requestNumber === 1) markOldCapabilitiesDone()
+  })
+  const conversionSources: string[] = []
+  await page.route('**/v1/media/conversions', async (route) => {
+    conversionSources.push(JSON.parse(route.request().postData() || '{}').url as string)
+    await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId, status: 'processing' }) })
+  })
+  await page.route(`**/v1/media/conversions/${jobId}`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ jobId, status: 'ready', mode: 'h264AacCompat', bytes: 1024, url: `/v1/media/${mediaId}?expires=1893456000&signature=current-mobile-source` }),
+  }))
+  await page.route(`**/v1/media/${mediaId}?*`, async (route) => {
+    const fixture = await route.fetch({ url: new URL('/tests/browser/fixtures/mobile-h264-compat.mp4', route.request().url()).toString() })
+    await route.fulfill({ response: fixture })
+  })
+
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent(oldSource)}`)
+  await expect.poll(() => capabilityRequests).toBe(1)
+  await page.evaluate((source) => (window as Window & { __loadPlaybackSource?: (url: string) => void }).__loadPlaybackSource?.(source), currentSource)
+  await expect.poll(() => capabilityRequests).toBe(2)
+  await expect.poll(() => conversionSources.length).toBe(1)
+  expect(conversionSources).toEqual([currentSource])
+  const video = page.locator('video')
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${mediaId}?`)
+  releaseOldCapabilities()
+  await oldCapabilitiesDone
+  expect(conversionSources).toEqual([currentSource])
+})
+
 test('expired media-worker sessions renew while preserving playback position', async ({ page }) => {
   await page.clock.install()
   await page.addInitScript(() => {
