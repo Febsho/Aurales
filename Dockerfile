@@ -47,6 +47,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && ffmpeg -hide_banner -filters 2>&1 | awk '$2 == "zscale" { zscale=1 } $2 == "tonemap" { tonemap=1 } END { exit !(zscale && tonemap) }' \
+    && ffmpeg -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=32x32:rate=1:duration=0.5' -vf 'setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084,zscale=transfer=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=transfer=bt709:primaries=bt709:matrix=bt709:range=tv,scale=32:32,format=yuv420p' -frames:v 1 -f null - \
     && useradd --system --home-dir /var/lib/aurales --create-home --shell /usr/sbin/nologin aurales
 COPY --from=worker-build /app/media-worker/target/release/aurales-media-worker /usr/local/bin/aurales-media-worker
 ENV AURALES_MEDIA_BIND=0.0.0.0:8188 \

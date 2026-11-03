@@ -78,6 +78,9 @@ jobs:
       - name: Media worker tests
         run: cargo test --manifest-path media-worker/Cargo.toml
 
+      - name: Build media worker runtime image and verify HDR tone mapping
+        run: docker build --target worker-runtime -t aurales-media-worker-ci .
+
       - name: Tauri Rust tests
         env:
           TAURI_CONFIG: '{"bundle":{"externalBin":null,"resources":null}}'
