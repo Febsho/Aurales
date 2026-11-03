@@ -131,6 +131,27 @@ describe('discovery recommendation engine', () => {
 
     expect(hitWins).toBeGreaterThan(600)
   })
+  it('keeps weekly trends prominent in a full-size Surprise Me pool', () => {
+    const weeklyTrends = Array.from({ length: 20 }, (_, index) => {
+      const entry = candidate(700 + index, { year: 2025 })
+      entry.source = 'tmdb-trending'
+      entry.popularity = 60
+      return entry
+    })
+    const establishedCatalog = Array.from({ length: 80 }, (_, index) => {
+      const entry = candidate(800 + index, { year: 2016 })
+      entry.popularity = 50
+      return entry
+    })
+    const ranked = rankCandidates([...weeklyTrends, ...establishedCatalog], buildTasteProfile(activity()), activity(), [], 'for-you')
+    const draws = Array.from({ length: 10_000 }, (_, index) => (index + 0.5) / 10_000)
+    const trendWins = draws.filter((draw) => chooseSurpriseRecommendation(ranked, undefined, () => draw)?.source === 'tmdb-trending').length
+
+    // The live trend feed is only one fifth of this pool, but should receive
+    // a materially larger share than a uniform draw against popular catalog
+    // staples.
+    expect(trendWins).toBeGreaterThan(4_000)
+  })
   it('gives a current weekly-trending title a stronger Surprise Me chance even without popularity metadata', () => {
     const ordinary = candidate(105, { year: 2020 })
     ordinary.popularity = 0
