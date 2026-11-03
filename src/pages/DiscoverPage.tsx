@@ -897,7 +897,7 @@ export default function DiscoverPage() {
       ? applyRecommendationFeedback(fallbackRankedSnapshot.filter((entry) => matchesDiscoverTab(entry.item, tab)), feedback)
       : liveRanked,
   [snapshotIsValid, validRankedSnapshot, feedback, dailySnapshotMeta, dailySnapshotKey, fallbackRankedSnapshot, tab, liveRanked])
-  const currentTrendingRanked = useMemo(() => rankCandidates(
+  const currentTrendingRanked = useMemo(() => sortRecommendationsByPopularity(rankCandidates(
     currentTrending
       .filter((item) => item.poster && matchesDiscoverTab(item, tab) && candidatePassesPrefs(item, prefs))
       .map((item) => recommendationCandidate(item, 'tmdb-trending')),
@@ -908,11 +908,10 @@ export default function DiscoverPage() {
     rankingNow,
     impressions,
     prefsWeights(prefs),
-  ),
-  // `rankCandidates` already includes current popularity, profile preferences,
-  // feedback and watch history in a stable order. Re-sorting only by the raw
-  // provider popularity number here used to erase those signals in the
-  // editorial pick and the shelves derived from the live trend feed.
+  )),
+  // Keep the public weekly chart's momentum order for OR TRY, Top 10 boosts and
+  // the randomizer. Personal taste, feedback and watch history still break ties
+  // through score.total in sortRecommendationsByPopularity.
   [activity, currentTrending, feedback, impressions, mode, prefs, rankingNow, tab, tasteProfile])
   // Keep the editorial extra out of adjacent shelves so it reads as its own
   // recommendation instead of a repeated catalog card.
