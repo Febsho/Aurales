@@ -6275,7 +6275,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   box-shadow: 0 20px 60px rgba(0,0,0,.2);
   animation: discover-spotlight-enter .48s cubic-bezier(.2,.75,.25,1) both;
 }
-.discover-spotlight__ambient { position: absolute; inset: 0; z-index: -1; overflow: hidden; background: #27272b; }
+.discover-spotlight__ambient { position: absolute; inset: 0; z-index: 0; overflow: hidden; background: #27272b; pointer-events: none; }
 .discover-spotlight__ambient::after { position: absolute; inset: 0; content: ''; background: linear-gradient(90deg, rgba(12,12,15,.9) 0%, rgba(12,12,15,.76) 46%, rgba(12,12,15,.32) 100%), linear-gradient(0deg, rgba(12,12,15,.84) 0%, transparent 72%); }
 .discover-spotlight__ambient img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center 35%; opacity: 0; filter: saturate(.88); transform: scale(1.015); }
 .discover-spotlight__ambient img.is-loaded { opacity: 1; animation: discover-art-enter .62s cubic-bezier(.2,.75,.25,1) both; }
@@ -6307,7 +6307,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-reveal[data-revealed="true"] .discover-more__grid > button:nth-child(n+7) { animation-delay: 192ms; }
 @keyframes discover-card-arrive { from { opacity: .35; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes discover-more-card-arrive { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
-.discover-spotlight__copy { display: flex; min-width: 0; max-width: 56rem; align-self: stretch; flex-direction: column; padding-block: .35rem; }
+.discover-spotlight__copy { position: relative; z-index: 2; display: flex; min-width: 0; max-width: 56rem; align-self: stretch; flex-direction: column; padding-block: .35rem; }
 .discover-spotlight__top { margin-bottom: auto; }
 .discover-spotlight__eyebrow { margin: 0 0 .75rem !important; color: rgba(255,255,255,.92); font-size: clamp(2rem, 4.4vw, 3.35rem); font-weight: 750; letter-spacing: -.045em; line-height: .98; }
 .discover-spotlight__eyebrow span { padding-inline: .35rem; color: rgba(255,255,255,.36); }
@@ -6328,7 +6328,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-spotlight__another:hover { color: #fff; }
 .discover-spotlight__another:disabled { cursor: wait; opacity: .5; }
 .discover-spotlight__watchlist { flex: 0 0 auto; }
-.discover-spotlight__poster { width: clamp(7rem, 11vw, 10rem); aspect-ratio: 2 / 3; margin-left: clamp(1rem, 4vw, 3rem); overflow: hidden; border: 1px solid rgba(255,255,255,.16); border-radius: .85rem; background: rgba(255,255,255,.06); box-shadow: 0 16px 40px rgba(0,0,0,.45); }
+.discover-spotlight__poster { position: relative; z-index: 2; width: clamp(7rem, 11vw, 10rem); aspect-ratio: 2 / 3; margin-left: clamp(1rem, 4vw, 3rem); overflow: hidden; border: 1px solid rgba(255,255,255,.16); border-radius: .85rem; background: rgba(255,255,255,.06); box-shadow: 0 16px 40px rgba(0,0,0,.45); }
 .discover-spotlight__poster img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .discover-spotlight__poster img.discover-artwork-enter,
 .discover-taste-pick__poster img.discover-artwork-enter,
@@ -6487,6 +6487,11 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-calendar__empty { margin: .35rem 0; color: rgba(255,255,255,.48); font-size: .72rem; }
 .discover-calendar__open { margin-top: .2rem; }
 .discover-calendar__open span { margin-left: .3rem; font-size: 1.1rem; }
+.discover-calendar--empty { display: flex; min-height: 3.25rem; align-items: center; justify-content: space-between; gap: .75rem; }
+.discover-calendar--empty .discover-calendar__empty-copy { display: flex; min-width: 0; align-items: baseline; gap: .65rem; }
+.discover-calendar--empty .discover-calendar__heading h2 { font-size: .92rem; }
+.discover-calendar--empty .discover-calendar__empty-copy > p { margin: 0; overflow: hidden; color: rgba(255,255,255,.45); font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
+.discover-calendar--empty .discover-calendar__open { flex: 0 0 auto; margin: 0; }
 .discover-binge__feature { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: .7rem; overflow: hidden; padding: 1rem; border: 1px solid rgba(255,255,255,.1); border-radius: 1.2rem; background: linear-gradient(110deg, rgba(28,28,33,.98), rgba(28,28,33,.72)); }
 .discover-binge__art { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
 .discover-binge__art::after { position: absolute; inset: 0; content: ''; background: linear-gradient(180deg, rgba(17,17,20,.76), rgba(17,17,20,.88)); }
@@ -6557,6 +6562,9 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-binge__main-poster { height: 100%; }
 }
 @media (max-width: 640px) {
+  .discover-calendar--empty { min-height: 2.9rem; }
+  .discover-calendar--empty .discover-calendar__empty-copy { align-items: flex-start; flex-direction: column; gap: .1rem; }
+  .discover-calendar--empty .discover-calendar__open { min-height: 40px; padding-inline: .65rem; font-size: .68rem; }
   .discover-page__heading .discover-spotlight-heading { margin-block: .9rem .45rem; }
   .discover-spotlight-heading { margin-block: .7rem .75rem; }
   .discover-spotlight-heading > p { font-size: .72rem; }

@@ -546,8 +546,14 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.locator('.discover-shelf--favorites, .discover-shelf--new-library')).toHaveCount(0)
   const calendar = page.locator('.discover-calendar')
   await expect(calendar.getByRole('heading', { name: 'Calendar', exact: true })).toBeVisible()
-  await expect(calendar.getByRole('button', { name: 'Today' })).toHaveAttribute('aria-pressed', 'false')
-  await expect(calendar.getByRole('button', { name: 'Next 30 days' })).toHaveAttribute('aria-pressed', 'true')
+  if (await calendar.locator('.discover-calendar__item').count() > 0) {
+    await expect(calendar.getByRole('button', { name: 'Today' })).toHaveAttribute('aria-pressed', 'false')
+    await expect(calendar.getByRole('button', { name: 'Next 30 days' })).toHaveAttribute('aria-pressed', 'true')
+  } else {
+    await expect(calendar).toHaveClass(/discover-calendar--empty/)
+    await expect(calendar.getByRole('button', { name: 'Open calendar' })).toBeVisible()
+    expect((await calendar.boundingBox())!.height, 'an empty calendar should not push the mobile spotlight down').toBeLessThanOrEqual(52)
+  }
   await expect(page.getByRole('heading', { name: 'Continue Watching', exact: true })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
   const obsessionLayout = await heroSpotlight.evaluate((card) => {
@@ -563,6 +569,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const editorialPoster = heroSpotlight.locator('.discover-spotlight__poster img')
   await expect(editorialPoster).toHaveAttribute('data-artwork-loaded', 'true')
   await expect(editorialPoster).toHaveCSS('opacity', '1')
+  const heroBackdrop = heroSpotlight.locator('.discover-spotlight__ambient img')
+  await expect(heroBackdrop).toHaveClass(/is-loaded/)
+  await expect(heroBackdrop).toHaveCSS('opacity', '1')
   const obsessionTop = (await page.getByRole('heading', { name: 'Your Next Obsession' }).boundingBox())!.y
   const calendarTop = (await calendar.boundingBox())!.y
   const trendingTop = (await page.getByRole('heading', { name: 'OR TRY', exact: true }).boundingBox())!.y
@@ -622,6 +631,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect.poll(() => trendingShelf.locator('.media-row-card-slot').first().evaluate((card) => getComputedStyle(card).animationName)).toBe('discover-card-arrive')
   const loadedPoster = trendingShelf.locator('.media-row-card-slot').first().locator('img.media-card-artwork')
   await expect(loadedPoster).toHaveAttribute('data-artwork-loaded', 'true')
+  await expect(loadedPoster).toHaveCSS('opacity', '1')
   const loadedPosterMotion = await loadedPoster.evaluate((image) => ({
     opacity: getComputedStyle(image).opacity,
     transitionProperty: getComputedStyle(image).transitionProperty,
@@ -964,6 +974,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(parseFloat(desktopCardMotion.transitionDuration)).toBeGreaterThan(0)
   expect(desktopCardMotion.transitionProperty).toContain('transform')
   await expect(page.locator('.discover-spotlight__ambient img')).toHaveAttribute('src', /discovery-fixture-backdrop/)
+  await expect(page.locator('.discover-spotlight__ambient img')).toHaveCSS('opacity', '1')
   const desktopControlWidths = await page.evaluate(() => ({
     tabs: document.querySelector<HTMLElement>('.discover-page__tabs')?.getBoundingClientRect().width ?? 0,
   }))

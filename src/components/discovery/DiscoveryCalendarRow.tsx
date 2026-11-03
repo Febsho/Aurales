@@ -58,6 +58,13 @@ export default function DiscoveryCalendarRow({ watchProgress, traktConnected, si
   }, [progressSignature, traktConnected, simklConnected, anilistConnected, mdblistConnected, serverRevision, today, horizon])
 
   const visibleEntries = range === 'today' ? entries.filter((entry) => entry.date === today) : entries
+  if (!loading && entries.length === 0) return <section className="discover-calendar discover-calendar--empty row-contain" aria-labelledby="discover-calendar-title">
+    <div className="discover-calendar__empty-copy">
+      <div className="discover-calendar__heading"><h2 id="discover-calendar-title">Calendar</h2></div>
+      <p>No upcoming releases</p>
+    </div>
+    <button type="button" className="discover-calendar__open" onClick={() => navigate('/collections?tab=calendar')}>Open calendar <span aria-hidden="true">›</span></button>
+  </section>
   const dateLabel = range === 'today'
     ? new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric' }).format(new Date())
     : `${new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(new Date())} – ${new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(addDays(new Date(), 30))}`
