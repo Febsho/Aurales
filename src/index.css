@@ -6416,7 +6416,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-picker__meta, .discover-picker__reason { color: rgba(255,255,255,.67); font-size: .9rem; line-height: 1.45; }
 .discover-picker__meta { margin: 0; }
 .discover-picker__reason { margin: .6rem 0 0; }
-.discover-picker__actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: 1.35rem; }
+.discover-picker__actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: 1.35rem; opacity: 1; visibility: visible; }
 .discover-picker__actions button { display: inline-flex; min-height: 2.8rem; align-items: center; justify-content: center; gap: .5rem; padding: .65rem 1.2rem; border: 1px solid rgba(255,255,255,.2); border-radius: 999px; background: rgba(255,255,255,.1); color: white; font-size: .9rem; font-weight: 700; cursor: pointer; transition: transform .18s ease, background .18s ease; }
 .discover-picker__actions button:active { transform: scale(.97); }
 .discover-picker__actions button:disabled { cursor: wait; opacity: .58; }

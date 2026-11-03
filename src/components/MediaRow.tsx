@@ -379,6 +379,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
       </div>
       <div
         ref={scrollRef}
+        data-media-row-track
         onPointerDown={() => { scrollTargetRef.current = null }}
         onKeyDown={handleRowKeyDown}
         onScroll={(event) => { handleRowScroll(event); updateScrollEdges() }}

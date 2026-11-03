@@ -113,16 +113,17 @@ function DiscoveryReveal({ children }: { children: import('react').ReactNode }) 
     const element = ref.current
     if (!element) return
     const scrollRoot = element.closest<HTMLElement>('.app-scroll-root')
-    // Chromium can leave an observed shelf unrevealed when a smooth programmatic
-    // scroll lands on it before the observer's first delivery. Keep the observer
-    // animation, with a geometry-based fallback on the app's actual scroll root.
+    // Keep the observer animation, with geometry fallbacks for both the app's
+    // nested scroller and the window. Mobile Safari can dispatch programmatic
+    // scrolls through either target while its visual viewport is settling.
     let didReveal = false
     const reveal = () => {
       if (didReveal) return
       didReveal = true
       setRevealed(true)
       observer.disconnect()
-      ;(scrollRoot ?? window).removeEventListener('scroll', revealIfVisible)
+      scrollRoot?.removeEventListener('scroll', revealIfVisible)
+      window.removeEventListener('scroll', revealIfVisible)
       window.removeEventListener('resize', revealIfVisible)
     }
     const revealIfVisible = () => {
@@ -137,13 +138,15 @@ function DiscoveryReveal({ children }: { children: import('react').ReactNode }) 
     }
     const observer = new IntersectionObserver(handleIntersection, { root: scrollRoot, rootMargin: '0px 0px -32px 0px', threshold: 0.01 })
     observer.observe(element)
-    ;(scrollRoot ?? window).addEventListener('scroll', revealIfVisible, { passive: true })
+    scrollRoot?.addEventListener('scroll', revealIfVisible, { passive: true })
+    window.addEventListener('scroll', revealIfVisible, { passive: true })
     window.addEventListener('resize', revealIfVisible, { passive: true })
     const frame = window.requestAnimationFrame(revealIfVisible)
     return () => {
       window.cancelAnimationFrame(frame)
       observer.disconnect()
-      ;(scrollRoot ?? window).removeEventListener('scroll', revealIfVisible)
+      scrollRoot?.removeEventListener('scroll', revealIfVisible)
+      window.removeEventListener('scroll', revealIfVisible)
       window.removeEventListener('resize', revealIfVisible)
     }
   }, [])
@@ -479,6 +482,7 @@ export default function DiscoverPage() {
   const [heroArt,setHeroArt]=useState<Record<string,{poster?:string;backdrop?:string;logo?:string}>>({})
   const [loadedHeroBackdrop,setLoadedHeroBackdrop]=useState<string | null>(null)
   const [surpriseSpinning, setSurpriseSpinning] = useState(false)
+  const surpriseSpinningRef = useRef(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerClosing, setPickerClosing] = useState(false)
   const [preferencesOpen, setPreferencesOpen] = useState(false)
@@ -488,6 +492,10 @@ export default function DiscoverPage() {
   const pickerClosingRef = useRef(false)
   const pickerCloseTimerRef = useRef<number | null>(null)
   const surpriseRunRef = useRef(0)
+  const updateSurpriseSpinning = useCallback((spinning: boolean) => {
+    surpriseSpinningRef.current = spinning
+    setSurpriseSpinning(spinning)
+  }, [])
   const [pickOffset, setPickOffset] = useState(0)
   const pickStorageKey = `aurales_discovery_picks:${getActiveProfileId()}:${tab}`
   const [pickedIds, setPickedIds] = useState<string[]>(() => readDiscoveryPicks(pickStorageKey))
@@ -1354,24 +1362,24 @@ export default function DiscoverPage() {
     if (pickerCloseTimerRef.current != null) window.clearTimeout(pickerCloseTimerRef.current)
     pickerCloseTimerRef.current = null
     pickerClosingRef.current = false
-    setSurpriseSpinning(false)
+    updateSurpriseSpinning(false)
     setPickerClosing(false)
     setPickerOpen(false)
-  }, [tab, mode, discoveryQueryKey])
+  }, [tab, mode, discoveryQueryKey, updateSurpriseSpinning])
   const spinPicker = (currentId: string | number | undefined, onSelect: (item: SearchResult) => void) => {
-    if (!pickerPool.length || surpriseSpinning) return
+    if (!pickerPool.length || surpriseSpinningRef.current) return
     const runId = surpriseRunRef.current + 1
     surpriseRunRef.current = runId
     const winner = chooseSurpriseRecommendation(pickerPool, currentId)
     if (!winner) return
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       onSelect(winner.item)
-      setSurpriseSpinning(false)
+      updateSurpriseSpinning(false)
       return
     }
 
     const delays = [65, 75, 90, 115, 150, 200, 270, 360]
-    setSurpriseSpinning(true)
+    updateSurpriseSpinning(true)
     // Keep the winner out of the rolling frames and exclude the previously
     // displayed title on each tick so the roulette visibly advances.
     let previousId = currentId
@@ -1381,29 +1389,31 @@ export default function DiscoverPage() {
       previousId = first.item.id
     }
     void (async () => {
-      for (const delay of delays) {
-        await new Promise<void>((resolve) => window.setTimeout(resolve, delay))
-        if (surpriseRunRef.current !== runId) return
-        const next = chooseSurpriseAnimationFrame(pickerPool, winner.item.id, previousId)
-        if (next) {
-          onSelect(next.item)
-          previousId = next.item.id
+      try {
+        for (const delay of delays) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, delay))
+          if (surpriseRunRef.current !== runId) return
+          const next = chooseSurpriseAnimationFrame(pickerPool, winner.item.id, previousId)
+          if (next) {
+            onSelect(next.item)
+            previousId = next.item.id
+          }
         }
+        if (surpriseRunRef.current !== runId) return
+        onSelect(winner.item)
+        // Let the final title/poster entry animation finish while the rolling
+        // state is still active. Without this handoff React batches the winner
+        // and `false` state together, so the selected title appears to jump.
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 320))
+      } finally {
+        if (surpriseRunRef.current === runId) updateSurpriseSpinning(false)
       }
-      if (surpriseRunRef.current !== runId) return
-      onSelect(winner.item)
-      // Let the final title/poster entry animation finish while the rolling
-      // state is still active. Without this handoff React batches the winner
-      // and `false` state together, so the selected title appears to jump.
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 320))
-      if (surpriseRunRef.current !== runId) return
-      setSurpriseSpinning(false)
     })()
   }
   const closePicker = useCallback(() => {
     if (pickerClosingRef.current) return
     surpriseRunRef.current += 1
-    setSurpriseSpinning(false)
+    updateSurpriseSpinning(false)
     const finishClose = () => {
       pickerCloseTimerRef.current = null
       pickerClosingRef.current = false
@@ -1418,7 +1428,7 @@ export default function DiscoverPage() {
     pickerClosingRef.current = true
     setPickerClosing(true)
     pickerCloseTimerRef.current = window.setTimeout(finishClose, 190)
-  }, [])
+  }, [updateSurpriseSpinning])
   const closePreferences = useCallback(() => {
     setPreferencesOpen(false)
     // The dialog is conditionally removed. In WebKit/Firefox the passive

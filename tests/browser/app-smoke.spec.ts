@@ -337,6 +337,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       isDefault: true,
     }]))
     localStorage.setItem('aurales_active_profile_v1', profileId)
+    localStorage.setItem(`aurales_skip_profile_picker:profile:${profileId}`, 'true')
     localStorage.setItem('aurales_app_managed_metadata', 'false')
     localStorage.setItem('tmdb_api_key', 'playwright-public-test-key')
     if (location.pathname === '/movie/mobile-layout-fixture') {
@@ -485,7 +486,6 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.route('https://image.tmdb.org/**', (route) => route.fulfill({ headers: { 'Access-Control-Allow-Origin': '*' }, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 3"><rect width="2" height="3" fill="#777"/></svg>' }))
 
   await page.goto('/movie/mobile-layout-fixture')
-  await page.getByRole('button', { name: /select profile/i }).click()
   const detail = page.locator('.detail-page--movie')
   await expect(detail).toBeVisible()
   await expect(page.locator('.profile-switch-transition')).toHaveCount(0)
@@ -716,7 +716,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(loadedPosterMotion.transitionProperty).toContain('opacity')
   expect(loadedPosterMotion.transitionProperty).toContain('transform')
   expect(parseFloat(loadedPosterMotion.transitionDuration)).toBeGreaterThan(0)
-  const trendingRail = trendingShelf.locator('.media-row > div.overflow-x-auto')
+  const trendingRail = trendingShelf.locator('[data-media-row-track]')
   const rightArrow = trendingShelf.getByRole('button', { name: 'Scroll right' })
   for (let pageIndex = 0; pageIndex < 8 && await rightArrow.isEnabled(); pageIndex += 1) {
     await rightArrow.click()
@@ -833,7 +833,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect.poll(() => page.locator('#discover-genre-picks .media-row-card-slot').count()).toBeGreaterThan(0)
   await page.locator('.discover-genres__grid button').filter({ hasText: 'Action' }).first().click()
   await expect(page.locator('#discover-genre-picks [role="status"]')).toContainText('Finding Action titles')
-  await expect(page.getByText(/no titles found for action yet/i)).toBeVisible()
+  // WebKit takes longer to settle uncached discovery requests than Chromium.
+  // Wait for the row request to finish before asserting its empty state.
+  await expect(page.getByText(/no titles found for action yet/i)).toBeVisible({ timeout: 20_000 })
   await expect(page.locator('#discover-genre-picks .media-row-card-slot')).toHaveCount(0)
   const emptyGenreMessage = page.getByText(/no titles found for action yet/i)
   expect(await emptyGenreMessage.evaluate((message) => message.getBoundingClientRect().height), 'an empty genre should show its message without reserving a full poster-row gap').toBeLessThan(44)
@@ -902,12 +904,16 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(obsessionCard).toHaveAttribute('data-title', startingTitle!)
   await surpriseButton.evaluate((button: HTMLButtonElement) => button.click())
   await expect(pickerDialog).toBeVisible()
+  await expect(pickerDialog).toHaveAttribute('aria-busy', 'false')
+  await expect(pickerDialog.getByRole('button', { name: /Not for me/i })).toBeVisible()
   const dismissedTitle = await pickerDialog.locator('.discover-picker__copy').getAttribute('data-title')
   await pickerDialog.getByRole('button', { name: /Not for me/i }).click()
   expect(dismissedTitle).not.toBe(startingTitle)
   await expect(pickerDialog).toHaveCount(0)
   await surpriseButton.evaluate((button: HTMLButtonElement) => button.click())
   await expect(pickerDialog).toBeVisible()
+  await expect(pickerDialog).toHaveAttribute('aria-busy', 'false')
+  await expect(pickerDialog.getByRole('button', { name: 'Open', exact: true })).toBeVisible()
   await pickerDialog.getByRole('button', { name: 'Open', exact: true }).click()
   await expect(page.locator('.detail-page')).toBeVisible()
   await page.goBack()
@@ -1080,6 +1086,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   }
   for (const width of [768, 1024, 1280, 1440, 1920, 2560]) {
     await page.setViewportSize({ width, height: 900 })
+    await expect(page.locator('.discover-page')).toBeVisible()
     const desktopBounds = await page.evaluate(() => {
       const viewport = document.documentElement.clientWidth
       const page = document.querySelector<HTMLElement>('.discover-page')!
@@ -1126,6 +1133,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await page.evaluate(() => { document.documentElement.dataset.runtimePlatform = 'tauri' })
   for (const width of [768, 1024, 1440, 1920, 2560]) {
     await page.setViewportSize({ width, height: 900 })
+    await expect(page.locator('.discover-page')).toBeVisible()
     const desktopBounds = await page.evaluate(() => {
       const viewport = document.documentElement.clientWidth
       const page = document.querySelector<HTMLElement>('.discover-page')!

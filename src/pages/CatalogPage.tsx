@@ -140,8 +140,15 @@ export default function CatalogPage() {
     restoredRef.current = false
     loadMoreRef.current = null
 
+    const routeItems = (location.state as { showAllItems?: SearchResult[] } | null)?.showAllItems
+    // Computed Discovery sections have no backing HomeRowConfig. Their route
+    // payload is the current, already-ranked catalog; on a fresh open it must
+    // win over a stale cached snapshot. POP navigation still restores the
+    // saved catalog and scroll position so returning from a detail page feels
+    // continuous.
+    const hasFreshComputedItems = !row && navigationType === 'PUSH' && Array.isArray(routeItems) && routeItems.length > 0
     const cached = catalogGetCache(rowId)
-    const restoredCache = cached && cached.items.length > 0
+    const restoredCache = !hasFreshComputedItems && cached && cached.items.length > 0
       ? isTopTenCatalog
         ? { ...cached, items: cached.items.slice(0, 10), hasMore: false }
         : cached
@@ -176,7 +183,7 @@ export default function CatalogPage() {
 
     // Rows without a config (e.g. Discover's computed sections) pass their items
     // through navigation state — more reliable than the seeded cache alone
-      const stateItems = (location.state as { showAllItems?: SearchResult[] } | null)?.showAllItems
+      const stateItems = routeItems
       if (!row && stateItems && stateItems.length > 0) {
         setItems(isTopTenCatalog ? stateItems.slice(0, 10) : stateItems)
         setHasMore(false)
