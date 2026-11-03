@@ -454,6 +454,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     let hls: { destroy: () => void } | undefined
     let networkRecoveryAttempted = false
     let mediaRecoveryAttempted = false
+    let nativeHlsFallbackAttempted = false
     const capabilities = getPlatformCapabilities(video)
     const mobileSafari = /iPhone|iPad|iPod/i.test(navigator.userAgent)
       || (navigator.maxTouchPoints > 1 && /Macintosh/i.test(navigator.userAgent))
@@ -497,6 +498,19 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       hlsTracksRef.current = instance as unknown as HlsTrackController
       instance.loadSource(sourceUrl)
       instance.attachMedia(video)
+      const tryNativeSafariHls = () => {
+        if (!useHlsJsForNativeHls || nativeHlsFallbackAttempted || workerConversionActiveRef.current) return false
+        nativeHlsFallbackAttempted = true
+        hlsTracksRef.current = null
+        instance.destroy()
+        hls = undefined
+        setLoading(true)
+        setError('')
+        setPlayerNotice('The track-controlled HLS pipeline failed. Trying Safari native HLS playback…')
+        video.src = sourceUrl
+        video.load()
+        return true
+      }
       instance.on(Hls.Events.MANIFEST_PARSED, () => {
         const tracks = instance.audioTracks
         const { preferredAudio = ['en', 'ja'], animeAudioMode } = useAppStore.getState()
@@ -570,6 +584,11 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           })
           return
         }
+        const canTryNativeHls = (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRecoveryAttempted)
+          || (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveryAttempted)
+          || data.type === Hls.ErrorTypes.KEY_SYSTEM_ERROR
+          || (data.type !== Hls.ErrorTypes.NETWORK_ERROR && data.type !== Hls.ErrorTypes.MEDIA_ERROR)
+        if (canTryNativeHls && tryNativeSafariHls()) return
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
           if (!networkRecoveryAttempted) {
             networkRecoveryAttempted = true
