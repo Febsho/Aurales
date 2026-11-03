@@ -609,9 +609,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   const obsessionTop = obsessionHeading!.y
   const trendingTop = trendingHeading!.y
   const topTenTop = topTenHeading!.y
-  expect(calendarTop).toBeLessThan(obsessionTop)
   expect(obsessionTop).toBeLessThan(trendingTop)
   expect(trendingTop).toBeLessThan(topTenTop)
+  expect(calendarTop, 'the reference editorial sequence should lead; the connected Calendar stays available below the Top 10').toBeGreaterThan(topTenTop)
   await expect(page.getByRole('heading', { name: 'New in Your Library', exact: true })).toHaveCount(0)
   await expect(heroSpotlight.getByRole('button', { name: 'Details' })).toBeVisible()
   const firstSpotlightTitle = await obsessionCard.getAttribute('data-title')
