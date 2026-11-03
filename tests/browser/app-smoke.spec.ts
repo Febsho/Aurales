@@ -177,6 +177,23 @@ test('Discovery uses public catalogs when the active profile has no library entr
   await expect(page.locator('.discover-refine .discover-taste-pick__title').filter({ hasText: 'Public catalog fixture' }).first()).toBeVisible()
   await expect(page.locator('.discover-more__sentinel')).toContainText('Keep scrolling for more titles')
   await expect(page.locator('.discover-shelf--new-library')).toHaveCount(0)
+
+  // Calendar cards should enter when their section is reached, not animate
+  // away in the background while the visitor is still at the top of Discovery.
+  await page.setViewportSize({ width: 1280, height: 520 })
+  await page.locator('.app-scroll-root').evaluate((root) => root.scrollTo({ top: 0, behavior: 'instant' }))
+  const calendar = page.locator('.discover-calendar')
+  await calendar.evaluate((section) => {
+    const card = document.createElement('button')
+    card.className = 'discover-calendar__item'
+    card.textContent = 'Calendar animation fixture'
+    section.append(card)
+  })
+  const calendarReveal = calendar.locator('xpath=..')
+  await calendarReveal.evaluate((section) => section.setAttribute('data-revealed', 'false'))
+  await expect.poll(() => calendar.locator('.discover-calendar__item').evaluate((card) => getComputedStyle(card).animationName)).toBe('none')
+  await calendarReveal.evaluate((section) => section.setAttribute('data-revealed', 'true'))
+  await expect(calendar.locator('.discover-calendar__item')).toHaveCSS('animation-name', 'discover-calendar-item-in')
 })
 
 test('Discovery keeps the taste picker available when only weekly public trends load', async ({ page }) => {
