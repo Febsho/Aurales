@@ -6315,9 +6315,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 @keyframes discover-more-card-arrive { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 .discover-spotlight__copy { position: relative; z-index: 2; display: flex; min-width: 0; max-width: 56rem; align-self: stretch; flex-direction: column; padding-block: .35rem; }
 .discover-spotlight__top { margin-bottom: auto; }
-.discover-spotlight__eyebrow { margin: 0 0 .75rem !important; color: rgba(255,255,255,.92); font-size: clamp(2rem, 4.4vw, 3.35rem); font-weight: 750; letter-spacing: -.045em; line-height: .98; }
-.discover-spotlight__eyebrow span { padding-inline: .35rem; color: rgba(255,255,255,.36); }
-.discover-spotlight__duration { margin: -.45rem 0 0 !important; color: rgba(255,255,255,.62); font-size: .9rem; }
 .discover-spotlight__bottom { margin-top: auto; }
 .discover-spotlight__copy h2 { margin: 0; color: white; font-size: clamp(1.65rem, 3.6vw, 3rem); font-weight: 720; letter-spacing: -.035em; line-height: 1.04; text-wrap: balance; }
 .discover-spotlight__eyebrow { margin: 0 0 .12rem !important; color: #fff; font-size: clamp(2rem, 4.4vw, 3.35rem); font-weight: 750; letter-spacing: -.045em; line-height: .98; }
