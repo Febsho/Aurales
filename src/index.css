@@ -5688,6 +5688,14 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     );
     opacity: .92;
   }
+  html[data-runtime-platform="web"].hero-bg-active .app-theme-shell[data-mobile-web] {
+    background: linear-gradient(
+      to bottom,
+      rgb(var(--ambient-rgb, 43 42 73) / .52) 0%,
+      rgb(var(--ambient-rgb, 43 42 73) / .66) 48%,
+      rgb(var(--ambient-rgb, 43 42 73) / .78) 100%
+    ), #242424 !important;
+  }
 
   html[data-runtime-platform="web"] .mobile-web-nav__item {
     display: flex;
