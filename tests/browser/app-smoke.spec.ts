@@ -1564,6 +1564,8 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
     await page.evaluate((runtime) => { document.documentElement.dataset.runtimePlatform = runtime }, platform)
     for (const width of [320, 390, 768, 1024, 1440, 1920, 2560]) {
       await page.setViewportSize({ width, height: 900 })
+      await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width)
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
       const layout = await page.evaluate(() => {
         const root = document.querySelector<HTMLElement>('.discover-page')!
         const controls = root.querySelector<HTMLElement>('.discover-page__controls')!.getBoundingClientRect()
@@ -1613,7 +1615,10 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
             && calendarOpenButton.getBoundingClientRect().top >= calendarEmptyRow.getBoundingClientRect().top - 1
             && calendarOpenButton.getBoundingClientRect().bottom <= calendarEmptyRow.getBoundingClientRect().bottom + 1),
           tabLabelsFit: Array.from(root.querySelectorAll<HTMLElement>('.discover-page__tabs button')).every((button) => button.scrollWidth <= button.clientWidth + 4),
-          tabLabelWidths: Array.from(root.querySelectorAll<HTMLElement>('.discover-page__tabs button')).map((button) => ({ label: button.textContent?.trim(), width: button.clientWidth, scrollWidth: button.scrollWidth })),
+          tabLabelWidths: Array.from(root.querySelectorAll<HTMLElement>('.discover-page__tabs button')).map((button) => {
+            const style = getComputedStyle(button)
+            return { label: button.textContent?.trim(), width: button.clientWidth, scrollWidth: button.scrollWidth, fontSize: style.fontSize, letterSpacing: style.letterSpacing, padding: style.padding, boxSizing: style.boxSizing, viewport: window.innerWidth, mobileMedia: window.matchMedia('(max-width: 700px)').matches, runtime: document.documentElement.dataset.runtimePlatform }
+          }),
           controlsRowsSeparated: modes.top >= tabs.bottom - 1,
           hero: hero.getBoundingClientRect().toJSON(),
           timeRow: timeRowBounds.toJSON(),
