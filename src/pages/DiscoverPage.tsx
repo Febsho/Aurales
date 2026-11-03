@@ -136,34 +136,38 @@ function DiscoveryReveal({ children }: { children: import('react').ReactNode }) 
     }
     const element = ref.current
     if (!element) return
+    const scrollRoot = element.closest<HTMLElement>('.app-scroll-root')
     // Chromium can leave an observed shelf unrevealed when a smooth programmatic
     // scroll lands on it before the observer's first delivery. Keep the observer
-    // animation, with a geometry-based fallback on scroll/resize for that case.
+    // animation, with a geometry-based fallback on the app's actual scroll root.
     let didReveal = false
     const reveal = () => {
       if (didReveal) return
       didReveal = true
       setRevealed(true)
       observer.disconnect()
-      window.removeEventListener('scroll', revealIfVisible)
+      ;(scrollRoot ?? window).removeEventListener('scroll', revealIfVisible)
       window.removeEventListener('resize', revealIfVisible)
     }
     const revealIfVisible = () => {
       const bounds = element.getBoundingClientRect()
-      if (bounds.bottom >= -80 && bounds.top <= window.innerHeight + 80) reveal()
+      const viewport = scrollRoot?.getBoundingClientRect()
+      const viewportTop = viewport?.top ?? 0
+      const viewportBottom = viewport?.bottom ?? window.innerHeight
+      if (bounds.bottom >= viewportTop - 80 && bounds.top <= viewportBottom + 80) reveal()
     }
     const handleIntersection = ([entry]: IntersectionObserverEntry[]) => {
       if (entry?.isIntersecting) reveal()
     }
-    const observer = new IntersectionObserver(handleIntersection, { rootMargin: '0px 0px -32px 0px', threshold: 0.01 })
+    const observer = new IntersectionObserver(handleIntersection, { root: scrollRoot, rootMargin: '0px 0px -32px 0px', threshold: 0.01 })
     observer.observe(element)
-    window.addEventListener('scroll', revealIfVisible, { passive: true })
+    ;(scrollRoot ?? window).addEventListener('scroll', revealIfVisible, { passive: true })
     window.addEventListener('resize', revealIfVisible, { passive: true })
     const frame = window.requestAnimationFrame(revealIfVisible)
     return () => {
       window.cancelAnimationFrame(frame)
       observer.disconnect()
-      window.removeEventListener('scroll', revealIfVisible)
+      ;(scrollRoot ?? window).removeEventListener('scroll', revealIfVisible)
       window.removeEventListener('resize', revealIfVisible)
     }
   }, [])

@@ -344,6 +344,18 @@ test('mobile Discover and movie details keep text, hero and controls within the 
       }, '', location.href)
     }
   })
+  // Exercise the geometry fallback used when a browser delays an observer
+  // delivery during nested scrolling. Infinite-scroll observers remain live.
+  await page.addInitScript(() => {
+    const NativeObserver = window.IntersectionObserver
+    window.IntersectionObserver = class extends NativeObserver {
+      constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+        super((entries, observer) => {
+          if (options?.rootMargin !== '0px 0px -32px 0px') callback(entries, observer)
+        }, options)
+      }
+    } as typeof IntersectionObserver
+  })
   const tmdbRequestPaths = new Set<string>()
   const continuationPages = new Set<number>()
   const animeContinuationResponses: string[] = []
