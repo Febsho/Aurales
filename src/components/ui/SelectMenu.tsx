@@ -1,5 +1,6 @@
 import {
   Children,
+  Fragment,
   isValidElement,
   useCallback,
   useEffect,
@@ -51,6 +52,10 @@ function parseOptions(children: ReactNode): ParsedOption[] {
       if (!isValidElement(child)) return
       const props = child.props as Record<string, unknown>
       if (child.type === 'optgroup') {
+        walk(props.children as ReactNode)
+        return
+      }
+      if (child.type === Fragment) {
         walk(props.children as ReactNode)
         return
       }
