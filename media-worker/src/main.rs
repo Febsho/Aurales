@@ -1967,6 +1967,8 @@ fn audio_language_preference_rank(language: &str, preferences: &[String]) -> Opt
             "da" | "dan" => "da".to_owned(),
             "fi" | "fin" => "fi".to_owned(),
             "pl" | "pol" => "pl".to_owned(),
+            "hu" | "hun" => "hu".to_owned(),
+            "ro" | "rum" | "ron" => "ro".to_owned(),
             "tr" | "tur" => "tr".to_owned(),
             "uk" | "ukr" => "uk".to_owned(),
             "cs" | "ces" | "cze" => "cs".to_owned(),
@@ -8242,6 +8244,17 @@ mod tests {
         assert_eq!(
             ordered_audio_track_indices(&source, &[]),
             Vec::<usize>::new()
+        );
+
+        let european_languages = serde_json::json!({
+            "streams": [
+                {"codec_type": "audio", "tags": {"language": "hun"}},
+                {"codec_type": "audio", "tags": {"language": "rum"}},
+            ]
+        });
+        assert_eq!(
+            ordered_audio_track_indices(&european_languages, &["ro".to_owned(), "hu".to_owned()]),
+            vec![1, 0]
         );
     }
 
