@@ -1356,6 +1356,11 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           setPlayerNotice(AUTOPLAY_GESTURE_MESSAGE)
           return
         }
+        if (getPlatformCapabilities(video).platform === 'web'
+          && getMediaWorkerConfig()
+          && requestWorkerConversionRef.current?.(video)) {
+          return
+        }
         setError('Browser playback could not start. Check the stream URL or choose another source.')
       })
     } else {
