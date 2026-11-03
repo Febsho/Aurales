@@ -1768,52 +1768,6 @@ export default function DiscoverPage() {
               showAllPath={`/catalog/discover-section-${tab}-${activeSimilaritySection.id}?title=${encodeURIComponent(`Because you ${activeSimilaritySection.id.startsWith('because-favorited') ? 'favorited' : 'watched'} ${activeSimilarityTitle}`)}`}
             />
           </div></DiscoveryReveal>}
-          {viewState === 'content' && bigScreenItems.length >= 3 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--big-screen"><MediaRow headerEyebrow="Best in widescreen" title="Made for the Big Screen" items={bigScreenItems.slice(0, 10)} showAllItems={bigScreenItems} layout="feature" disableCinematic forceShowAll showAllPath={`/catalog/discover-big-screen-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Made for the Big Screen')}`} /></div></DiscoveryReveal>}
-          {viewState === 'content' && hiddenGemItems.length >= 3 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--gems"><MediaRow headerEyebrow="Highly rated, waiting for you" title="Hidden Gems" items={hiddenGemItems.slice(0, 10)} showAllItems={hiddenGemsSection?.catalogItems?.map((entry) => entry.item) ?? hiddenGemItems} layout="poster" disableCinematic forceShowAll showAllPath={`/catalog/discover-hidden-gems-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Hidden Gems')}`} /></div></DiscoveryReveal>}
-          {bingeRecommendations.length > 0 && <DiscoveryReveal><section className="discover-binge row-contain" aria-labelledby="discover-binge-title">
-            <div className="discover-binge__heading"><div><p className="discover-section-eyebrow">For your next long watch</p><h2 id="discover-binge-title">Your Next Binge</h2></div><span>Based on your taste and watch history</span></div>
-            <div className="discover-binge__feature" data-active-title={activeBingeItem?.title}>
-              <div key={`art-${activeBingeItem ? mediaIdentity(activeBingeItem) : 'empty'}`} className="discover-binge__art" aria-hidden="true">{activeBingeItem?.backdrop && <img src={activeBingeItem.backdrop} alt="" loading="lazy" decoding="async"/>}</div>
-              <div key={`copy-${activeBingeItem ? mediaIdentity(activeBingeItem) : 'empty'}`} className="discover-binge__copy" aria-live="polite">
-                <div><p className="discover-section-eyebrow">{activeBingeItem?.isAnime ? 'Anime to get lost in' : 'Series to get lost in'}</p><h3>{activeBingeItem?.title}</h3><p>{[activeBingeItem?.year, activeBingeItem?.genres?.[0], activeBingeItem?.isAnime ? 'Anime' : 'Series'].filter(Boolean).join(' · ')}</p></div>
-                <div className="discover-binge__actions"><button type="button" onClick={() => activeBingeItem && openItemDetail(activeBingeItem, true)}>▶ Play</button><button type="button" onClick={() => activeBingeItem && openItemDetail(activeBingeItem)}>Details</button><button type="button" onClick={() => setBingeIndex((current) => (current + 1) % bingeRecommendations.length)} disabled={bingeRecommendations.length < 2}>Another option</button></div>
-              </div>
-              {activeBingeItem && <div key={`gallery-${mediaIdentity(activeBingeItem)}`} className="discover-binge__gallery" aria-label="Binge recommendations">
-                <button className="discover-binge__main-poster" type="button" onClick={() => openItemDetail(activeBingeItem)} aria-label={`Details for ${activeBingeItem.title}`}>
-                  <img key={activeBingeItem.poster} className="discover-artwork-enter" src={activeBingeItem.poster} alt={`${activeBingeItem.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
-                  <span>{activeBingeItem.title}</span>
-                  {activeBingeItem.rating != null && <small>★ {Number(activeBingeItem.rating).toFixed(1)}</small>}
-                </button>
-                <div className="discover-binge__alternatives">
-                  {bingeRecommendations.filter((item) => mediaIdentity(item) !== mediaIdentity(activeBingeItem)).slice(0, 4).map((item) => <button key={mediaIdentity(item)} type="button" onClick={() => openItemDetail(item)} aria-label={`Details for ${item.title}`}>
-                    <img key={item.poster} className="discover-artwork-enter" src={item.poster} alt={`${item.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
-                    <span>{item.title}</span>
-                    {item.rating != null && <small>★ {Number(item.rating).toFixed(1)}</small>}
-                  </button>)}
-                </div>
-              </div>}
-            </div>
-          </section></DiscoveryReveal>}
-          {viewState === 'content' && <DiscoveryReveal><section className="row-contain discover-shelf discover-shelf--moods" aria-labelledby="discover-moods-title">
-            <div className="discover-editorial-heading"><div><p className="discover-section-eyebrow">Tuned to your taste</p><h2 id="discover-moods-title">Sunday Night Moods</h2></div>
-              <div className="discover-editorial-tabs" role="group" aria-label="Choose a mood">{DISCOVERY_MOODS.map((mood) => <button key={mood.id} type="button" aria-pressed={activeDiscoveryMood.id === mood.id} onClick={() => setSelectedDiscoveryMoodId(mood.id)}>{mood.label}</button>)}</div>
-            </div>
-            {moodItems.length > 0
-              ? <MediaRow title={`${activeDiscoveryMood.label} Picks`} items={moodItems} showAllItems={moodItems} layout="poster" disableCinematic forceShowAll showAllPath={`/catalog/discover-mood-${tab}-${activeDiscoveryMood.id}-${discoveryQueryKey}?title=${encodeURIComponent(`${activeDiscoveryMood.label} Picks`)}`} />
-              : <p className="discover-editorial-empty" role="status">No titles found for this mood yet.</p>}
-          </section></DiscoveryReveal>}
-          {newLibraryItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--recent"><MediaRow headerEyebrow="Recently added to your lists" title="New in Your Library" items={newLibraryItems} showAllItems={newLibraryItems} layout="poster" disableCinematic forceShowAll showAllPath={`/catalog/discover-new-library-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('New in Your Library')}`} /></div></DiscoveryReveal>}
-          <DiscoveryReveal><section className="discover-genres row-contain" aria-labelledby="discover-genres-title">
-            <div className="discover-genres__heading"><div><p className="discover-section-eyebrow">Browse by category</p><h2 id="discover-genres-title">Your Genres</h2></div></div>
-            <div className="discover-genres__grid" role="group" aria-label="Genres">
-              {genreTiles.map(({ option, item }) => <button type="button" key={option.title} aria-pressed={selectedGenreId === option.genres[0]} aria-controls="discover-genre-picks" className={selectedGenreId === option.genres[0] ? 'is-active' : ''} onClick={() => setSelectedGenreId(option.genres[0]!)} style={item?.backdrop || item?.poster ? { backgroundImage: `linear-gradient(90deg, rgba(9,9,12,.88), rgba(9,9,12,.3)), url("${item.backdrop || item.poster}")` } : undefined}><span>{option.title}</span><small>{option.genres[0] === selectedGenreId && genreSelectionItems.length ? genreSelectionItems.length : filteredCandidates.filter((entry) => entry.item.genreIds?.includes(option.genres[0]!)).length} titles to explore</small></button>)}
-            </div>
-            <div id="discover-genre-picks" ref={genrePicksRef} className="discover-genre-picks" aria-live="polite">
-              {selectedGenreId != null && genreLoading && genreSelectionItems.length === 0 && <p className="discover-genre-picks__loading" role="status">Finding {genreMap[selectedGenreId] || 'genre'} titles…</p>}
-              {selectedGenreId != null && genreSelectionItems.length > 0 && <MediaRow title={`${genreMap[selectedGenreId] || 'Genre'} Picks`} items={genreSelectionItems} showAllItems={genreSelectionItems} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${genreRowId}?title=${encodeURIComponent(`${genreMap[selectedGenreId] || 'Genre'} Picks`)}`} />}
-              {selectedGenreId != null && genreSelectionItems.length === 0 && !genreLoading && <p className="discover-genre-picks__empty">No titles found for {genreMap[selectedGenreId] || 'this genre'} yet. Try another genre.</p>}
-            </div>
-          </section></DiscoveryReveal>
           {viewState === 'content' && <DiscoveryReveal><section className="discover-time discover-weekend row-contain" aria-labelledby="discover-weekend-title">
             <div className="discover-editorial-heading"><div><p className="discover-section-eyebrow">A {tab === 'movies' ? 'movie' : tab === 'anime' ? 'anime pick' : 'series'} for tonight</p><h2 id="discover-weekend-title">Your Weekend Plan</h2></div>
               <div className="discover-editorial-tabs" role="group" aria-label="Choose a watch duration">
@@ -1870,6 +1824,49 @@ export default function DiscoverPage() {
               {POSTER_COLOR_GROUPS.filter((group) => availablePosterColors.has(group.id)).map((group) => <button key={group.id} type="button" className={selectedPosterColor === group.id ? 'is-active' : ''} aria-pressed={selectedPosterColor === group.id} onClick={() => setSelectedPosterColor(group.id)}><span aria-hidden="true" style={{ backgroundColor: group.color }} />{group.label}</button>)}
             </div>
             <div className="discover-colors__row"><MediaRow title={colorCatalogTitle} items={colorPreviewItems} showAllItems={colorSelectionItems} layout="poster" disableCinematic showAllPath={`/catalog/${colorRowId}?title=${encodeURIComponent(colorCatalogTitle)}`} /></div>
+          </section></DiscoveryReveal>}
+          <DiscoveryReveal><section className="discover-genres row-contain" aria-labelledby="discover-genres-title">
+            <div className="discover-genres__heading"><div><p className="discover-section-eyebrow">Browse by category</p><h2 id="discover-genres-title">Your Genres</h2></div></div>
+            <div className="discover-genres__grid" role="group" aria-label="Genres">
+              {genreTiles.map(({ option, item }) => <button type="button" key={option.title} aria-pressed={selectedGenreId === option.genres[0]} aria-controls="discover-genre-picks" className={selectedGenreId === option.genres[0] ? 'is-active' : ''} onClick={() => setSelectedGenreId(option.genres[0]!)} style={item?.backdrop || item?.poster ? { backgroundImage: `linear-gradient(90deg, rgba(9,9,12,.88), rgba(9,9,12,.3)), url("${item.backdrop || item.poster}")` } : undefined}><span>{option.title}</span><small>{option.genres[0] === selectedGenreId && genreSelectionItems.length ? genreSelectionItems.length : filteredCandidates.filter((entry) => entry.item.genreIds?.includes(option.genres[0]!)).length} titles to explore</small></button>)}
+            </div>
+            <div id="discover-genre-picks" ref={genrePicksRef} className="discover-genre-picks" aria-live="polite">
+              {selectedGenreId != null && genreLoading && genreSelectionItems.length === 0 && <p className="discover-genre-picks__loading" role="status">Finding {genreMap[selectedGenreId] || 'genre'} titles…</p>}
+              {selectedGenreId != null && genreSelectionItems.length > 0 && <MediaRow title={`${genreMap[selectedGenreId] || 'Genre'} Picks`} items={genreSelectionItems} showAllItems={genreSelectionItems} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${genreRowId}?title=${encodeURIComponent(`${genreMap[selectedGenreId] || 'Genre'} Picks`)}`} />}
+              {selectedGenreId != null && genreSelectionItems.length === 0 && !genreLoading && <p className="discover-genre-picks__empty">No titles found for {genreMap[selectedGenreId] || 'this genre'} yet. Try another genre.</p>}
+            </div>
+          </section></DiscoveryReveal>
+          {bingeRecommendations.length > 0 && <DiscoveryReveal><section className="discover-binge row-contain" aria-labelledby="discover-binge-title">
+            <div className="discover-binge__heading"><div><p className="discover-section-eyebrow">For your next long watch</p><h2 id="discover-binge-title">Your Next Binge</h2></div><span>Based on your taste and watch history</span></div>
+            <div className="discover-binge__feature" data-active-title={activeBingeItem?.title}>
+              <div key={`art-${activeBingeItem ? mediaIdentity(activeBingeItem) : 'empty'}`} className="discover-binge__art" aria-hidden="true">{activeBingeItem?.backdrop && <img src={activeBingeItem.backdrop} alt="" loading="lazy" decoding="async"/>}</div>
+              <div key={`copy-${activeBingeItem ? mediaIdentity(activeBingeItem) : 'empty'}`} className="discover-binge__copy" aria-live="polite">
+                <div><p className="discover-section-eyebrow">{activeBingeItem?.isAnime ? 'Anime to get lost in' : 'Series to get lost in'}</p><h3>{activeBingeItem?.title}</h3><p>{[activeBingeItem?.year, activeBingeItem?.genres?.[0], activeBingeItem?.isAnime ? 'Anime' : 'Series'].filter(Boolean).join(' · ')}</p></div>
+                <div className="discover-binge__actions"><button type="button" onClick={() => activeBingeItem && openItemDetail(activeBingeItem, true)}>▶ Play</button><button type="button" onClick={() => activeBingeItem && openItemDetail(activeBingeItem)}>Details</button><button type="button" onClick={() => setBingeIndex((current) => (current + 1) % bingeRecommendations.length)} disabled={bingeRecommendations.length < 2}>Another option</button></div>
+              </div>
+              {activeBingeItem && <div key={`gallery-${mediaIdentity(activeBingeItem)}`} className="discover-binge__gallery" aria-label="Binge recommendations">
+                <button className="discover-binge__main-poster" type="button" onClick={() => openItemDetail(activeBingeItem)} aria-label={`Details for ${activeBingeItem.title}`}>
+                  <img key={activeBingeItem.poster} className="discover-artwork-enter" src={activeBingeItem.poster} alt={`${activeBingeItem.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
+                  <span>{activeBingeItem.title}</span>
+                  {activeBingeItem.rating != null && <small>★ {Number(activeBingeItem.rating).toFixed(1)}</small>}
+                </button>
+                <div className="discover-binge__alternatives">
+                  {bingeRecommendations.filter((item) => mediaIdentity(item) !== mediaIdentity(activeBingeItem)).slice(0, 4).map((item) => <button key={mediaIdentity(item)} type="button" onClick={() => openItemDetail(item)} aria-label={`Details for ${item.title}`}>
+                    <img key={item.poster} className="discover-artwork-enter" src={item.poster} alt={`${item.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
+                    <span>{item.title}</span>
+                    {item.rating != null && <small>★ {Number(item.rating).toFixed(1)}</small>}
+                  </button>)}
+                </div>
+              </div>}
+            </div>
+          </section></DiscoveryReveal>}
+          {viewState === 'content' && <DiscoveryReveal><section className="row-contain discover-shelf discover-shelf--moods" aria-labelledby="discover-moods-title">
+            <div className="discover-editorial-heading"><div><p className="discover-section-eyebrow">Tuned to your taste</p><h2 id="discover-moods-title">Sunday Night Moods</h2></div>
+              <div className="discover-editorial-tabs" role="group" aria-label="Choose a mood">{DISCOVERY_MOODS.map((mood) => <button key={mood.id} type="button" aria-pressed={activeDiscoveryMood.id === mood.id} onClick={() => setSelectedDiscoveryMoodId(mood.id)}>{mood.label}</button>)}</div>
+            </div>
+            {moodItems.length > 0
+              ? <MediaRow title={`${activeDiscoveryMood.label} Picks`} items={moodItems} showAllItems={moodItems} layout="poster" disableCinematic forceShowAll showAllPath={`/catalog/discover-mood-${tab}-${activeDiscoveryMood.id}-${discoveryQueryKey}?title=${encodeURIComponent(`${activeDiscoveryMood.label} Picks`)}`} />
+              : <p className="discover-editorial-empty" role="status">No titles found for this mood yet.</p>}
           </section></DiscoveryReveal>}
           {viewState === 'content' && <DiscoveryReveal><section className="discover-more row-contain" aria-labelledby="discover-more-title">
             <div className="discover-more__heading"><div><p className="discover-section-eyebrow">More popular picks</p><h2 id="discover-more-title">Keep Exploring</h2></div><span>{moreToDiscover.length ? `${moreToDiscover.length} titles loaded` : 'Fresh titles load as you scroll'}</span></div>

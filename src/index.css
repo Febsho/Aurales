@@ -6471,8 +6471,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-weekend__poster span { position: absolute; right: .4rem; bottom: .4rem; padding: .25rem .4rem; border-radius: .45rem; background: rgba(0,0,0,.74); color: #fff; font-size: .68rem; font-weight: 700; }
 @keyframes discover-weekend-enter { from { opacity: .45; transform: translateY(7px) scale(.995); } to { opacity: 1; transform: translateY(0) scale(1); } }
 .discover-editorial-empty { margin: .5rem var(--discover-gutter, 1.5rem) 1rem; color: rgba(255,255,255,.55); font-size: .82rem; }
-.discover-shelf--big-screen, .discover-shelf--gems, .discover-shelf--moods, .discover-shelf--recent { margin-block: .9rem 1.2rem; }
-.discover-shelf--big-screen .media-row--feature .media-row-card-slot { min-width: clamp(16rem, 28vw, 25rem); }
+.discover-shelf--moods { margin-block: .9rem 1.2rem; }
 .discover-page .media-row { margin-bottom: .9rem !important; }
 .discover-page .media-row > div:first-child { margin-bottom: .5rem !important; }
 .discover-page .media-row > div:first-child h2 { font-size: clamp(.95rem, 1.25vw, 1.15rem) !important; }
@@ -6683,7 +6682,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-weekend__actions button { min-height: 44px; padding-inline: .55rem; font-size: .68rem; }
   .discover-weekend__actions .discover-weekend__play { padding-inline: .75rem; }
   .discover-weekend__poster { width: 100%; border-radius: .65rem; }
-  .discover-shelf--big-screen, .discover-shelf--gems, .discover-shelf--moods, .discover-shelf--recent { margin-block: .65rem .9rem; }
+  .discover-shelf--moods { margin-block: .65rem .9rem; }
   .discover-genres__grid { gap: .5rem; margin-block: .65rem .8rem; }
   .discover-genres__grid button { flex-basis: min(44vw, 11rem); min-height: 6rem; padding: .75rem; border-radius: .8rem; }
   .discover-genres__grid button > span { font-size: .88rem; }
