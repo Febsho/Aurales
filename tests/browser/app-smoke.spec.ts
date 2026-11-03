@@ -357,7 +357,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     } as typeof IntersectionObserver
   })
   const tmdbRequestPaths = new Set<string>()
-  const runtimeFilterRequests: Array<{ path: string; min: string | null; max: string | null }> = []
+  const runtimeFilterRequests: Array<{ path: string; min: string | null; max: string | null; language: string | null }> = []
   const continuationPages = new Set<number>()
   const animeContinuationResponses: string[] = []
   let animeMovieContinuationFailuresRemaining = 0
@@ -366,7 +366,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     const requestUrl = new URL(route.request().url())
     tmdbRequestPaths.add(requestUrl.pathname)
     if (requestUrl.searchParams.has('with_runtime.gte') || requestUrl.searchParams.has('with_runtime.lte')) {
-      runtimeFilterRequests.push({ path: requestUrl.pathname, min: requestUrl.searchParams.get('with_runtime.gte'), max: requestUrl.searchParams.get('with_runtime.lte') })
+      runtimeFilterRequests.push({ path: requestUrl.pathname, min: requestUrl.searchParams.get('with_runtime.gte'), max: requestUrl.searchParams.get('with_runtime.lte'), language: requestUrl.searchParams.get('with_original_language') })
     }
     if (/^\/3\/trending\/(movie|tv)\/week$/.test(requestUrl.pathname)) {
       const weeklyType = requestUrl.pathname.includes('/movie/') ? 'movie' : 'series'
@@ -704,6 +704,15 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(timeOptions.getByRole('button', { name: 'Under 90 Minutes' })).toHaveAttribute('aria-pressed', 'true')
   await expect.poll(() => runtimeFilterRequests.some((request) => request.path.endsWith('/discover/movie') && request.max === '90')).toBe(true)
   await expect(page.getByRole('heading', { name: 'Under 90 Minutes Picks' })).toBeVisible()
+  await contentTypeControls.getByRole('button', { name: 'Series' }).click()
+  const seriesTimeOptions = page.getByRole('group', { name: 'Choose episode runtime' })
+  await expect(seriesTimeOptions.getByRole('button', { name: 'Short Episodes' })).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => runtimeFilterRequests.some((request) => request.path.endsWith('/discover/tv') && request.max === '30')).toBe(true)
+  await contentTypeControls.getByRole('button', { name: 'Anime' }).click()
+  const animeTimeOptions = page.getByRole('group', { name: 'Choose episode runtime' })
+  await expect(animeTimeOptions.getByRole('button', { name: 'Short Episodes' })).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => runtimeFilterRequests.some((request) => request.path.endsWith('/discover/tv') && request.max === '25' && request.language === 'ja')).toBe(true)
+  await contentTypeControls.getByRole('button', { name: 'Movies' }).click()
   const monoPosters = page.getByRole('button', { name: 'Mono', exact: true })
   await expect(monoPosters).toBeVisible()
   await monoPosters.click()
