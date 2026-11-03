@@ -45,6 +45,24 @@ export function mediaKey(item: Pick<SearchResult, 'id' | 'type' | 'tmdbId' | 'im
   return `${item.type}:local:${item.id}`
 }
 
+/**
+ * Fingerprint the live trend feed for the daily ranking scope.
+ *
+ * Keep provider order and momentum metadata: a feed can keep the same titles
+ * while their popularity order changes. Identity-only snapshots would then
+ * keep yesterday's order for the whole day and make fresh trends miss the
+ * Spotlight, Top 10 and taste picks.
+ */
+export function trendingScopeFingerprint(items: readonly SearchResult[]): string {
+  return JSON.stringify(items.map((item) => [
+    mediaKey(item),
+    Number.isFinite(item.popularity) ? item.popularity : null,
+    Number.isFinite(item.voteCount) ? item.voteCount : null,
+    item.releaseDate || null,
+    item.rating ?? null,
+  ]))
+}
+
 function normalizedTmdbId(value: string | number | null | undefined): string {
   return value == null ? '' : String(value).trim().replace(/^tmdb[-:]/i, '')
 }

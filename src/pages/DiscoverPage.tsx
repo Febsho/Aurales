@@ -11,7 +11,7 @@ import { useCatalogStore } from '../stores/catalogStore'
 import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
 import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
-import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, rankCandidates } from '../services/discovery/recommendationEngine'
+import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, rankCandidates, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
 import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktWatchedShows, getRatings as getTraktRatings } from '../services/trakt/sync'
@@ -576,7 +576,10 @@ export default function DiscoverPage() {
     favorites: [...localWatchlist, ...connectedActivity.watchlist].map(mediaIdentity).sort(),
     watched: [...recentlyViewed, ...connectedActivity.items].map(mediaIdentity).sort(),
     progress: progressSignals.watchedSeeds,
-    trending: currentTrending.map(mediaIdentity).sort(),
+    // A live feed can retain its titles while their weekly popularity/order
+    // changes. Include those signals so a frozen daily snapshot cannot mask
+    // the current public trend ranking across the Hero and recommendation rows.
+    trending: trendingScopeFingerprint(currentTrending),
   }))
   // Snapshots are durable per person and Berlin date.  Switching away and
   // back therefore restores that profile's frozen daily Discover ranking,
