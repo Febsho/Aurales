@@ -6283,8 +6283,10 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-spotlight__ambient img.is-loaded { opacity: 1; animation: discover-art-enter .62s cubic-bezier(.2,.75,.25,1) both; }
 .discover-spotlight__ambient.is-spinning img,
 .discover-picker.is-spinning .discover-picker__ambient img { animation: discover-backdrop-shift .3s cubic-bezier(.2,.75,.25,1) both; }
-@keyframes discover-backdrop-shift { from { opacity: .45; transform: scale(1.055); filter: saturate(.62) blur(5px); } to { opacity: 1; transform: scale(1.015); filter: saturate(.88) blur(0); } }
-@keyframes discover-art-enter { from { opacity: 0; transform: scale(1.045); filter: saturate(.72) blur(3px); } to { opacity: 1; transform: scale(1.015); filter: saturate(.88) blur(0); } }
+/* Keep artwork transitions on opacity/transform so Safari and desktop GPUs can
+   composite them without repainting a large blurred image on every roulette tick. */
+@keyframes discover-backdrop-shift { from { opacity: .5; transform: scale(1.055); } to { opacity: 1; transform: scale(1.015); } }
+@keyframes discover-art-enter { from { opacity: 0; transform: scale(1.045); } to { opacity: 1; transform: scale(1.015); } }
 @keyframes discover-spotlight-enter { from { opacity: 0; transform: translateY(10px) scale(.995); } to { opacity: 1; transform: translateY(0) scale(1); } }
 .discover-spotlight__copy { animation: discover-spotlight-copy-enter .48s .04s both; }
 .discover-spotlight__poster { animation: discover-spotlight-poster-enter .55s .08s cubic-bezier(.2,.75,.25,1) both; }
@@ -6361,8 +6363,9 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-picker__status svg { flex: none; animation: discover-picker-status-pulse .8s ease-in-out infinite alternate; }
 .discover-picker.is-spinning .discover-picker__poster { animation: discover-picker-rolling .52s cubic-bezier(.42,0,.58,1) infinite alternate; transform-origin: 50% 55%; box-shadow: 0 22px 64px rgba(0,0,0,.52); }
 .discover-picker.is-spinning .discover-picker__poster > img { opacity: .82; transition: opacity .12s ease; }
+.discover-picker__copy h2:not(.sr-only), .discover-picker__logo { transition: opacity .14s ease, transform .14s ease; }
 .discover-picker.is-spinning .discover-picker__copy h2:not(.sr-only),
-.discover-picker.is-spinning .discover-picker__logo { opacity: .48; filter: blur(4px); transform: translateY(2px); transition: opacity .14s ease, filter .14s ease, transform .14s ease; }
+.discover-picker.is-spinning .discover-picker__logo { opacity: .48; transform: translateY(2px); }
 .discover-picker.is-spinning .discover-picker__meta,
 .discover-picker.is-spinning .discover-picker__reason,
 .discover-picker.is-spinning .discover-picker__actions { opacity: 0; visibility: hidden; transition: opacity .12s ease, visibility .12s ease; }
