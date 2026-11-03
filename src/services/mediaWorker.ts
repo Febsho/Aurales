@@ -38,7 +38,7 @@ export class MediaWorkerHttpError extends Error {
   readonly errorCode?: string
 
   constructor(status: number, errorCode?: string) {
-    super(workerError(status))
+    super(workerError(status, errorCode))
     this.name = 'MediaWorkerHttpError'
     this.status = status
     this.errorCode = errorCode
@@ -598,11 +598,15 @@ export function validatePlaybackRequestHeaders(headers: PlaybackRequestHeaders):
   return safe
 }
 
-function workerError(status: number): string {
+function workerError(status: number, errorCode?: string): string {
   if (status === 401) return INTEGRATED_MEDIA_WORKER ? 'Aurales media service session expired. Unlock the service again in Settings.' : 'Worker rejected its API key. Check the saved key.'
-  if (status === 403) return 'The media worker rejected this source host. Add the exact source hostname to its MEDIA_ALLOWED_HOSTS setting, then retry playback.'
+  if (status === 403 && errorCode === 'media_host_not_allowed') return 'The media worker rejected this source host. Add its exact hostname to AURALES_MEDIA_ALLOWED_HOSTS and make sure it resolves to a public IP, then retry playback.'
+  if (status === 403) return 'The media worker rejected this request (403). Check its source access policy.'
   if (status === 413) return 'Worker rejected the request because it is too large.'
   if (status === 429) return 'Worker is busy. Try again shortly.'
+  if (status === 503 && errorCode === 'ffmpeg_not_configured') return 'FFmpeg is not configured on the media worker. Install or configure FFmpeg, then retry playback.'
+  if (status === 503 && errorCode === 'mp4_output_unavailable') return 'The worker FFmpeg build cannot create MP4 output. Enable an MP4 muxer or configure HLS output.'
+  if (status === 503 && errorCode === 'hls_output_unavailable') return 'The worker FFmpeg build cannot create HLS output. Enable an HLS muxer or configure MP4 output.'
   if (status === 503) return 'This media conversion mode is unavailable on the configured worker.'
   return `Aurales media worker request failed (${status}). Check its URL, TLS, and CORS configuration.`
 }
