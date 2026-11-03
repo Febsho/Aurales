@@ -1531,6 +1531,13 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
   await expect(page.getByRole('heading', { name: 'Calendar', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeHidden()
   await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'OR TRY', exact: true })).toBeVisible()
+  const calendarFollowsSpotlight = await page.evaluate(() => {
+    const trending = document.querySelector<HTMLElement>('.discover-shelf--trending')
+    const calendar = document.querySelector<HTMLElement>('.discover-calendar')
+    return Boolean(trending && calendar && calendar.getBoundingClientRect().top >= trending.getBoundingClientRect().bottom)
+  })
+  expect(calendarFollowsSpotlight, 'keep Calendar available after the Tonight and OR TRY editorial content').toBe(true)
   await expect(page.getByRole('heading', { name: 'Pick by Colour' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'How Much Time Tonight?' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Sunday Night Moods' })).toBeVisible()
