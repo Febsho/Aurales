@@ -193,6 +193,34 @@ export function sortRecommendationsByPopularity(ranked: RankedRecommendation[]):
   })
 }
 
+/** Keep the live weekly chart first, then balance public popularity with release recency. */
+export function orderRuntimeCandidates(
+  candidates: SearchResult[],
+  currentTrends: SearchResult[],
+  now = Date.now(),
+): SearchResult[] {
+  const trendPosition = new Map(currentTrends.map((item, index) => [mediaKey(item), index]))
+  const currentYear = new Date(now).getUTCFullYear()
+  const freshnessWeight = (item: SearchResult) => {
+    const parsedYear = item.releaseDate ? new Date(item.releaseDate).getUTCFullYear() : undefined
+    const releaseYear = Number.isFinite(parsedYear) ? parsedYear : item.year
+    if (!releaseYear) return .8
+    const age = Math.max(0, currentYear - releaseYear)
+    return .65 + .35 * Math.max(0, 1 - age / 12)
+  }
+  return [...candidates].sort((left, right) => {
+    const leftTrend = trendPosition.get(mediaKey(left))
+    const rightTrend = trendPosition.get(mediaKey(right))
+    if (leftTrend != null || rightTrend != null) return (leftTrend ?? Number.MAX_SAFE_INTEGER) - (rightTrend ?? Number.MAX_SAFE_INTEGER)
+    const leftPopularity = Math.max(0, left.popularity || 0)
+    const rightPopularity = Math.max(0, right.popularity || 0)
+    return rightPopularity * freshnessWeight(right) - leftPopularity * freshnessWeight(left)
+      || rightPopularity - leftPopularity
+      || (right.voteCount || 0) - (left.voteCount || 0)
+      || (right.rating || 0) - (left.rating || 0)
+  })
+}
+
 /** Keep the live weekly chart's position; rank only the non-live fallback by popularity. */
 export function prioritizeLiveTrends(
   currentTrends: RankedRecommendation[],

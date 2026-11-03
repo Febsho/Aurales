@@ -14,7 +14,7 @@ import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
 import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
-import { applyRecommendationFeedback, buildPopularTopTen, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, orderRecommendationsBySource, orderSpotlightCandidates, prioritizeLiveTrends, prioritizeLiveTrendsWithin, rankCandidates, reconcileTrendingSignals, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
+import { applyRecommendationFeedback, buildPopularTopTen, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, orderRecommendationsBySource, orderRuntimeCandidates, orderSpotlightCandidates, prioritizeLiveTrends, prioritizeLiveTrendsWithin, rankCandidates, reconcileTrendingSignals, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
 import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktWatchedShows, getRatings as getTraktRatings } from '../services/trakt/sync'
@@ -1262,20 +1262,15 @@ export default function DiscoverPage() {
     [hiddenGemsSection],
   )
   const timeTonightItems = useMemo(() => {
-    const weeklyOrder = new Map(currentTrendingRanked.map((entry, index) => [mediaIdentity(entry.item), index]))
     const seen = new Set<string>()
     const runtimeItems = tab === 'anime' ? [...timeTonight, ...timeTonightAnimeMovies] : timeTonight
-    return runtimeItems.filter((item) => {
+    const eligibleItems = runtimeItems.filter((item) => {
       const key = mediaIdentity(item)
       if (!item.poster || seen.has(key)) return false
       seen.add(key)
       return true
-    }).sort((left, right) => {
-      const leftTrend = weeklyOrder.get(mediaIdentity(left))
-      const rightTrend = weeklyOrder.get(mediaIdentity(right))
-      if (leftTrend != null || rightTrend != null) return (leftTrend ?? Number.MAX_SAFE_INTEGER) - (rightTrend ?? Number.MAX_SAFE_INTEGER)
-      return (right.popularity ?? 0) - (left.popularity ?? 0) || (right.rating ?? 0) - (left.rating ?? 0)
-    }).slice(0, 10)
+    })
+    return orderRuntimeCandidates(eligibleItems, currentTrendingRanked.map((entry) => entry.item)).slice(0, 10)
   }, [currentTrendingRanked, tab, timeTonight, timeTonightAnimeMovies])
   const timeTonightLoading = discoveryRowLoads[`discover-time-${tab}-${selectedRuntimeBucket.id}-${discoveryQueryKey}`]
     || (tab === 'anime' && discoveryRowLoads[`discover-time-anime-movies-${selectedRuntimeBucket.id}-${discoveryQueryKey}`])

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SearchResult, WatchProgress } from '../../types'
-import { applyRecommendationFeedback, buildPopularTopTen, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, orderRecommendationsBySource, orderSpotlightCandidates, prioritizeLiveTrends, prioritizeLiveTrendsWithin, rankCandidates, reconcileTrendingSignals, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
+import { applyRecommendationFeedback, buildPopularTopTen, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, orderRecommendationsBySource, orderRuntimeCandidates, orderSpotlightCandidates, prioritizeLiveTrends, prioritizeLiveTrendsWithin, rankCandidates, reconcileTrendingSignals, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
 import type { DiscoveryActivity, RecommendationCandidate, RecommendationFeedback } from './types'
 
 const sciFi: SearchResult = { id:'seed',title:'Seed',type:'movie',provider:'tmdb',tmdbId:1,genreIds:[878],year:2020,rating:8 }
@@ -54,6 +54,27 @@ describe('discovery recommendation engine', () => {
     const liveTrends = ranked.filter((entry) => entry.source === 'tmdb-trending')
 
     expect(buildPopularTopTen(liveTrends, ranked).map((entry) => entry.item.tmdbId)).toEqual([930, 931, 932, 934, 933])
+  })
+  it('keeps live weekly order first and gives recent releases an edge over similarly popular older titles', () => {
+    const currentYear = 2026
+    const firstTrend = candidate(935, { year: 2008 }).item
+    const secondTrend = candidate(936, { year: 2026 }).item
+    firstTrend.popularity = 5
+    secondTrend.popularity = 2
+    const recent = candidate(937, { year: currentYear }).item
+    recent.popularity = 190
+    const classic = candidate(938, { year: 2008 }).item
+    classic.popularity = 240
+    const olderHit = candidate(939, { year: 1998 }).item
+    olderHit.popularity = 35
+
+    const ordered = orderRuntimeCandidates(
+      [classic, secondTrend, olderHit, recent, firstTrend],
+      [firstTrend, secondTrend],
+      Date.UTC(currentYear, 5, 1),
+    )
+
+    expect(ordered.map((item) => item.tmdbId)).toEqual([935, 936, 937, 938, 939])
   })
   it('completed titles strengthen matching preferences', () => {
     const completed: WatchProgress = { id:'p',mediaId:'seed',mediaType:'movie',progressSeconds:100,durationSeconds:100,completed:true }
