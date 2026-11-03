@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { Info, MoreHorizontal, RefreshCw, RotateCcw, Search, Settings, Shuffle, ThumbsDown, X } from 'lucide-react'
 import type { DiscoverConfig, SearchResult, WatchProgress } from '../types'
@@ -473,6 +474,9 @@ export default function DiscoverPage() {
   const [bingeIndex, setBingeIndex] = useState(0)
   const [spotlightMenuOpen, setSpotlightMenuOpen] = useState(false)
   const spotlightMenuRef = useRef<HTMLDivElement>(null)
+  const spotlightMenuPopupRef = useRef<HTMLDivElement>(null)
+  const spotlightMenuButtonRef = useRef<HTMLButtonElement>(null)
+  const [spotlightMenuPosition, setSpotlightMenuPosition] = useState<{ top: number; left: number } | null>(null)
   const [moreToDiscover, setMoreToDiscover] = useState<SearchResult[]>([])
   const [moreToDiscoverStatus, setMoreToDiscoverStatus] = useState<'idle' | 'loading' | 'error' | 'done'>('idle')
   const moreToDiscoverSentinelRef = useRef<HTMLDivElement>(null)
@@ -997,12 +1001,13 @@ export default function DiscoverPage() {
   useEffect(() => {
     if (!spotlightMenuOpen) return
     const closeOnPointerDown = (event: PointerEvent) => {
-      if (!spotlightMenuRef.current?.contains(event.target as Node)) setSpotlightMenuOpen(false)
+      const target = event.target as Node
+      if (!spotlightMenuRef.current?.contains(target) && !spotlightMenuPopupRef.current?.contains(target)) setSpotlightMenuOpen(false)
     }
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       setSpotlightMenuOpen(false)
-      document.querySelector<HTMLButtonElement>('.discover-spotlight-heading__more')?.focus()
+      spotlightMenuButtonRef.current?.focus()
     }
     document.addEventListener('pointerdown', closeOnPointerDown)
     document.addEventListener('keydown', closeOnEscape)
@@ -1633,10 +1638,21 @@ export default function DiscoverPage() {
               <header className="discover-spotlight-heading row-contain">
                 <div className="discover-spotlight-heading__copy"><h2 id="discover-next-title">Your Next Obsession</h2></div>
                 <div className="discover-spotlight-heading__menu" ref={spotlightMenuRef}>
-                  <button type="button" className="discover-spotlight-heading__more" aria-label="More spotlight options" aria-haspopup="menu" aria-expanded={spotlightMenuOpen} onClick={() => setSpotlightMenuOpen((open) => !open)}><MoreHorizontal size={20} aria-hidden="true" /></button>
-                  {spotlightMenuOpen && <div className="discover-spotlight-menu" role="menu" aria-label="Spotlight options"><button type="button" role="menuitem" disabled={spotlightCandidates.length < 2} onClick={() => { setSpotlightMenuOpen(false); chooseAnotherSpotlight() }}>Another option</button></div>}
+                  <button ref={spotlightMenuButtonRef} type="button" className="discover-spotlight-heading__more" aria-label="More spotlight options" aria-haspopup="menu" aria-expanded={spotlightMenuOpen} onClick={(event) => {
+                    if (spotlightMenuOpen) { setSpotlightMenuOpen(false); return }
+                    const bounds = event.currentTarget.getBoundingClientRect()
+                    const width = 160
+                    setSpotlightMenuPosition({ top: bounds.bottom + 6, left: Math.max(8, Math.min(bounds.right - width, window.innerWidth - width - 8)) })
+                    setSpotlightMenuOpen(true)
+                  }}><MoreHorizontal size={20} aria-hidden="true" /></button>
                 </div>
               </header>
+              {spotlightMenuOpen && spotlightMenuPosition && createPortal(
+                <div ref={spotlightMenuPopupRef} className="discover-spotlight-menu" role="menu" aria-label="Spotlight options" style={spotlightMenuPosition}>
+                  <button type="button" role="menuitem" disabled={spotlightCandidates.length < 2} onClick={() => { setSpotlightMenuOpen(false); chooseAnotherSpotlight() }}>Another option</button>
+                </div>,
+                document.body,
+              )}
               <section ref={spotlightTransitionRef} className="discover-spotlight discover-next-hero" aria-labelledby="discover-next-title" data-title={heroRecommendation.item.title}>
                 {heroBackdrop && <div key={heroBackdrop} className="discover-spotlight__ambient" aria-hidden="true"><img className={loadedHeroBackdrop === heroBackdrop ? 'is-loaded' : undefined} src={heroBackdrop} alt="" draggable={false} decoding="async" fetchPriority="high" onLoad={() => setLoadedHeroBackdrop(heroBackdrop)} /></div>}
                 <div className="discover-spotlight__copy" data-title={heroRecommendation.item.title}>

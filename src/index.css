@@ -6247,7 +6247,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-spotlight-heading__more { display: grid; width: 2.75rem; height: 2.75rem; place-items: center; border: 1px solid rgba(255,255,255,.1); border-radius: 50%; background: rgba(255,255,255,.08); color: white; cursor: pointer; transition: background .18s ease, transform .18s ease; }
 .discover-spotlight-heading__more:hover, .discover-spotlight-heading__more[aria-expanded="true"] { background: rgba(255,255,255,.16); }
 .discover-spotlight-heading__more:active { transform: scale(.96); }
-.discover-spotlight-menu { position: absolute; top: calc(100% + .4rem); right: 0; min-width: 10rem; padding: .35rem; border: 1px solid rgba(255,255,255,.12); border-radius: .8rem; background: #1c1c20; box-shadow: 0 12px 32px rgba(0,0,0,.45); }
+.discover-spotlight-menu { position: fixed; z-index: 12000; min-width: 10rem; padding: .35rem; border: 1px solid rgba(255,255,255,.12); border-radius: .8rem; background: #1c1c20; box-shadow: 0 12px 32px rgba(0,0,0,.45); }
 .discover-spotlight-menu button { width: 100%; min-height: 2.5rem; padding: .5rem .7rem; border: 0; border-radius: .55rem; background: transparent; color: rgba(255,255,255,.86); font: inherit; font-size: .82rem; text-align: left; cursor: pointer; }
 .discover-spotlight-menu button:hover, .discover-spotlight-menu button:focus-visible { outline: none; background: rgba(255,255,255,.1); color: white; }
 .discover-spotlight-menu button:disabled { color: rgba(255,255,255,.38); cursor: not-allowed; }
