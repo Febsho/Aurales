@@ -42,7 +42,11 @@ import { cancelMediaConversion, createMediaSession, getSupportedMediaConversionO
 import { buildExternalPlayerUrl, getPreferredExternalPlayer, setPreferredExternalPlayer, type ExternalPlayer } from '../services/player/externalPlayers'
 import { createExternalPlaybackReturnUrl } from '../services/player/externalPlaybackReturn'
 
-const MOBILE_MEDIA_STALL_RECOVERY_MS = 15_000
+// Mobile Safari/Chromium can leave a rejected source in a silent loading state
+// without dispatching `error`. Keep the no-frame fallback short so the worker
+// can prepare a compatible copy before users are left staring at a spinner.
+const MOBILE_MEDIA_STALL_RECOVERY_MS = 10_000
+const MOBILE_MEDIA_STARTUP_TIMEOUT_MS = 10_000
 
 interface InAppPlayerProps {
   url: string
@@ -1003,6 +1007,10 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         playbackStartupRef.current.onPlaybackError?.(message, video.currentTime)
       })
     }, 50)
+    const mobileSafariDesktopMode = navigator.maxTouchPoints > 1 && /Macintosh/i.test(navigator.userAgent)
+    const startupTimeoutMs = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || mobileSafariDesktopMode
+      ? MOBILE_MEDIA_STARTUP_TIMEOUT_MS
+      : 15_000
     const startupTimer = setTimeout(() => {
       if (!isCurrentRun() || playbackStartedRef.current || autoplayBlockedRef.current) return
       if (getPlatformCapabilities(video).platform === 'web'
@@ -1016,7 +1024,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       setError(message)
       showControlsTemporarily()
       playbackStartupRef.current.onPlaybackError?.(message, video.currentTime)
-    }, 15_000)
+    }, startupTimeoutMs)
     return () => {
       // The URL-scoped layout effect invalidates this generation before the
       // next passive source effect starts.
