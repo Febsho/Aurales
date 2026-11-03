@@ -1969,7 +1969,19 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
             mobileStallRecoveryInFlightRef.current = true
 
             if (workerConversionActiveRef.current) {
-              if (!retryWorkerConversionRef.current?.(currentVideo)) mobileStallRecoveryInFlightRef.current = false
+              const lastMode = lastWorkerConversionModeRef.current
+              const nextMode = lastMode ? nextPlaybackConversionAfterDecodeFailure(lastMode) : null
+              if (nextMode && conversionModesRef.current.includes(nextMode) && !conversionModesTriedRef.current.includes(nextMode)) {
+                void convertWithWorkerFallback(nextMode)
+                return
+              }
+              if (!retryWorkerConversionRef.current?.(currentVideo)) {
+                setLoading(false)
+                setPaused(true)
+                const message = 'The worker-prepared stream stopped responding after its recovery attempt. Refresh this source or choose another stream.'
+                setError(message)
+                playbackStartupRef.current.onPlaybackError?.(message, currentVideo.currentTime)
+              }
               return
             }
             if (mediaProxyAttemptedRef.current || mediaProxySessionRef.current || needsHeaderProxy) {

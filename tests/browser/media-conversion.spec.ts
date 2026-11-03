@@ -157,7 +157,7 @@ test('mobile playback stalls retry through the worker proxy without an error eve
   await page.route(`**/v1/media/conversions/${jobId}`, (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
-    body: JSON.stringify({ jobId, status: 'ready', mode: 'h264Aac', bytes: fixture.length, url: `/v1/media/${outputMediaId}?expires=1893456000&signature=stall-conversion`, subtitles: [] }),
+    body: JSON.stringify({ jobId, status: 'ready', mode: conversionRequest?.mode === 'h264AacLow' ? 'h264AacLow' : 'h264Aac', bytes: fixture.length, url: `/v1/media/${outputMediaId}?expires=1893456000&signature=stall-conversion`, subtitles: [] }),
   }))
   await page.route(`**/v1/media/${mediaId}?*`, async (route) => {
     await route.fulfill({ status: 200, contentType: 'video/mp4', body: fixture })
@@ -185,6 +185,9 @@ test('mobile playback stalls retry through the worker proxy without an error eve
   await page.clock.fastForward(15_100)
   await expect.poll(() => conversionRequest).toMatchObject({ url: sourcePath, mode: 'auto', outputFormat: 'mp4', mobileCompatibility: true })
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputMediaId}?`)
+  await video.evaluate((element: HTMLVideoElement) => element.dispatchEvent(new Event('waiting')))
+  await page.clock.fastForward(15_100)
+  await expect.poll(() => conversionRequest).toMatchObject({ url: sourcePath, mode: 'h264AacLow', outputFormat: 'mp4', mobileCompatibility: true })
 })
 
 test('unsupported media tries remux, AAC audio copy, then H.264/AAC automatically', async ({ page }, testInfo) => {
