@@ -398,7 +398,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       video.removeAttribute('src')
       video.load()
     }
-    if ((isDashUrl(sourceUrl) || isDashUrl(url)) && video.canPlayType('application/dash+xml') === '') {
+    if (!workerPlaybackUrl && (isDashUrl(sourceUrl) || isDashUrl(url)) && video.canPlayType('application/dash+xml') === '') {
       if (getPlatformCapabilities(video).platform === 'web' && requestWorkerConversionRef.current?.(video)) {
         return
       }
@@ -623,7 +623,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       video.removeAttribute('src')
       video.load()
     }
-  }, [url, playbackSourceUrl, needsHeaderProxy, playbackRequestHeaders, playbackItem?.isAnime])
+  }, [url, playbackSourceUrl, workerPlaybackUrl, needsHeaderProxy, playbackRequestHeaders, playbackItem?.isAnime])
   const SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const
   const [playbackSpeed, setPlaybackSpeed] = useState(1)
   const [showSpeedMenu, setShowSpeedMenu] = useState(false)
@@ -912,6 +912,15 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     }
   }, [])
 
+  // Open the run before passive source effects can request a worker conversion.
+  useLayoutEffect(() => {
+    playbackRunRef.current += 1
+    const playbackRun = playbackRunRef.current
+    return () => {
+      if (playbackRunRef.current === playbackRun) playbackRunRef.current += 1
+    }
+  }, [url])
+
   useEffect(() => {
     showControlsTemporarily()
     return () => {
@@ -923,7 +932,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     const video = videoRef.current
     if (!video) return
     const translatedSubtitleUrls = translatedSubtitleUrlsRef.current
-    const playbackRun = ++playbackRunRef.current
+    const playbackRun = playbackRunRef.current
     const isCurrentRun = () => playbackRun === playbackRunRef.current
     setLoading(true)
     setError('')
@@ -996,9 +1005,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       playbackStartupRef.current.onPlaybackError?.(message, video.currentTime)
     }, 15_000)
     return () => {
-      // Effects clean up before the next URL run starts; invalidate this run
-      // without consulting a mutable ref value from the cleanup closure.
-      playbackRunRef.current = playbackRun + 1
+      // The URL-scoped layout effect invalidates this generation before the
+      // next passive source effect starts.
       clearTimeout(playTimer)
       clearTimeout(startupTimer)
       conversionControllerRef.current?.abort()

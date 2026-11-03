@@ -228,6 +228,48 @@ test('mobile decoder failures escalate through lower H.264 profiles', async ({ p
   expect(modes).toEqual(['auto', 'h264AacLow', 'h264AacCompat'])
 })
 
+test('mobile DASH sources go straight to a worker MP4 and play', async ({ page }, testInfo) => {
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'DASH-to-MP4 handoff is checked in mobile browser projects.')
+  const sourceUrl = new URL('/mobile-dash-source.mpd', String(testInfo.project.use.baseURL)).toString()
+  const jobId = '99999999999999999999999999999999'
+  const mediaId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+  })
+  await page.route('**/v1/capabilities', (route) => {
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ streamRanking: true, mediaDirectProxy: true, pmdbProxy: true, mediaRemux: true, mediaMp4: true, mediaHls: false, audioTranscode: true, videoTranscode: true, mobileSafeVideoTranscode: true }),
+    })
+  })
+  let conversionRequest: Record<string, unknown> | null = null
+  await page.route('**/v1/media/conversions', async (route) => {
+    conversionRequest = JSON.parse(route.request().postData() || '{}')
+    await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId, status: 'processing' }) })
+  })
+  await page.route(`**/v1/media/conversions/${jobId}`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ jobId, status: 'ready', mode: 'h264AacCompat', bytes: 1024, url: `/v1/media/${mediaId}?expires=1893456000&signature=mobile-dash` }),
+  }))
+  await page.route(`**/v1/media/${mediaId}?*`, async (route) => {
+    const fixture = await route.fetch({ url: new URL('/tests/browser/fixtures/mobile-h264-compat.mp4', route.request().url()).toString() })
+    await route.fulfill({ response: fixture })
+  })
+
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent(sourceUrl)}`)
+  const video = page.locator('video')
+  await expect.poll(() => conversionRequest).not.toBeNull()
+  expect(conversionRequest).toMatchObject({ url: sourceUrl, mode: 'auto', outputFormat: 'mp4', mobileCompatibility: true })
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${mediaId}?`)
+  await page.getByRole('button', { name: 'Play', exact: true }).click()
+  await expect(page.locator('body')).toHaveAttribute('data-playback-started', 'true', { timeout: 15_000 })
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.duration), { timeout: 15_000 }).toBeGreaterThan(2.9)
+  await video.evaluate((element: HTMLVideoElement) => { element.currentTime = 1.5 })
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime), { timeout: 10_000 }).toBeGreaterThan(1.4)
+})
+
 test('expired media-worker sessions renew while preserving playback position', async ({ page }) => {
   await page.clock.install()
   await page.addInitScript(() => {
