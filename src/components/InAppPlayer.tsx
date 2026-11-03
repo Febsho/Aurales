@@ -262,6 +262,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   const [selectedSubtitle, setSelectedSubtitle] = useState('off')
   const [audioTracks, setAudioTracks] = useState<AudioTrackInfo[]>([])
   const [selectedAudio, setSelectedAudio] = useState('0')
+  const userSelectedAudioRef = useRef(false)
   const [audioMenuOpen, setAudioMenuOpen] = useState(false)
   const [subtitleMenuOpen, setSubtitleMenuOpen] = useState(false)
   const [preparedSubtitles, setPreparedSubtitles] = useState<PreparedSubtitle[]>([])
@@ -383,6 +384,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     conversionOptionsCheckedRef.current = false
     conversionOutputFormatRef.current = null
     workerConversionTimeoutMsRef.current = 2 * 60 * 60 * 1000
+    userSelectedAudioRef.current = false
+    setSelectedAudio('0')
     setPreparedSubtitles((current) => current.filter((track) => !track.id.startsWith('worker:')))
     conversionControllerRef.current?.abort()
     conversionControllerRef.current = null
@@ -472,7 +475,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           languageOrder,
           getLanguageCodeFromTrack,
         )?.index
-        if (preferred != null) instance.audioTrack = preferred
+        if (!userSelectedAudioRef.current && preferred != null) instance.audioTrack = preferred
         const current = instance.audioTrack >= 0 ? instance.audioTrack : 0
         setAudioTracks(tracks.map((track, index) => ({
           id: String(index),
@@ -1231,7 +1234,9 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         return [{ id: String(index), label, language, index, sourceIndex, enabled: Boolean(raw.IsDefault ?? raw.isDefault) }]
       })
       setAudioTracks(serverOptions)
-      const selected = serverOptions.find((track) => track.enabled) || serverOptions[0]
+      const selected = (userSelectedAudioRef.current
+        ? serverOptions.find((track) => String(track.index) === selectedAudio)
+        : undefined) || serverOptions.find((track) => track.enabled) || serverOptions[0]
       if (selected) setSelectedAudio(String(selected.index))
       return
     }
@@ -1248,24 +1253,33 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       next[0].enabled = true
     }
 
-    // Auto-select audio by language priority
-    const { preferredAudio = ['en', 'ja'], animeAudioMode } = useAppStore.getState()
-    const audioPreferences = audioLanguageOrder(preferredAudio, Boolean(playbackItem?.isAnime), animeAudioMode)
-    const bestIdx = selectPreferredLanguageTrack(
-      Array.from(tracks).map((track, index) => ({ lang: track.language, index })),
-      audioPreferences,
-      getLanguageCodeFromTrack,
-    )?.index ?? -1
-    if (bestIdx !== -1) {
-      Array.from(tracks).forEach((t, idx) => { t.enabled = idx === bestIdx })
-      next.forEach((t, idx) => { t.enabled = idx === bestIdx })
+    if (userSelectedAudioRef.current) {
+      const selectedIndex = Number(selectedAudio)
+      if (Number.isInteger(selectedIndex) && selectedIndex >= 0 && selectedIndex < tracks.length) {
+        Array.from(tracks).forEach((track, index) => { track.enabled = index === selectedIndex })
+        next.forEach((track, index) => { track.enabled = index === selectedIndex })
+      }
+    } else {
+      // Apply language preferences on initial load, but never override a
+      // track the user has selected during this playback session.
+      const { preferredAudio = ['en', 'ja'], animeAudioMode } = useAppStore.getState()
+      const audioPreferences = audioLanguageOrder(preferredAudio, Boolean(playbackItem?.isAnime), animeAudioMode)
+      const bestIdx = selectPreferredLanguageTrack(
+        Array.from(tracks).map((track, index) => ({ lang: track.language, index })),
+        audioPreferences,
+        getLanguageCodeFromTrack,
+      )?.index ?? -1
+      if (bestIdx !== -1) {
+        Array.from(tracks).forEach((track, index) => { track.enabled = index === bestIdx })
+        next.forEach((track, index) => { track.enabled = index === bestIdx })
+      }
     }
 
     setAudioTracks(next)
     setSelectedAudio(String(next.find((track) => track.enabled)?.index ?? 0))
   }
 
-  const refreshNativeSubtitleTracks = () => {
+  const refreshNativeSubtitleTracks = useCallback(() => {
     const video = videoRef.current
     if (!video || hlsTracksRef.current) {
       setNativeSubtitleTracks([])
@@ -1281,7 +1295,22 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         label: track.label || getLanguageNameFromTrack(track.language) || `Subtitle ${index + 1}`,
       }))
     setNativeSubtitleTracks(tracks)
-  }
+  }, [])
+
+  useEffect(() => {
+    const tracks = videoRef.current?.textTracks
+    if (!tracks) return
+    const refresh = () => refreshNativeSubtitleTracks()
+    tracks.addEventListener('addtrack', refresh)
+    tracks.addEventListener('removetrack', refresh)
+    tracks.addEventListener('change', refresh)
+    refresh()
+    return () => {
+      tracks.removeEventListener('addtrack', refresh)
+      tracks.removeEventListener('removetrack', refresh)
+      tracks.removeEventListener('change', refresh)
+    }
+  }, [url, playbackSourceUrl, workerPlaybackUrl, refreshNativeSubtitleTracks])
 
   const togglePlay = () => {
     const video = videoRef.current
@@ -1505,10 +1534,11 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   }
 
   const changeAudio = (index: string) => {
+    userSelectedAudioRef.current = true
     if (hlsTracksRef.current) {
       hlsTracksRef.current.audioTrack = Number(index)
       setSelectedAudio(index)
-      refreshAudioTracks()
+      setAudioTracks((current) => current.map((track) => ({ ...track, enabled: String(track.index) === index })))
       showControlsTemporarily()
       return
     }
@@ -1548,7 +1578,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       track.enabled = String(trackIndex) === index
     })
     setSelectedAudio(index)
-    refreshAudioTracks()
+    setAudioTracks((current) => current.map((track) => ({ ...track, enabled: String(track.index) === index })))
     showControlsTemporarily()
   }
 
