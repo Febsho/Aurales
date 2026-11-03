@@ -569,13 +569,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.getByRole('heading', { name: 'Top 10 For You', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Drama Picks', exact: true })).toHaveCount(0)
   await expect(page.locator('.discover-shelf--personal-genre')).toHaveCount(0)
-  const topRatedShelf = page.locator('.discover-shelf--top-rated')
-  await expect(topRatedShelf.getByRole('heading', { name: 'Top Rated', exact: true })).toBeVisible()
-  await expect(topRatedShelf.locator('.media-row-card-slot').first()).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Recently Released', exact: true })).toBeVisible()
-  await expect.poll(() => page.locator('.discover-shelf--recent .media-row-card-slot').count()).toBeGreaterThanOrEqual(5)
-  await expect(page.locator('.discover-shelf--recent').getByRole('button', { name: 'Open Recently Released catalog' })).toBeVisible()
-  await expect(page.locator('.discover-shelf--recent').locator('.show-all-card')).toHaveCount(0)
+  await expect(page.locator('.discover-shelf--big-screen, .discover-shelf--gems, .discover-shelf--recent, .discover-shelf--top-rated')).toHaveCount(0)
   await expect.poll(() => tmdbRequestPaths.has('/3/discover/tv')).toBe(true)
   await expect(page.getByRole('heading', { name: 'Your Next Binge', exact: true })).toBeVisible()
   await expect(page.locator('.discover-binge__gallery .discover-binge__main-poster')).toBeVisible()
@@ -584,9 +578,6 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(topTenRow.locator('.show-all-card')).toHaveCount(0)
   await expect(topTenRow.locator('.media-rank__value').first()).toHaveText('1')
   await expect(topTenRow.locator('.media-rank__value').nth(1)).toHaveText('2')
-  const topRatedNames = await topRatedShelf.locator('.media-row-card-slot > button').evaluateAll((buttons) => buttons.map((button) => button.getAttribute('aria-label') || button.textContent?.trim() || ''))
-  const topTenNames = await topTenRow.locator('.media-row-card-slot > button').evaluateAll((buttons) => buttons.map((button) => button.getAttribute('aria-label') || button.textContent?.trim() || ''))
-  expect(topRatedNames.some((name) => topTenNames.includes(name)), 'Top Rated should expand discovery with different titles').toBe(false)
   await expect(page.getByRole('heading', { name: 'OR TRY', exact: true })).toBeVisible()
   const trendingShelf = page.locator('.discover-shelf--trending')
   await trendingShelf.scrollIntoViewIfNeeded()
@@ -660,7 +651,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(monoPosters).toHaveAttribute('aria-pressed', 'true')
   const discoveryFlow = await page.locator('.discover-page').evaluate((root) => {
     const headings = Array.from(root.querySelectorAll<HTMLElement>('h2, h3')).map((heading) => heading.textContent?.trim() || '')
-    const referenceOrder = ['Your Genres', 'Made for the Big Screen', 'Hidden Gems', 'Recently Released', 'Your Next Binge', 'Sunday Night Moods', 'Pick by Colour']
+    const referenceOrder = ['Your Genres', 'Your Next Binge', 'Sunday Night Moods', 'Pick by Colour']
     return referenceOrder.filter((title) => headings.includes(title)).map((title) => headings.indexOf(title))
   })
   expect(discoveryFlow.every((position, index) => index === 0 || position > discoveryFlow[index - 1]!), 'Discovery sections should follow the reference flow from genres through mood and colour picks').toBe(true)
@@ -831,14 +822,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(bingeFeature.locator('.discover-binge__copy')).toHaveCSS('animation-name', 'discover-binge-content-enter')
   await expect(bingeFeature.locator('.discover-binge__art img')).toHaveCSS('animation-name', 'discover-binge-art-enter')
   await page.getByRole('button', { name: 'Movies', exact: true }).click()
-  const bigScreenShelf = page.locator('.discover-shelf--big-screen')
-  await expect(bigScreenShelf.getByRole('heading', { name: 'Made for the Big Screen', exact: true })).toBeVisible()
-  const wideCard = bigScreenShelf.locator('.media-row-card-slot').first()
-  await expect(wideCard).toBeVisible()
-  const wideCardRatio = await wideCard.evaluate((card) => card.getBoundingClientRect().width / card.getBoundingClientRect().height)
-  expect(wideCardRatio, 'the Big Screen shelf should use landscape cards').toBeGreaterThan(1.35)
+  await expect(page.locator('.discover-shelf--big-screen')).toHaveCount(0)
   await expect(page.locator('.discover-page .show-all-card')).toHaveCount(0)
-  await expect(page.locator('.discover-page').getByRole('button', { name: 'Made for the Big Screen' })).toBeVisible()
   await page.locator('.discover-spotlight').first().scrollIntoViewIfNeeded()
   const discoveryLayout = await page.evaluate(() => {
     const viewport = document.documentElement.clientWidth
@@ -1090,14 +1075,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(catalogGridColumns).toBe(3)
   await page.goBack()
   await expect(page.locator('.discover-page')).toBeVisible()
-  const recentShelf = page.locator('.discover-shelf--recent')
-  await recentShelf.getByRole('button', { name: 'Open Recently Released catalog' }).click()
-  await expect(page.locator('.catalog-page h1')).toHaveText('Recently Released')
-  await expect.poll(() => page.locator('.catalog-page__items > button').count()).toBeGreaterThanOrEqual(5)
-  const recentCatalogColumns = await page.locator('.catalog-page__items').evaluate((grid) => new Set(Array.from(grid.children).map((card) => Math.round(card.getBoundingClientRect().left))).size)
-  expect(recentCatalogColumns).toBe(3)
-  await page.goBack()
-  await expect(page.locator('.discover-page')).toBeVisible()
+  await expect(page.locator('.discover-shelf--recent')).toHaveCount(0)
   // TMDB interactive requests retry once; fail both attempts to exercise a
   // true partial response, then let the user's explicit retry succeed.
   animeMovieContinuationFailuresRemaining = 2
