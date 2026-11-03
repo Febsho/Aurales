@@ -70,6 +70,20 @@ describe('optional Aurales media worker adapter', () => {
     expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({ url: 'https://cdn.example/movie.mkv?sig=private', mode: 'auto', outputFormat: 'mp4', headers: {} })
   })
 
+  it('sends ordered audio language preferences only for mobile-compatible conversion', async () => {
+    saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'x'.repeat(32) })
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ jobId: '0123456789abcdef0123456789abcdef', status: 'processing' }), { status: 202 }))
+    await startMediaConversion('https://cdn.example/movie.mkv', 'auto', undefined, {}, 'mp4', true, ['ja', 'en', 'ja', 'de!', 'fr-CA'])
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toMatchObject({
+      mobileCompatibility: true,
+      preferredAudioLanguages: ['ja', 'en', 'fr-ca'],
+    })
+
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ jobId: '1123456789abcdef0123456789abcdef', status: 'processing' }), { status: 202 }))
+    await startMediaConversion('https://cdn.example/movie.mkv', 'auto', undefined, {}, 'hls', false, ['ja'])
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[1][1]?.body))).not.toHaveProperty('preferredAudioLanguages')
+  })
+
   it('sends Stremio request headers only inside an authenticated worker request', async () => {
     saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'x'.repeat(32) })
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ url: '/v1/media/0123456789abcdef0123456789abcdef?expires=123&signature=opaque', expiresAt: 123 }), { status: 200 }))

@@ -1594,11 +1594,15 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     try {
       const outputFormat = conversionOutputFormatRef.current || getMediaConversionOutputFormat()
       const mobileCompatibility = getMediaConversionOutputFormat() === 'mp4'
+      const { preferredAudio = ['en', 'ja'], animeAudioMode } = useAppStore.getState()
+      const preferredAudioLanguages = mobileCompatibility
+        ? audioLanguageOrder(preferredAudio, Boolean(playbackItem?.isAnime), animeAudioMode)
+        : []
       let jobId: string
       let startRetries = 0
       while (true) {
         try {
-          jobId = await startMediaConversion(url, mode, controller.signal, playbackRequestHeaders, outputFormat, mobileCompatibility)
+          jobId = await startMediaConversion(url, mode, controller.signal, playbackRequestHeaders, outputFormat, mobileCompatibility, preferredAudioLanguages)
           break
         } catch (error) {
           if (!(error instanceof MediaWorkerHttpError && error.status === 429 && error.errorCode === 'conversion_worker_busy') || startRetries >= 2) {

@@ -144,13 +144,16 @@ export async function createMediaSession(url: string, signal?: AbortSignal, requ
   return { url: validateMediaSessionUrl(data.url, config.baseUrl), expiresAt: data.expiresAt }
 }
 
-export async function startMediaConversion(url: string, mode: MediaConversionMode, signal?: AbortSignal, requestHeaders: PlaybackRequestHeaders = {}, outputFormat: MediaConversionOutputFormat = 'mp4', mobileCompatibility = false): Promise<string> {
+export async function startMediaConversion(url: string, mode: MediaConversionMode, signal?: AbortSignal, requestHeaders: PlaybackRequestHeaders = {}, outputFormat: MediaConversionOutputFormat = 'mp4', mobileCompatibility = false, preferredAudioLanguages: string[] = []): Promise<string> {
   const config = requireConfig()
+  const audioPreferences = mobileCompatibility
+    ? [...new Set(preferredAudioLanguages.map((language) => language.trim().toLowerCase()).filter((language) => /^[a-z0-9-]{1,16}$/.test(language)))].slice(0, 16)
+    : []
   const response = await fetchWithTimeout(`${config.baseUrl}/v1/media/conversions`, {
     method: 'POST',
     headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
     credentials: workerCredentials(config),
-    body: JSON.stringify({ url, mode, outputFormat, ...(mobileCompatibility ? { mobileCompatibility: true } : {}), headers: validatePlaybackRequestHeaders(requestHeaders) }),
+    body: JSON.stringify({ url, mode, outputFormat, ...(mobileCompatibility ? { mobileCompatibility: true } : {}), ...(audioPreferences.length ? { preferredAudioLanguages: audioPreferences } : {}), headers: validatePlaybackRequestHeaders(requestHeaders) }),
   }, 10_000, signal)
   if (!response.ok) {
     let errorCode: string | undefined

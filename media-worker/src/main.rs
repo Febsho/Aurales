@@ -320,6 +320,8 @@ struct CreateMediaConversionRequest {
     #[serde(default)]
     mobile_compatibility: bool,
     #[serde(default)]
+    preferred_audio_languages: Vec<String>,
+    #[serde(default)]
     headers: HashMap<String, String>,
 }
 
@@ -1104,6 +1106,23 @@ async fn create_media_conversion(
         )
             .into_response();
     };
+    if request.preferred_audio_languages.len() > 16
+        || request.preferred_audio_languages.iter().any(|language| {
+            language.is_empty()
+                || language.len() > 16
+                || !language
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_audio_language_preferences",
+            }),
+        )
+            .into_response();
+    }
     let Ok(permit) = state.conversion_slots.clone().try_acquire_owned() else {
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -1142,6 +1161,7 @@ async fn create_media_conversion(
         request.mode,
         request.output_format,
         request.mobile_compatibility,
+        request.preferred_audio_languages,
         request_headers,
         ffmpeg,
         permit,
@@ -1292,6 +1312,7 @@ async fn run_media_conversion(
     mode: ConversionMode,
     output_format: ConversionOutputFormat,
     mobile_compatibility: bool,
+    preferred_audio_languages: Vec<String>,
     request_headers: HashMap<String, String>,
     ffmpeg: Arc<PathBuf>,
     _permit: tokio::sync::OwnedSemaphorePermit,
@@ -1351,6 +1372,12 @@ async fn run_media_conversion(
                         .count()
                 })
                 .unwrap_or(0);
+            let preferred_audio_track_indices =
+                if mobile_compatibility && output_format == ConversionOutputFormat::Mp4 {
+                    ordered_audio_track_indices(&source_info, &preferred_audio_languages)
+                } else {
+                    Vec::new()
+                };
             // Let FFmpeg inspect the actual container and streams. Each attempt maps
             // the real streams and validates the target container; the mode reported
             // to the client is the first conversion that FFmpeg can produce.
@@ -1385,6 +1412,7 @@ async fn run_media_conversion(
                             output_format,
                             mobile_compatibility,
                             source_audio_track_count,
+                            &preferred_audio_track_indices,
                         )
                         .await
                         {
@@ -1431,6 +1459,7 @@ async fn run_media_conversion(
                         output_format,
                         mobile_compatibility,
                         source_audio_track_count,
+                        &preferred_audio_track_indices,
                     )
                     .await?;
                     Ok((bytes, mode, output_path.clone(), audio_tracks_reduced))
@@ -1671,6 +1700,7 @@ async fn transcode_local_output_using_encoder(
         output_format,
         false,
         None,
+        &[],
     )
     .await
 }
@@ -1684,6 +1714,7 @@ async fn transcode_local_output_using_encoder_with_audio_policy(
     output_format: ConversionOutputFormat,
     mobile_compatibility: bool,
     audio_track_index: Option<usize>,
+    preferred_audio_track_indices: &[usize],
 ) -> Result<u64, ()> {
     let mut command = tokio::process::Command::new(ffmpeg);
     command
@@ -1708,7 +1739,22 @@ async fn transcode_local_output_using_encoder_with_audio_policy(
     if output_format == ConversionOutputFormat::Mp4 && audio_track_index.is_none() {
         // Mobile MP4 can carry alternate language tracks; retain them so the
         // browser or native media controls can expose the source choices.
-        command.args(["-map", "0:a?"]);
+        if preferred_audio_track_indices.is_empty() {
+            command.args(["-map", "0:a?"]);
+        } else {
+            for track_index in preferred_audio_track_indices {
+                command.arg("-map").arg(format!("0:a:{track_index}?"));
+            }
+            for output_track_index in 0..preferred_audio_track_indices.len() {
+                command
+                    .arg(format!("-disposition:a:{output_track_index}"))
+                    .arg(if output_track_index == 0 {
+                        "default"
+                    } else {
+                        "0"
+                    });
+            }
+        }
     } else if output_format == ConversionOutputFormat::Mp4 {
         command
             .arg("-map")
@@ -1844,6 +1890,7 @@ async fn transcode_conversion_candidate(
     output_format: ConversionOutputFormat,
     mobile_compatibility: bool,
     source_audio_track_count: usize,
+    preferred_audio_track_indices: &[usize],
 ) -> Result<(u64, bool), ()> {
     if let Ok(bytes) = transcode_conversion_with_encoder_fallback(
         ffmpeg,
@@ -1854,6 +1901,7 @@ async fn transcode_conversion_candidate(
         output_format,
         mobile_compatibility,
         None,
+        preferred_audio_track_indices,
     )
     .await
     {
@@ -1864,7 +1912,15 @@ async fn transcode_conversion_candidate(
         return Err(());
     }
 
-    for audio_track_index in 0..source_audio_track_count.min(MAX_CONVERTED_AUDIO_TRACKS) {
+    let fallback_track_order: Vec<usize> = if preferred_audio_track_indices.is_empty() {
+        (0..source_audio_track_count).collect()
+    } else {
+        preferred_audio_track_indices.to_vec()
+    };
+    for audio_track_index in fallback_track_order
+        .into_iter()
+        .take(MAX_CONVERTED_AUDIO_TRACKS)
+    {
         remove_conversion_output(output_path).await;
         if let Ok(bytes) = transcode_conversion_with_encoder_fallback(
             ffmpeg,
@@ -1875,6 +1931,7 @@ async fn transcode_conversion_candidate(
             output_format,
             mobile_compatibility,
             Some(audio_track_index),
+            preferred_audio_track_indices,
         )
         .await
         {
@@ -1883,6 +1940,75 @@ async fn transcode_conversion_candidate(
     }
     remove_conversion_output(output_path).await;
     Err(())
+}
+
+fn audio_language_preference_rank(language: &str, preferences: &[String]) -> Option<usize> {
+    fn canonical(language: &str) -> String {
+        let primary = language
+            .split(['-', '_'])
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        match primary.as_str() {
+            "en" | "eng" => "en".to_owned(),
+            "ja" | "jpn" => "ja".to_owned(),
+            "de" | "deu" | "ger" => "de".to_owned(),
+            "fr" | "fra" | "fre" => "fr".to_owned(),
+            "es" | "spa" => "es".to_owned(),
+            "it" | "ita" => "it".to_owned(),
+            "pt" | "por" => "pt".to_owned(),
+            "ko" | "kor" => "ko".to_owned(),
+            "zh" | "zho" | "chi" => "zh".to_owned(),
+            "ru" | "rus" => "ru".to_owned(),
+            "ar" | "ara" => "ar".to_owned(),
+            "nl" | "nld" | "dut" => "nl".to_owned(),
+            "sv" | "swe" => "sv".to_owned(),
+            "no" | "nor" => "no".to_owned(),
+            "da" | "dan" => "da".to_owned(),
+            "fi" | "fin" => "fi".to_owned(),
+            "pl" | "pol" => "pl".to_owned(),
+            "tr" | "tur" => "tr".to_owned(),
+            "uk" | "ukr" => "uk".to_owned(),
+            "cs" | "ces" | "cze" => "cs".to_owned(),
+            "el" | "ell" | "gre" => "el".to_owned(),
+            "he" | "heb" => "he".to_owned(),
+            "hi" | "hin" => "hi".to_owned(),
+            "th" | "tha" => "th".to_owned(),
+            "vi" | "vie" => "vi".to_owned(),
+            _ => primary,
+        }
+    }
+    let language = canonical(language);
+    preferences
+        .iter()
+        .position(|preference| canonical(preference) == language)
+}
+
+fn ordered_audio_track_indices(source_info: &Value, preferences: &[String]) -> Vec<usize> {
+    if preferences.is_empty() {
+        return Vec::new();
+    }
+    let Some(streams) = source_info.get("streams").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut tracks: Vec<(usize, Option<usize>)> = streams
+        .iter()
+        .filter(|stream| stream.get("codec_type").and_then(Value::as_str) == Some("audio"))
+        .enumerate()
+        .map(|(index, stream)| {
+            let language = stream
+                .get("tags")
+                .and_then(|tags| tags.get("language"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            (index, audio_language_preference_rank(language, preferences))
+        })
+        .collect();
+    if !tracks.iter().any(|(_, rank)| rank.is_some()) {
+        return Vec::new();
+    }
+    tracks.sort_by_key(|(index, rank)| (rank.unwrap_or(usize::MAX), *index));
+    tracks.into_iter().map(|(index, _)| index).collect()
 }
 
 async fn transcode_conversion_with_encoder_fallback(
@@ -1894,6 +2020,7 @@ async fn transcode_conversion_with_encoder_fallback(
     output_format: ConversionOutputFormat,
     mobile_compatibility: bool,
     audio_track_index: Option<usize>,
+    preferred_audio_track_indices: &[usize],
 ) -> Result<u64, ()> {
     if let Some(encoder) = hardware_encoder {
         match transcode_local_output_using_encoder_with_audio_policy(
@@ -1905,6 +2032,7 @@ async fn transcode_conversion_with_encoder_fallback(
             output_format,
             mobile_compatibility,
             audio_track_index,
+            preferred_audio_track_indices,
         )
         .await
         {
@@ -1921,6 +2049,7 @@ async fn transcode_conversion_with_encoder_fallback(
         output_format,
         mobile_compatibility,
         audio_track_index,
+        preferred_audio_track_indices,
     )
     .await;
     if result.is_err() {
@@ -8093,6 +8222,153 @@ mod tests {
             ]
         );
         assert_eq!(conversion_candidates(None), vec![ConversionMode::Remux]);
+    }
+
+    #[test]
+    fn mobile_audio_order_puts_preferred_language_first_and_keeps_other_tracks() {
+        let source = serde_json::json!({
+            "streams": [
+                {"codec_type": "video"},
+                {"codec_type": "audio", "tags": {"language": "jpn"}},
+                {"codec_type": "audio", "tags": {"language": "eng"}},
+                {"codec_type": "audio", "tags": {"language": "deu"}},
+            ]
+        });
+        let preferences = vec!["en-US".to_owned(), "ja".to_owned()];
+        assert_eq!(
+            ordered_audio_track_indices(&source, &preferences),
+            vec![1, 0, 2]
+        );
+        assert_eq!(
+            ordered_audio_track_indices(&source, &[]),
+            Vec::<usize>::new()
+        );
+    }
+
+    #[tokio::test]
+    async fn mobile_mp4_places_the_preferred_audio_track_first() {
+        let ffmpeg = PathBuf::from("ffmpeg");
+        let ffmpeg_ready = tokio::process::Command::new(&ffmpeg)
+            .arg("-version")
+            .output()
+            .await;
+        if !ffmpeg_ready.is_ok_and(|result| result.status.success()) {
+            eprintln!("Skipping FFmpeg audio-order integration: ffmpeg is not installed");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "aurales-audio-order-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let input = dir.join("multiple-languages.mkv");
+        let output = dir.join("mobile-output.mp4");
+        let generated = tokio::process::Command::new(&ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x180:rate=24:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=400:sample_rate=48000:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=700:sample_rate=48000:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=900:sample_rate=48000:duration=1",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-map",
+                "2:a:0",
+                "-map",
+                "3:a:0",
+                "-c:v",
+                "mpeg4",
+                "-c:a",
+                "aac",
+                "-shortest",
+                "-metadata:s:a:0",
+                "language=jpn",
+                "-metadata:s:a:1",
+                "language=eng",
+                "-metadata:s:a:2",
+                "language=deu",
+            ])
+            .arg(&input)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            generated.status.success(),
+            "failed to prepare multi-language fixture"
+        );
+
+        let source_info = probe_local_media(&ffmpeg, &input).await.unwrap();
+        let audio_count = source_info["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|stream| stream["codec_type"] == "audio")
+            .count();
+        let preferences = vec!["en".to_owned(), "ja".to_owned()];
+        let preferred_order = ordered_audio_track_indices(&source_info, &preferences);
+        assert_eq!(preferred_order, vec![1, 0, 2]);
+        transcode_conversion_candidate(
+            &ffmpeg,
+            &input,
+            &output,
+            ConversionMode::Remux,
+            None,
+            ConversionOutputFormat::Mp4,
+            true,
+            audio_count,
+            &preferred_order,
+        )
+        .await
+        .expect("preferred audio order should produce a mobile MP4");
+
+        let output_probe = tokio::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type:stream_tags=language:stream_disposition=default",
+                "-of",
+                "json",
+            ])
+            .arg(&output)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output_probe.status.success(),
+            "ffprobe could not inspect mobile MP4"
+        );
+        let output_info: Value = serde_json::from_slice(&output_probe.stdout).unwrap();
+        let output_audio: Vec<_> = output_info["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|stream| stream["codec_type"] == "audio")
+            .collect();
+        let output_languages: Vec<_> = output_audio
+            .iter()
+            .map(|stream| stream["tags"]["language"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(output_languages, vec!["eng", "jpn", "deu"]);
+        assert_eq!(output_audio[0]["disposition"]["default"], 1);
+        tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 
     #[test]
