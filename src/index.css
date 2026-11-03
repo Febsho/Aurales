@@ -6168,9 +6168,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     width: min(100%, 1840px);
   }
   html[data-runtime-platform="web"] .discover-refine,
-  html[data-runtime-platform="web"] .discover-calendar,
-  html[data-runtime-platform="web"] .discover-color,
-  html[data-runtime-platform="web"] .discover-time,
   html[data-runtime-platform="web"] .discover-more {
     width: calc(100% - 2 * var(--discover-gutter));
     max-width: 112rem;
@@ -6185,10 +6182,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     --discover-gutter: clamp(2rem, 3vw, 3.5rem);
     width: min(100%, 1840px);
   }
-  html[data-runtime-platform="tauri"] .discover-refine,
-  html[data-runtime-platform="tauri"] .discover-calendar,
-  html[data-runtime-platform="tauri"] .discover-color,
-  html[data-runtime-platform="tauri"] .discover-time {
+  html[data-runtime-platform="tauri"] .discover-refine {
     width: calc(100% - 2 * var(--discover-gutter));
     max-width: 112rem;
   }
@@ -6453,26 +6447,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-more__sentinel { display: flex; min-height: 3.5rem; align-items: center; justify-content: center; gap: .55rem; padding: 1rem; color: rgba(255,255,255,.5); font-size: .8rem; text-align: center; }
 .discover-more__sentinel button { min-height: 44px; padding: .55rem 1rem; border: 1px solid rgba(255,255,255,.15); border-radius: 999px; background: rgba(255,255,255,.08); color: #fff; font: inherit; font-weight: 650; cursor: pointer; }
 .discover-more__spinner { width: 1rem; height: 1rem; border: 2px solid rgba(255,255,255,.25); border-top-color: rgba(255,255,255,.9); border-radius: 50%; animation: discover-loading-spin .75s linear infinite; }
-.discover-calendar { width: min(calc(100% - 2 * var(--discover-gutter, 1.5rem)), 74rem); min-width: 0; margin: .6rem auto .9rem; }
-.discover-calendar__heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .55rem; }
-.discover-calendar__heading h2 { margin: 0; color: #fff; font-size: clamp(1rem, 1.8vw, 1.2rem); font-weight: 700; }
-.discover-calendar__heading p { margin: .15rem 0 0; color: rgba(255,255,255,.47); font-size: .7rem; }
-.discover-calendar__actions { display: flex; flex: 0 0 auto; gap: .35rem; }
-.discover-calendar__actions button, .discover-calendar__open { min-height: 44px; padding: .45rem .8rem; border: 1px solid rgba(255,255,255,.1); border-radius: 999px; background: rgba(255,255,255,.045); color: rgba(255,255,255,.7); font: inherit; font-size: .72rem; font-weight: 650; white-space: nowrap; cursor: pointer; transition: background .18s ease, color .18s ease, border-color .18s ease; }
-.discover-calendar__actions button[aria-pressed="true"] { border-color: rgba(255,255,255,.2); background: rgba(255,255,255,.14); color: #fff; }
-.discover-calendar__items { display: flex; gap: .65rem; overflow-x: auto; overscroll-behavior-x: contain; padding: .1rem 0 .35rem; scrollbar-width: none; }
-.discover-calendar__items::-webkit-scrollbar { display: none; }
-.discover-calendar__item { display: flex; width: clamp(6.2rem, 9vw, 7.8rem); min-width: 0; flex: 0 0 auto; flex-direction: column; gap: .18rem; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
-.discover-calendar__poster { position: relative; display: block; width: 100%; aspect-ratio: 16 / 10; overflow: hidden; border: 1px solid rgba(255,255,255,.1); border-radius: .7rem; background: rgba(255,255,255,.06); }
-.discover-calendar__poster img { width: 100%; height: 100%; object-fit: cover; transition: transform .22s ease; }
-.discover-calendar__item:hover .discover-calendar__poster img { transform: scale(1.035); }
-.discover-calendar__poster small { position: absolute; right: .3rem; bottom: .3rem; padding: .18rem .35rem; border-radius: .35rem; background: rgba(0,0,0,.72); color: white; font-size: .58rem; font-weight: 700; }
-.discover-calendar__title, .discover-calendar__subtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.discover-calendar__title { color: rgba(255,255,255,.82); font-size: .7rem; font-weight: 650; }
-.discover-calendar__subtitle { color: rgba(255,255,255,.48); font-size: .64rem; }
-.discover-calendar__empty { margin: .35rem 0; color: rgba(255,255,255,.48); font-size: .72rem; }
-.discover-calendar__open { margin-top: .2rem; }
-.discover-calendar__open span { margin-left: .3rem; font-size: 1.1rem; }
 .discover-binge__feature { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: .7rem; overflow: hidden; padding: 1rem; border: 1px solid rgba(255,255,255,.1); border-radius: 1.2rem; background: linear-gradient(110deg, rgba(28,28,33,.98), rgba(28,28,33,.72)); }
 .discover-binge__art { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
 .discover-binge__art::after { position: absolute; inset: 0; content: ''; background: linear-gradient(180deg, rgba(17,17,20,.76), rgba(17,17,20,.88)); }
@@ -6498,38 +6472,6 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-binge__main-poster span { font-size: .82rem; }
 .discover-binge__main-poster small, .discover-binge__alternatives button small { position: absolute; right: .35rem; bottom: 1.65rem; padding: .1rem .3rem; border-radius: .35rem; background: rgba(0,0,0,.62); font-size: .67rem; font-weight: 700; }
 .discover-binge__main-poster small { bottom: 2rem; }
-.discover-moods { margin: 1rem var(--discover-gutter) 1.6rem; }
-.discover-moods__heading { margin-bottom: .7rem; }
-.discover-moods__heading h2 { margin: 0; color: #fff; font-size: clamp(1.1rem, 2vw, 1.45rem); font-weight: 700; letter-spacing: -.025em; }
-.discover-moods__options { display: flex; width: fit-content; max-width: 100%; gap: .2rem; margin-bottom: .75rem; padding: .25rem; overflow-x: auto; border: 1px solid rgba(255,255,255,.08); border-radius: 999px; background: rgba(255,255,255,.06); scrollbar-width: none; }
-.discover-moods__options::-webkit-scrollbar { display: none; }
-.discover-moods__options button { min-height: 2.65rem; flex: 0 0 auto; padding: .55rem 1rem; border: 0; border-radius: 999px; background: transparent; color: rgba(255,255,255,.72); font: inherit; font-size: .8rem; font-weight: 600; white-space: nowrap; cursor: pointer; transition: background .2s ease, color .2s ease, transform .2s ease; }
-.discover-moods__options button:hover { color: #fff; }
-.discover-moods__options button:active { transform: scale(.98); }
-.discover-moods__options button[aria-pressed="true"] { background: rgba(255,255,255,.17); color: #fff; }
-.discover-moods__status { margin: .35rem 0 .6rem; color: rgba(255,255,255,.58); font-size: .8rem; line-height: 1.35; }
-.discover-color { width: min(calc(100% - 2 * var(--discover-gutter, 1.5rem)), 74rem); margin: 1rem auto 1.35rem; }
-.discover-color__heading h2 { margin: 0; color: #fff; font-size: clamp(1.1rem, 2vw, 1.45rem); font-weight: 700; letter-spacing: -.025em; }
-.discover-color__filters { display: flex; width: fit-content; max-width: 100%; gap: .35rem; margin: .65rem 0 .45rem; padding: .25rem; overflow-x: auto; border: 1px solid rgba(255,255,255,.1); border-radius: 999px; background: rgba(255,255,255,.045); scrollbar-width: none; }
-.discover-color__filters::-webkit-scrollbar { display: none; }
-.discover-color__filters button { display: inline-flex; min-height: 2.55rem; flex: 0 0 auto; align-items: center; justify-content: center; gap: .45rem; padding: .45rem .78rem; border: 0; border-radius: 999px; background: transparent; color: rgba(255,255,255,.7); font-size: .76rem; font-weight: 650; white-space: nowrap; cursor: pointer; transition: background .2s ease, color .2s ease, transform .2s ease; }
-.discover-color__filters button:hover { color: #fff; }
-.discover-color__filters button:active { transform: scale(.97); }
-.discover-color__filters button[aria-pressed="true"] { background: #fff; color: #111; }
-.discover-color__filters button > span { width: .68rem; height: .68rem; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(255,255,255,.22); }
-.discover-color__filters button[aria-pressed="true"] > span { box-shadow: inset 0 0 0 1px rgba(0,0,0,.25); }
-.discover-color__status { margin: .35rem 0 .6rem; color: rgba(255,255,255,.58); font-size: .8rem; line-height: 1.35; }
-.discover-time { width: min(calc(100% - 2 * var(--discover-gutter, 1.5rem)), 74rem); margin: 1rem auto 1.35rem; }
-.discover-time__heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-bottom: .65rem; }
-.discover-time__heading h2 { margin: 0; color: #fff; font-size: clamp(1.1rem, 2vw, 1.45rem); font-weight: 700; letter-spacing: -.025em; }
-.discover-time__heading > p { margin: 0; color: rgba(255,255,255,.48); font-size: .75rem; text-align: right; }
-.discover-time__options { display: flex; width: fit-content; max-width: 100%; gap: .3rem; margin: 0 0 .55rem; padding: .25rem; overflow-x: auto; border: 1px solid rgba(255,255,255,.1); border-radius: 999px; background: rgba(255,255,255,.045); scrollbar-width: none; }
-.discover-time__options::-webkit-scrollbar { display: none; }
-.discover-time__options button { display: inline-flex; min-height: 2.7rem; flex: 0 0 auto; align-items: center; justify-content: center; padding: .45rem 1rem; border: 0; border-radius: 999px; background: transparent; color: rgba(255,255,255,.7); font: inherit; font-size: .78rem; font-weight: 650; white-space: nowrap; cursor: pointer; transition: background .2s ease, color .2s ease, transform .2s ease; }
-.discover-time__options button:hover { color: #fff; }
-.discover-time__options button:active { transform: scale(.98); }
-.discover-time__options button[aria-pressed="true"] { background: #fff; color: #111; }
-.discover-time__status { margin: .35rem 0 .6rem; color: rgba(255,255,255,.58); font-size: .8rem; line-height: 1.35; }
 @media (min-width: 900px) {
   .discover-binge__feature {
     grid-template-columns: minmax(15rem, .8fr) minmax(0, 1.2fr);
@@ -6587,25 +6529,11 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-binge__main-poster span, .discover-binge__alternatives button span { padding: 1rem .3rem .25rem; font-size: .62rem; }
   .discover-binge__main-poster small, .discover-binge__alternatives button small { right: .25rem; bottom: 1.45rem; font-size: .6rem; }
   .discover-binge__main-poster small { bottom: 1.7rem; }
-  .discover-moods { margin-block: .8rem 1.2rem; }
-  .discover-moods__heading h2 { font-size: 1.08rem; }
-  .discover-moods__options { width: 100%; margin-bottom: .55rem; }
-  .discover-moods__options button { min-height: 44px; flex: 1 0 auto; padding-inline: .75rem; font-size: .72rem; }
-  .discover-color { width: calc(100% - 2 * var(--discover-gutter)); margin-block: .8rem 1.1rem; }
-  .discover-color__heading h2 { font-size: 1.08rem; }
-  .discover-time { width: calc(100% - 2 * var(--discover-gutter)); margin-block: .8rem 1.1rem; }
-  .discover-time__heading { align-items: flex-start; flex-direction: column; gap: .2rem; margin-bottom: .5rem; }
-  .discover-time__heading h2 { font-size: 1.08rem; }
-  .discover-time__heading > p { text-align: left; font-size: .68rem; }
-  .discover-time__options { width: 100%; margin-bottom: .4rem; }
-  .discover-time__options button { min-height: 44px; flex: 1 0 auto; padding-inline: .75rem; font-size: .72rem; }
   .discover-more { width: calc(100% - 2 * var(--discover-gutter)); margin-block: 1rem 2rem; }
   .discover-more__heading { align-items: flex-end; }
   .discover-more__heading h2 { font-size: 1.08rem; }
   .discover-more__heading > span { max-width: 8rem; text-align: right; }
   .discover-page .discover-more__grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .65rem .45rem; }
-  .discover-color__filters { width: 100%; margin-block: .55rem .4rem; }
-  .discover-color__filters button { min-height: 44px; padding-inline: .75rem; font-size: .72rem; }
   html[data-runtime-platform="web"] .discover-page .media-row .show-all-card[data-show-all-layout="poster"],
   html[data-runtime-platform="web"] .discover-page .media-row .show-all-card[data-show-all-layout="ranked"] { box-sizing: border-box; width: clamp(6.3rem, 28vw, 7.4rem) !important; height: auto !important; aspect-ratio: 2 / 3; padding: .6rem; border-radius: .75rem; }
   html[data-runtime-platform="web"] .discover-page .media-row .show-all-card[data-show-all-layout="poster"] .show-all-card__icon,
