@@ -10,7 +10,8 @@ describe('MediaRow horizontal scrolling', () => {
     expect(source).toContain('const cardTargets = cards.map((card) => Math.max(0, Math.min(maxScroll,')
     expect(source).toContain('getMediaRowScrollTarget({ cardStarts: cardTargets, current, maxScroll, direction, cardsPerPage })')
     expect(source).toContain('card.getBoundingClientRect().left - trackRect.left - startInset')
-    expect(source).toContain("element.scrollTo({ left: target, behavior: 'smooth' })")
+    expect(source).toContain('preferredScrollBehavior()')
+    expect(source).toContain('element.scrollTo({ left: target, behavior: preferredScrollBehavior() })')
     expect(source).toContain("':scope > .media-row-card-slot > button'")
     expect(source).not.toContain('Math.max(640, Math.floor(scrollRef.current.clientWidth')
   })
@@ -23,10 +24,10 @@ describe('MediaRow horizontal scrolling', () => {
     expect(source).not.toContain('show-all-card')
   })
 
-  it('smoothly maps Shift+wheel input onto the poster rail', () => {
+  it('maps Shift+wheel input onto the poster rail with reduced-motion support', () => {
     expect(source).toContain('const handleRowWheel')
     expect(source).toContain('if (!event.shiftKey) return')
     expect(source).toContain('onWheel={handleRowWheel}')
-    expect(source).toContain("scrollBy({ left: amount, behavior: 'smooth' })")
+    expect(source).toContain('scrollBy({ left: amount, behavior: preferredScrollBehavior() })')
   })
 })

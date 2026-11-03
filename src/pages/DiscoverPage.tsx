@@ -35,6 +35,7 @@ import { classifyPosterColor, POSTER_COLOR_GROUPS, selectPosterColorItems, type 
 import { parseLibraryAddedAt, type DatedLibraryItem } from '../services/discovery/libraryItems'
 import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
 import { MIN_WIDESCREEN_RECOMMENDATIONS, selectWidescreenMovies } from '../services/discovery/widescreen'
+import { preferredScrollBehavior } from '../services/motion'
 
 
 const GENRE_MAP_MOVIE: Record<number, string> = {
@@ -488,7 +489,7 @@ export default function DiscoverPage() {
   useEffect(() => {
     if (selectedGenreId == null) return
     const frame = window.requestAnimationFrame(() => {
-      genrePicksRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      genrePicksRef.current?.scrollIntoView({ behavior: preferredScrollBehavior(), block: 'nearest' })
     })
     return () => window.cancelAnimationFrame(frame)
   }, [selectedGenreId])

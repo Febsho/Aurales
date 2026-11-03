@@ -11,6 +11,7 @@ import { applySearchResultArt, resolveBetterPoster } from '../services/artwork'
 import { getShelfView, rememberShelfView, routeViewKey } from '../services/sessionViewState'
 import { isMobileWebViewport } from '../platform/mobileWeb'
 import { getMediaRowScrollTarget } from './mediaRowScroll'
+import { preferredScrollBehavior } from '../services/motion'
 
 // A Home page can activate several shelves together. Rendering every preview
 // card on each one makes WebKit decode hundreds of full-resolution posters at
@@ -173,7 +174,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
       return
     }
     scrollTargetRef.current = target
-    element.scrollTo({ left: target, behavior: 'smooth' })
+    element.scrollTo({ left: target, behavior: preferredScrollBehavior() })
     updateScrollEdges()
     window.setTimeout(() => {
       if (scrollTargetRef.current === target) scrollTargetRef.current = null
@@ -185,7 +186,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
     const amount = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY
     if (Math.abs(amount) < 1) return
     event.preventDefault()
-    event.currentTarget.scrollBy({ left: amount, behavior: 'smooth' })
+    event.currentTarget.scrollBy({ left: amount, behavior: preferredScrollBehavior() })
   }
 
   const handleRowKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -197,7 +198,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
     if (!next) return
     event.preventDefault()
     next.focus({ preventScroll: true })
-    next.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
+    next.scrollIntoView({ behavior: preferredScrollBehavior(), block: 'nearest', inline: 'center' })
   }
 
   const visibleItems = useMemo(
