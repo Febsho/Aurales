@@ -178,9 +178,7 @@ test('Discovery uses public catalogs when the active profile has no library entr
   await expect(page.locator('.discover-more__sentinel')).toContainText('Keep scrolling for more titles')
   await expect(page.locator('.discover-shelf--new-library')).toHaveCount(0)
 
-  // Calendar cards should enter when their section is reached, not animate
-  // away in the background while the visitor is still at the top of Discovery.
-  await page.setViewportSize({ width: 1280, height: 520 })
+  // Calendar cards should wait for the section's reveal state before animating.
   await page.locator('.app-scroll-root').evaluate((root) => root.scrollTo({ top: 0, behavior: 'instant' }))
   const calendar = page.locator('.discover-calendar')
   await calendar.evaluate((section) => {
