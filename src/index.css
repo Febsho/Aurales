@@ -6540,7 +6540,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-more__heading h2 { margin: 0; color: #fff; font-size: clamp(1.1rem, 2vw, 1.45rem); font-weight: 700; letter-spacing: -.025em; }
 .discover-more__heading > span { color: rgba(255,255,255,.45); font-size: .75rem; }
 .discover-page .discover-more__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(clamp(7rem, 12vw, 10rem), 1fr)); gap: clamp(.75rem, 1.25vw, 1.25rem); padding: 0; }
-.discover-page .discover-more__grid > button { width: 100% !important; max-width: none; }
+.discover-page .discover-more__grid > button { width: 100% !important; height: auto !important; min-height: 0; max-width: none; }
 .discover-more__sentinel { display: flex; min-height: 3.5rem; align-items: center; justify-content: center; gap: .55rem; padding: 1rem; color: rgba(255,255,255,.5); font-size: .8rem; text-align: center; }
 .discover-more__sentinel button { min-height: 44px; padding: .55rem 1rem; border: 1px solid rgba(255,255,255,.15); border-radius: 999px; background: rgba(255,255,255,.08); color: #fff; font: inherit; font-weight: 650; cursor: pointer; }
 .discover-more__spinner { width: 1rem; height: 1rem; border: 2px solid rgba(255,255,255,.25); border-top-color: rgba(255,255,255,.9); border-radius: 50%; animation: discover-loading-spin .75s linear infinite; }

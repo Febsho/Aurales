@@ -1436,9 +1436,10 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
     markTmdbRequestStarted()
     await new Promise((resolve) => setTimeout(resolve, 1000))
     const url = new URL(route.request().url())
+    const requestedPage = Number(url.searchParams.get('page') || 1)
     const type = url.pathname.includes('/tv/') || url.pathname.endsWith('/trending/tv/week') ? 'series' : 'movie'
     const results = Array.from({ length: 24 }, (_, index) => ({
-      id: 93000 + index,
+      id: 93000 + (requestedPage - 1) * 100 + index,
       title: `Layout fixture ${index + 1}`,
       name: `Layout fixture ${index + 1}`,
       poster_path: `/layout-fixture-${index % 8}.jpg`,
@@ -1452,7 +1453,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
       genre_ids: type === 'movie' ? [18, 35, 878, 27, 14] : [18, 10759, 10765],
       original_language: 'en',
     }))
-    await route.fulfill({ json: { page: Number(url.searchParams.get('page') || 1), total_pages: 1, total_results: results.length, results } })
+    await route.fulfill({ json: { page: requestedPage, total_pages: 8, total_results: 24 * 8, results } })
   })
   await page.route('https://image.tmdb.org/**', (route) => {
     const isBackdrop = route.request().url().includes('backdrop')
@@ -1575,6 +1576,27 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
       }
     }
   }
+  await page.evaluate(() => { document.documentElement.dataset.runtimePlatform = 'web' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  const keepExploring = page.locator('.discover-more')
+  await keepExploring.scrollIntoViewIfNeeded()
+  await expect(keepExploring.locator('xpath=..')).toHaveAttribute('data-revealed', 'true')
+  await expect.poll(() => page.locator('.discover-more__grid > *').count(), { timeout: 15_000 }).toBeGreaterThan(0)
+  const explorationRowGaps = await page.locator('.discover-more__grid').evaluate((grid) => {
+    const cards = Array.from(grid.querySelectorAll<HTMLElement>(':scope > button'))
+      .map((card) => card.getBoundingClientRect())
+      .filter((bounds) => bounds.width > 0)
+      .sort((left, right) => left.top - right.top || left.left - right.left)
+    const rows: Array<{ top: number; bottom: number }> = []
+    for (const card of cards) {
+      const row = rows.find((candidate) => Math.abs(candidate.top - card.top) <= 1)
+      if (row) row.bottom = Math.max(row.bottom, card.bottom)
+      else rows.push({ top: card.top, bottom: card.bottom })
+    }
+    const orderedRows = rows.sort((left, right) => left.top - right.top)
+    return orderedRows.slice(1).map((row, index) => row.top - orderedRows[index]!.bottom)
+  })
+  expect(explorationRowGaps.every((gap) => gap <= 18), `Keep Exploring has unnecessary row spacing: ${explorationRowGaps.join(', ')}`).toBe(true)
 })
 
 test('mobile series detail uses compact system typography and contained episode cards', async ({ page }) => {
