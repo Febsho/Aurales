@@ -20,7 +20,7 @@ export default defineConfig({
     { name: 'android-chromium', use: { ...devices['Pixel 7'] } },
   ],
   webServer: {
-    command: 'npm run build:web && npm run preview:web -- --host 127.0.0.1 --port 5175 --strictPort',
+    command: 'npm run dev:web -- --host 127.0.0.1 --port 5175 --strictPort',
     url: 'http://127.0.0.1:5175',
     reuseExistingServer: false,
     timeout: 30_000,

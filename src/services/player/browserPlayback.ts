@@ -21,6 +21,8 @@ export function isMediaSessionExpired(expiresAt: number, nowSeconds = Date.now()
 export function nextPlaybackConversionAfterDecodeFailure(mode: Exclude<MediaConversionMode, 'auto'>): Exclude<MediaConversionMode, 'auto'> | null {
   if (mode === 'remux') return 'audioAac'
   if (mode === 'audioAac') return 'h264Aac'
+  if (mode === 'h264Aac') return 'h264AacLow'
+  if (mode === 'h264AacLow') return 'h264AacCompat'
   return null
 }
 

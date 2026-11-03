@@ -35,10 +35,10 @@ import { recordPlaybackSample } from '../services/viewingActivity'
 import { setRequestPlaybackActive } from '../services/network/requestCoordinator'
 import { audioLanguageOrder, selectPreferredLanguageTrack, selectStartupSubtitle } from '../services/player/languagePreferences'
 import { subtitleToVtt } from '../services/player/subtitleFormats'
-import { getPlatformCapabilities, isHlsUrl, togglePictureInPicture } from '../platform/capabilities'
+import { getPlatformCapabilities, isDashUrl, isHlsUrl, togglePictureInPicture } from '../platform/capabilities'
 import { getHttpText } from '../platform/httpText'
 import { AUTOPLAY_GESTURE_MESSAGE, browserPlaybackFailureMessage, isAutoplayGestureError, isMediaSessionExpired, isPlaybackInterruptedError, nextPlaybackConversionAfterDecodeFailure } from '../services/player/browserPlayback'
-import { cancelMediaConversion, createMediaSession, getMediaConversionOutputFormat, getMediaConversionStatus, getMediaWorkerCapabilities, getMediaWorkerConfig, startMediaConversion, type MediaConversionMode, type PlaybackRequestHeaders } from '../services/mediaWorker'
+import { cancelMediaConversion, createMediaSession, getSupportedMediaConversionOutputFormat, getMediaConversionOutputFormat, getMediaConversionStatus, getMediaWorkerCapabilities, getMediaWorkerConfig, MediaWorkerHttpError, startMediaConversion, type MediaConversionMode, type MediaConversionOutputFormat, type PlaybackRequestHeaders, type MediaConversionStatus } from '../services/mediaWorker'
 import { buildExternalPlayerUrl, getPreferredExternalPlayer, setPreferredExternalPlayer, type ExternalPlayer } from '../services/player/externalPlayers'
 import { createExternalPlaybackReturnUrl } from '../services/player/externalPlaybackReturn'
 
@@ -90,6 +90,7 @@ interface HlsTrackController {
   subtitleTracks: Array<{ name?: string; lang?: string; language?: string; type?: string; default?: boolean; forced?: boolean }>
   subtitleTrack: number
   startLoad?: () => void
+  stopLoad?: () => void
   recoverMediaError?: () => void
 }
 
@@ -226,16 +227,26 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   const mediaProxySessionRef = useRef<{ url: string; expiresAt: number } | null>(null)
   const renewedMediaProxyUrlRef = useRef<string | null>(null)
   const conversionModesTriedRef = useRef<MediaConversionMode[]>([])
+  const conversionSequenceRunRef = useRef<number | null>(null)
   const conversionControllerRef = useRef<AbortController | null>(null)
   const workerConversionActiveRef = useRef(false)
+  const workerNetworkRetryAttemptedRef = useRef(false)
+  const workerPlaybackResumeRef = useRef(false)
+  const workerLiveSnapshotRef = useRef(false)
+  const workerLiveSnapshotActiveRef = useRef(false)
   const lastWorkerConversionModeRef = useRef<Exclude<MediaConversionMode, 'auto'> | null>(null)
   const workerPlaybackDescriptionRef = useRef<string | null>(null)
   const conversionOptionsCheckedRef = useRef(false)
+  const conversionOutputFormatRef = useRef<MediaConversionOutputFormat | null>(null)
+  const workerConversionTimeoutMsRef = useRef(2 * 60 * 60 * 1000)
+  const requestWorkerConversionRef = useRef<((video: HTMLVideoElement, canPlayHls?: boolean) => boolean) | null>(null)
+  const retryWorkerConversionRef = useRef<((video: HTMLVideoElement) => boolean) | null>(null)
   const [paused, setPaused] = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [volume, setVolume] = useState(1)
   const [error, setError] = useState('')
+  const [liveSnapshotEnded, setLiveSnapshotEnded] = useState(false)
   const [loading, setLoading] = useState(true)
   const [controlsVisible, setControlsVisible] = useState(true)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -264,12 +275,18 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   const needsHeaderProxy = Object.keys(playbackRequestHeaders).length > 0
   const playbackSourceUrl = workerPlaybackUrl || (needsHeaderProxy ? headerSessionUrl : url)
   const openExternalPlayer = (player: ExternalPlayer) => {
-    const targetUrl = playbackSourceUrl || url
+    let targetUrl = playbackSourceUrl || url
+    if (targetUrl.startsWith('/')) {
+      const workerConfig = getMediaWorkerConfig()
+      if (workerConfig) {
+        try { targetUrl = new URL(targetUrl, workerConfig.baseUrl).toString() } catch { /* The launcher reports invalid URLs below. */ }
+      }
+    }
     const video = videoRef.current
     const position = video?.currentTime ?? startTime ?? 0
     const actualDuration = video?.duration || duration
     let successUrl: string | undefined
-    if (playbackItem) {
+    if (playbackItem && !workerLiveSnapshotActiveRef.current) {
       const progressId = playbackItem.season != null && playbackItem.episode != null
         ? `${playbackItem.localId}:${playbackItem.season}:${playbackItem.episode}`
         : playbackItem.localId
@@ -343,12 +360,21 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     workerPlaybackDescriptionRef.current = null
     setWorkerPlaybackUrl(null)
     workerConversionActiveRef.current = false
+    workerNetworkRetryAttemptedRef.current = false
+    workerPlaybackResumeRef.current = false
+    workerLiveSnapshotRef.current = false
+    workerLiveSnapshotActiveRef.current = false
+    setLiveSnapshotEnded(false)
     lastWorkerConversionModeRef.current = null
     updateConversionModes([])
     setConversionMessage('')
     setConversionBusy(false)
     conversionModesTriedRef.current = []
+    conversionSequenceRunRef.current = null
     conversionOptionsCheckedRef.current = false
+    conversionOutputFormatRef.current = null
+    workerConversionTimeoutMsRef.current = 2 * 60 * 60 * 1000
+    setPreparedSubtitles((current) => current.filter((track) => !track.id.startsWith('worker:')))
     conversionControllerRef.current?.abort()
     conversionControllerRef.current = null
   }, [updateConversionModes, url])
@@ -372,6 +398,11 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       video.removeAttribute('src')
       video.load()
     }
+    if ((isDashUrl(sourceUrl) || isDashUrl(url)) && video.canPlayType('application/dash+xml') === '') {
+      if (getPlatformCapabilities(video).platform === 'web' && requestWorkerConversionRef.current?.(video)) {
+        return
+      }
+    }
     if (!isHlsUrl(sourceUrl)) {
       video.src = sourceUrl
       video.load()
@@ -391,16 +422,30 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       return () => { video.removeAttribute('src'); video.load() }
     }
     if (!capabilities.mediaSource) {
-      setPlayerNotice('This browser does not support HLS playback. Try a direct MP4/WebM stream or another browser.')
+      if (!requestWorkerConversionRef.current?.(video, capabilities.nativeHls)) {
+        setPlayerNotice('This browser does not support HLS playback. Try a direct MP4/WebM stream or configure the Aurales media worker to prepare an MP4 copy.')
+      }
       return
     }
     void import('hls.js').then(({ default: Hls }) => {
       if (disposed) return
       if (!Hls.isSupported()) {
-        setPlayerNotice('HLS playback is unavailable in this browser.')
+        if (!requestWorkerConversionRef.current?.(video, capabilities.nativeHls)) {
+          setPlayerNotice('HLS playback is unavailable in this browser. Configure the Aurales media worker to prepare an MP4 copy, or try another stream.')
+        }
         return
       }
-      const instance = new Hls({ enableWorker: true, lowLatencyMode: false })
+      const mobileBrowser = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+        || (navigator.maxTouchPoints > 1 && /Macintosh/i.test(navigator.userAgent))
+      const instance = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        ...(mobileBrowser ? {
+          backBufferLength: 30,
+          maxMaxBufferLength: 60,
+          capLevelToPlayerSize: true,
+        } : {}),
+      })
       hls = instance
       hlsTracksRef.current = instance as unknown as HlsTrackController
       instance.loadSource(sourceUrl)
@@ -487,16 +532,30 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
             return
           }
           setError('The HLS stream or its segments could not be loaded. The source may block browser CORS requests or its session may have expired.')
+          if (workerConversionActiveRef.current) {
+            controller.stopLoad?.()
+            if (retryWorkerConversionRef.current?.(video)) return
+            const message = 'The worker-prepared HLS stream could not be reconnected after one rebuild.'
+            setLoading(false)
+            setError(message)
+            if (workerLiveSnapshotActiveRef.current) setLiveSnapshotEnded(true)
+            else playbackStartupRef.current.onPlaybackError?.(message, video.currentTime)
+            return
+          }
         } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-          if (workerConversionActiveRef.current && !isHlsUrl(url)) {
+          if (workerConversionActiveRef.current) {
             const lastMode = lastWorkerConversionModeRef.current
             const nextMode = lastMode ? nextPlaybackConversionAfterDecodeFailure(lastMode) : null
             if (nextMode && conversionModesRef.current.includes(nextMode) && !conversionModesTriedRef.current.includes(nextMode)) {
               setLoading(true)
               setPlayerNotice(nextMode === 'audioAac'
                 ? 'The browser rejected the remuxed HLS stream. Trying AAC audio while keeping the video unchanged…'
-                : 'Audio-only HLS conversion was not enough. Trying H.264/AAC video encoding now…')
-              void convertWithWorkerRef.current(nextMode)
+                : nextMode === 'h264AacLow'
+                  ? 'The browser rejected standard H.264. Trying a smaller 720p/30 H.264 stream…'
+                  : nextMode === 'h264AacCompat'
+                    ? 'The browser rejected 720p H.264. Trying 480p/30 Baseline H.264…'
+                  : 'Audio-only HLS conversion was not enough. Trying H.264/AAC video encoding now…')
+              void convertWithWorkerFallback(nextMode)
               return
             }
             setError('The browser could not decode the converted HLS stream after the available strategies. This codec or profile may not be supported on this browser and device.')
@@ -508,6 +567,10 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
             setLoading(true)
             setPlayerNotice('The browser decoder stalled. Recovering the HLS media pipeline once…')
             controller.recoverMediaError?.()
+            return
+          }
+          if (getMediaWorkerConfig()) {
+            requestWorkerConversionRef.current?.(video)
             return
           }
           setError('The browser could not decode this HLS audio/video format. Try another stream.')
@@ -524,11 +587,19 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
             mediaProxySessionRef.current = session
             instance.loadSource(session.url)
           }).catch(() => {
+            if (getMediaWorkerConfig()) {
+              requestWorkerConversionRef.current?.(video)
+              return
+            }
             const message = 'The HLS playlist or one of its segments could not be loaded directly or through the media worker.'
             setLoading(false)
             setError(message)
             playbackStartupRef.current.onPlaybackError?.(message, video.currentTime)
           })
+          return
+        }
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR && getMediaWorkerConfig()) {
+          requestWorkerConversionRef.current?.(video)
           return
         }
         setLoading(false)
@@ -539,7 +610,12 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
             : 'HLS playback failed. Try another stream.'
         playbackStartupRef.current.onPlaybackError?.(message, video.currentTime)
       })
-    }).catch(() => setPlayerNotice('The HLS playback module could not be loaded.'))
+    }).catch(() => {
+      if (disposed) return
+      if (!requestWorkerConversionRef.current?.(video, capabilities.nativeHls)) {
+        setPlayerNotice('The HLS playback module could not be loaded. Configure the Aurales media worker to prepare an MP4 copy, or try another stream.')
+      }
+    })
     return () => {
       disposed = true
       hls?.destroy()
@@ -706,6 +782,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     setConversionBusy(false)
     conversionModesTriedRef.current = []
     conversionOptionsCheckedRef.current = false
+    conversionOutputFormatRef.current = null
     conversionControllerRef.current?.abort()
     conversionControllerRef.current = null
     try {
@@ -906,6 +983,11 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     }, 50)
     const startupTimer = setTimeout(() => {
       if (!isCurrentRun() || playbackStartedRef.current || autoplayBlockedRef.current) return
+      if (getPlatformCapabilities(video).platform === 'web'
+        && getMediaWorkerConfig()
+        && requestWorkerConversionRef.current?.(video)) {
+        return
+      }
       const message = 'No playable video frame arrived. Aurales is trying another source…'
       setLoading(false)
       setPaused(true)
@@ -1193,7 +1275,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       video.play().then(() => {
         if (playbackRun !== playbackRunRef.current) return
         setPaused(false)
-        if (playbackItem) {
+        if (playbackItem && !workerLiveSnapshotActiveRef.current) {
           const progress = video.duration > 0 ? video.currentTime / video.duration : 0
           saveLocalProgress(video.currentTime, video.duration || 0, false)
           if (scrobbleSimkl) {
@@ -1225,7 +1307,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       video.pause()
       setPaused(true)
       setControlsVisible(true)
-      if (playbackItem) {
+      if (playbackItem && !workerLiveSnapshotActiveRef.current) {
         const progress = video.duration > 0 ? video.currentTime / video.duration : 0
         saveLocalProgress(video.currentTime, video.duration || 0, false)
         if (scrobbleSimkl) {
@@ -1244,7 +1326,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   }
 
   const handleClose = () => {
-    if (playbackItem) {
+    if (playbackItem && !workerLiveSnapshotActiveRef.current) {
       const video = videoRef.current
       const progress = video && video.duration > 0 ? video.currentTime / video.duration : 0
       const cur = video ? video.currentTime : 0
@@ -1272,7 +1354,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   }
 
   const handlePickAnother = () => {
-    if (playbackItem) {
+    if (playbackItem && !workerLiveSnapshotActiveRef.current) {
       const video = videoRef.current
       const progress = video && video.duration > 0 ? video.currentTime / video.duration : 0
       const cur = video ? video.currentTime : 0
@@ -1300,6 +1382,14 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   }
 
   const handleEnded = () => {
+    if (workerLiveSnapshotActiveRef.current) {
+      const message = 'The media worker reached the end of a finite live snapshot. Refresh the snapshot to load the latest live segments.'
+      setLiveSnapshotEnded(true)
+      setLoading(false)
+      setPaused(true)
+      setError(message)
+      return
+    }
     if (playbackItem) {
       const dur = videoRef.current ? videoRef.current.duration || 0 : 0
       recordPlaybackSample({ mediaKey: playbackItem.localId, title: playbackItem.title, mediaType: playbackItem.mediaType === 'anime' ? 'anime' : playbackItem.contentType === 'movie' ? 'movie' : 'series', poster, tmdbId: playbackItem.tmdbId, season: playbackItem.season, episode: playbackItem.episode, positionSeconds: dur, durationSeconds: dur, playing: false, completed: true })
@@ -1318,6 +1408,21 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       syncPmdbPlayback(dur, dur, true)
       sendMdblistScrobble('stop', 1)
       import('../services/watchedCacheSync').then((m) => m.invalidateWatchedStatusCache()).catch(() => {})
+    }
+  }
+
+  const refreshLiveSnapshot = () => {
+    const video = videoRef.current
+    if (!video || conversionBusy || !getMediaWorkerConfig()) return
+    conversionModesTriedRef.current = []
+    conversionSequenceRunRef.current = null
+    setError('')
+    setLoading(true)
+    setPlayerNotice('Loading the latest live segments through the media worker…')
+    if (!requestWorkerConversionRef.current?.(video)) {
+      setLoading(false)
+      setError('The live snapshot could not be refreshed. Check the media worker connection and try again.')
+      setLiveSnapshotEnded(true)
     }
   }
 
@@ -1460,13 +1565,45 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       ? 'Preparing a seekable MP4 copy on your media worker…'
       : mode === 'audioAac'
         ? 'Converting audio to AAC while copying the video unchanged…'
+        : mode === 'h264AacLow'
+          ? 'Preparing a smaller 720p/30 H.264 copy for older mobile decoders…'
+        : mode === 'h264AacCompat'
+          ? 'Preparing a 480p/30 Baseline H.264 copy for maximum mobile compatibility…'
         : 'Encoding video to H.264 and audio to AAC. This can take several minutes…')
     try {
-      const outputFormat = getMediaConversionOutputFormat()
-      const jobId = await startMediaConversion(url, mode, controller.signal, playbackRequestHeaders, outputFormat)
+      const outputFormat = conversionOutputFormatRef.current || getMediaConversionOutputFormat()
+      const mobileCompatibility = getMediaConversionOutputFormat() === 'mp4'
+      let jobId: string
+      let startRetries = 0
+      while (true) {
+        try {
+          jobId = await startMediaConversion(url, mode, controller.signal, playbackRequestHeaders, outputFormat, mobileCompatibility)
+          break
+        } catch (error) {
+          if (!(error instanceof MediaWorkerHttpError && error.status === 429 && error.errorCode === 'conversion_worker_busy') || startRetries >= 2) {
+            throw error
+          }
+          startRetries += 1
+          setConversionMessage('The media worker is busy. Waiting for a conversion slot…')
+          await new Promise<void>((resolve, reject) => {
+            const onAbort = () => {
+              window.clearTimeout(timer)
+              controller.signal.removeEventListener('abort', onAbort)
+              reject(controller.signal.reason || new DOMException('Conversion start cancelled', 'AbortError'))
+            }
+            const timer = window.setTimeout(() => {
+              controller.signal.removeEventListener('abort', onAbort)
+              resolve()
+            }, startRetries * 1_500)
+            controller.signal.addEventListener('abort', onAbort, { once: true })
+          })
+        }
+      }
       conversionJobId = jobId
       const startedAt = Date.now()
-      while (Date.now() - startedAt < 2 * 60 * 60 * 1000) {
+      const maxConversionWaitMs = workerConversionTimeoutMsRef.current + 10 * 60 * 1000
+      let consecutiveStatusFailures = 0
+      while (true) {
         await new Promise<void>((resolve, reject) => {
           const onAbort = () => {
             window.clearTimeout(timer)
@@ -1478,16 +1615,63 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           }, 1000)
           controller.signal.addEventListener('abort', onAbort, { once: true })
         })
-        const status = await getMediaConversionStatus(jobId, controller.signal)
+        let status: MediaConversionStatus
+        try {
+          status = await withRequestTimeout(
+            10_000,
+            (signal) => getMediaConversionStatus(jobId, signal),
+            'Media worker status request timed out',
+            controller.signal,
+          )
+          consecutiveStatusFailures = 0
+        } catch (error) {
+          if (controller.signal.aborted) throw error
+          const retryable = error instanceof MediaWorkerHttpError
+            ? error.status === 429 || error.status >= 500
+            : error instanceof TypeError
+              || error instanceof SyntaxError
+              || (error instanceof DOMException && error.name === 'TimeoutError')
+          if (!retryable) throw error
+          if (Date.now() - startedAt >= maxConversionWaitMs) {
+            throw new Error('The media worker conversion exceeded its configured time limit.')
+          }
+          consecutiveStatusFailures += 1
+          setConversionMessage('The connection to the media worker was interrupted. Reconnecting while conversion continues…')
+          const retryDelay = Math.min(1_000 * 2 ** Math.min(consecutiveStatusFailures - 1, 4), 15_000)
+          await new Promise<void>((resolve, reject) => {
+            const onAbort = () => {
+              window.clearTimeout(timer)
+              controller.signal.removeEventListener('abort', onAbort)
+              reject(controller.signal.reason || new DOMException('Conversion polling cancelled', 'AbortError'))
+            }
+            const timer = window.setTimeout(() => {
+              controller.signal.removeEventListener('abort', onAbort)
+              resolve()
+            }, retryDelay)
+            controller.signal.addEventListener('abort', onAbort, { once: true })
+          })
+          continue
+        }
         if (status.status === 'cancelled') return false
         if (status.status === 'failed') throw new Error('The media worker could not convert this stream.')
-        if (status.status !== 'ready') continue
+        if (status.status !== 'ready') {
+          if (Date.now() - startedAt >= maxConversionWaitMs) {
+            throw new Error('The media worker conversion exceeded its configured time limit.')
+          }
+          continue
+        }
         const video = videoRef.current
         if (!video || controller.signal.aborted) return false
-        const position = Number.isFinite(video.currentTime) ? video.currentTime : 0
+        // A live playlist converted by the worker is a finite snapshot, so its
+        // original live timeline position cannot be applied to the new VOD file.
+        const position = status.liveSnapshot ? 0 : Number.isFinite(video.currentTime) ? video.currentTime : 0
+        workerLiveSnapshotRef.current = Boolean(status.liveSnapshot)
+        workerLiveSnapshotActiveRef.current = Boolean(status.liveSnapshot)
+        setLiveSnapshotEnded(false)
         mediaProxyResumeRef.current = position
         mediaProxySessionRef.current = null
         workerConversionActiveRef.current = true
+        workerPlaybackResumeRef.current = true
         lastWorkerConversionModeRef.current = status.mode
         setLoading(true)
         setPaused(true)
@@ -1496,14 +1680,39 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         .map((stream) => stream.codec_name && `${stream.codec_type || 'stream'}: ${stream.codec_name}${stream.profile ? ` (${stream.profile})` : ''}`)
         .filter((value): value is string => Boolean(value))
         .join(', ')
-      const description = `Playing worker-prepared ${outputFormat.toUpperCase()} stream (${status.mode === 'remux' ? 'stream copy' : status.mode === 'audioAac' ? 'AAC audio with copied video' : 'H.264/AAC'}).${inputCodecs ? ` Source detected as ${status.sourceInfo?.container}: ${inputCodecs}.` : ''}`
+      const audioTrackNotice = status.audioTracksReduced
+        ? ' Some source audio tracks could not be converted together, so this copy keeps one working audio track.'
+        : ''
+      const conversionProfile = status.mode === 'remux'
+        ? 'stream copy'
+        : status.mode === 'audioAac'
+          ? outputFormat === 'mp4' ? 'AAC-LC stereo audio with copied video' : 'AAC audio with copied video'
+          : status.mode === 'h264AacLow'
+            ? '720p/30 H.264 Baseline Level 3.1/AAC-LC stereo'
+          : status.mode === 'h264AacCompat'
+            ? '480p/30 H.264 Baseline Level 3.0/AAC-LC stereo'
+            : outputFormat === 'mp4' ? 'H.264/AAC-LC stereo' : 'H.264/AAC'
+      const description = status.liveSnapshot
+        ? `Playing a finite snapshot of the current live stream as ${outputFormat.toUpperCase()}; playback will not continue updating.${audioTrackNotice}${inputCodecs ? ` Source detected as ${status.sourceInfo?.container}: ${inputCodecs}.` : ''}`
+        : `Playing worker-prepared ${outputFormat.toUpperCase()} stream (${conversionProfile}).${audioTrackNotice}${inputCodecs ? ` Source detected as ${status.sourceInfo?.container}: ${inputCodecs}.` : ''}`
       workerPlaybackDescriptionRef.current = description
       setPlayerNotice(description)
+      if (status.subtitles.length > 0) {
+        setPreparedSubtitles((current) => [
+          ...current.filter((track) => !track.id.startsWith('worker:')),
+          ...status.subtitles.map((track, index) => ({
+            id: `worker:${index}:${track.url}`,
+            url: track.url,
+            lang: track.lang,
+            label: track.label,
+            forced: track.forced,
+          })),
+        ])
+      }
       setWorkerPlaybackUrl(status.url)
         setConversionMessage('Conversion is ready. Resuming from the previous position when the browser loads the new stream.')
         return true
       }
-      throw new Error('The media worker conversion took too long. Try another source.')
     } catch (error) {
       if (controller.signal.aborted) return false
       setConversionMessage(error instanceof Error ? error.message : 'The media worker conversion failed.')
@@ -1518,8 +1727,159 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   }
   convertWithWorkerRef.current = convertWithWorker
 
+  const convertWithWorkerFallback = async (mode: Exclude<MediaConversionMode, 'auto'>): Promise<boolean> => {
+    const playbackRun = playbackRunRef.current
+    const hasMode = (candidate: Exclude<MediaConversionMode, 'auto'>) =>
+      conversionModesRef.current.includes(candidate) && !conversionModesTriedRef.current.includes(candidate)
+    let candidate: Exclude<MediaConversionMode, 'auto'> | null = mode
+    while (candidate) {
+      if (await convertWithWorkerRef.current(candidate)) return true
+      if (playbackRun !== playbackRunRef.current) return false
+      candidate = nextPlaybackConversionAfterDecodeFailure(candidate)
+      if (candidate && !hasMode(candidate)) candidate = null
+      if (candidate) {
+        setLoading(true)
+        setPlayerNotice(candidate === 'audioAac'
+          ? 'Trying AAC audio while keeping the video unchanged…'
+          : candidate === 'h264AacLow'
+            ? 'Trying a smaller 720p/30 H.264 copy for this decoder…'
+          : candidate === 'h264AacCompat'
+            ? 'Trying a 480p/30 Baseline H.264 copy for this decoder…'
+            : 'Trying H.264/AAC video encoding…')
+      }
+    }
+    if (playbackRun === playbackRunRef.current) {
+      setLoading(false)
+      setError('The media worker could not produce a browser-compatible copy with the remaining conversion strategies.')
+    }
+    return false
+  }
+
+  const requestWorkerConversion = (video: HTMLVideoElement, canPlayHls?: boolean) => {
+    if (!getMediaWorkerConfig()) return false
+    const playbackRun = playbackRunRef.current
+    const isCurrentRun = () => playbackRun === playbackRunRef.current
+    if (conversionSequenceRunRef.current === playbackRun) return true
+    conversionSequenceRunRef.current = playbackRun
+    const browserCapabilities = getPlatformCapabilities(video)
+    const supportsHlsOutput = canPlayHls ?? (browserCapabilities.nativeHls || browserCapabilities.mediaSource)
+    const message = browserPlaybackFailureMessage(url, video)
+    const refreshingLiveSnapshot = liveSnapshotEnded
+    autoplayBlockedRef.current = true
+    setLoading(false)
+    setPaused(true)
+    setError(refreshingLiveSnapshot
+      ? 'The media worker is loading the latest live segments…'
+      : 'The browser could not decode this stream. Aurales is checking whether the media worker can prepare a compatible copy…')
+    const begin = (modes: MediaConversionMode[]) => {
+      if (!isCurrentRun()) return
+      updateConversionModes(modes)
+      if (modes.length === 0) {
+        const unavailable = `${message} The configured media worker does not offer a compatible output format or encoder.`
+        setError(unavailable)
+        if (!refreshingLiveSnapshot) playbackStartupRef.current.onPlaybackError?.(unavailable, video.currentTime)
+        if (conversionSequenceRunRef.current === playbackRun) conversionSequenceRunRef.current = null
+        return
+      }
+      setError(refreshingLiveSnapshot
+        ? 'The media worker is preparing a fresh live snapshot…'
+        : 'The stream is not browser-compatible. Aurales is preparing a browser-friendly copy; the source is not modified.')
+      void (async () => {
+        for (const mode of modes) {
+          if (!isCurrentRun()) return
+          if (conversionModesTriedRef.current.includes(mode)) continue
+          if (await convertWithWorker(mode)) {
+            if (conversionSequenceRunRef.current === playbackRun) conversionSequenceRunRef.current = null
+            return
+          }
+          // The worker's automatic ladder already tried remux, AAC-only, and
+          // standard H.264. One lower mobile profile remains useful if the
+          // standard encode itself could not be produced.
+          if (mode === 'auto') {
+            if (modes.includes('h264AacLow') && !conversionModesTriedRef.current.includes('h264AacLow')) {
+              if (await convertWithWorkerFallback('h264AacLow')) {
+                if (conversionSequenceRunRef.current === playbackRun) conversionSequenceRunRef.current = null
+                return
+              }
+            }
+            break
+          }
+        }
+        if (!isCurrentRun()) return
+        const failed = `${message} Automatic conversion attempts failed. Pick another source or check the media worker logs.`
+        setError(failed)
+        if (!refreshingLiveSnapshot) playbackStartupRef.current.onPlaybackError?.(failed, video.currentTime)
+        if (conversionSequenceRunRef.current === playbackRun) conversionSequenceRunRef.current = null
+      })()
+    }
+    if (conversionOptionsCheckedRef.current) {
+      begin(conversionModesRef.current)
+    } else {
+      conversionOptionsCheckedRef.current = true
+      const loadCapabilities = async () => {
+        let retries = 0
+        while (true) {
+          try {
+            return await getMediaWorkerCapabilities()
+          } catch (error) {
+            if (!isCurrentRun()) throw error
+            const retryable = error instanceof MediaWorkerHttpError
+              ? error.status === 429 || error.status >= 500
+              : error instanceof TypeError
+                || error instanceof SyntaxError
+                || (error instanceof DOMException && error.name === 'TimeoutError')
+            if (!retryable || retries >= 2) throw error
+            retries += 1
+            setError('The media worker connection was interrupted. Retrying its capability check…')
+            await new Promise((resolve) => window.setTimeout(resolve, 1_000 * 2 ** (retries - 1)))
+          }
+        }
+      }
+      void loadCapabilities().then((capabilities) => {
+        if (!isCurrentRun()) return
+        const timeoutSeconds = capabilities.conversionTimeoutSeconds
+        if (typeof timeoutSeconds === 'number' && Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
+          workerConversionTimeoutMsRef.current = Math.min(timeoutSeconds, 24 * 60 * 60) * 1000
+        }
+        conversionOutputFormatRef.current = getSupportedMediaConversionOutputFormat(capabilities, undefined, supportsHlsOutput)
+        const modes: MediaConversionMode[] = []
+        if (conversionOutputFormatRef.current && capabilities.mediaRemux) modes.push('auto')
+        if (conversionOutputFormatRef.current && capabilities.audioTranscode) modes.push('audioAac')
+        if (conversionOutputFormatRef.current && capabilities.audioTranscode && capabilities.videoTranscode) {
+          modes.push('h264Aac')
+          if (capabilities.mobileSafeVideoTranscode && getMediaConversionOutputFormat() === 'mp4') {
+            modes.push('h264AacLow', 'h264AacCompat')
+          }
+        }
+        begin(modes)
+      }).catch(() => {
+        if (!isCurrentRun()) return
+        conversionOptionsCheckedRef.current = false
+        setError(`${message} The media worker could not be reached to check conversion support.`)
+        if (!refreshingLiveSnapshot) playbackStartupRef.current.onPlaybackError?.(message, video.currentTime)
+        if (conversionSequenceRunRef.current === playbackRun) conversionSequenceRunRef.current = null
+      })
+    }
+    return true
+  }
+  requestWorkerConversionRef.current = requestWorkerConversion
+  retryWorkerConversionRef.current = (video: HTMLVideoElement) => {
+    if (workerNetworkRetryAttemptedRef.current || !getMediaWorkerConfig()) return false
+    workerNetworkRetryAttemptedRef.current = true
+    workerConversionActiveRef.current = false
+    lastWorkerConversionModeRef.current = null
+    conversionModesTriedRef.current = []
+    conversionSequenceRunRef.current = null
+    mediaProxyResumeRef.current = Number.isFinite(video.currentTime) ? video.currentTime : 0
+    setLoading(true)
+    setError('')
+    setPlayerNotice('The prepared stream connection was interrupted. Rebuilding it through the media worker…')
+    return requestWorkerConversion(video)
+  }
+
   const handleTimeUpdate = (time: number, dur: number) => {
     setCurrentTime(time)
+    if (workerLiveSnapshotActiveRef.current) return
     if (playbackItem) recordPlaybackSample({ mediaKey: playbackItem.localId, title: playbackItem.title, mediaType: playbackItem.mediaType === 'anime' ? 'anime' : playbackItem.contentType === 'movie' ? 'movie' : 'series', poster, tmdbId: playbackItem.tmdbId, season: playbackItem.season, episode: playbackItem.episode, positionSeconds: time, durationSeconds: dur, playing: !videoRef.current?.paused, completed: dur > 0 && time / dur >= 0.85 })
     if (Math.abs(time - lastSavedTimeRef.current) >= 15) {
       lastSavedTimeRef.current = time
@@ -1588,15 +1948,36 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           refreshNativeSubtitleTracks()
           const proxyResume = mediaProxyResumeRef.current
           mediaProxyResumeRef.current = null
+          const liveSnapshotResume = workerLiveSnapshotRef.current
+          workerLiveSnapshotRef.current = false
           const trackSwitchResume = trackSwitchResumeRef.current
           trackSwitchResumeRef.current = null
-          if (trackSwitchResume) {
+          if (liveSnapshotResume) {
+            event.currentTarget.currentTime = 0
+          } else if (trackSwitchResume) {
             event.currentTarget.currentTime = trackSwitchResume.time
             if (trackSwitchResume.shouldResume) void event.currentTarget.play().catch(() => {})
           } else if (proxyResume !== null && proxyResume > 0) {
             event.currentTarget.currentTime = proxyResume
           } else if (startTime && startTime > 0) {
             event.currentTarget.currentTime = startTime
+          }
+          if (workerPlaybackResumeRef.current) {
+            workerPlaybackResumeRef.current = false
+            void event.currentTarget.play().catch((playError: unknown) => {
+              if (isPlaybackInterruptedError(playError)) return
+              if (isAutoplayGestureError(playError)) {
+                autoplayBlockedRef.current = true
+                setLoading(false)
+                setPaused(true)
+                setPlayerNotice(AUTOPLAY_GESTURE_MESSAGE)
+                showControlsTemporarily()
+                return
+              }
+              setLoading(false)
+              setPaused(true)
+              setError('The browser could not start the prepared stream. Tap Play to retry or choose another source.')
+            })
           }
         }}
         onEnded={handleEnded}
@@ -1628,6 +2009,20 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
             })
             return
           }
+          if (video && getPlatformCapabilities(video).platform === 'web'
+            && video.error?.code === 2
+            && workerConversionActiveRef.current
+            && getMediaWorkerConfig()) {
+            if (retryWorkerConversionRef.current?.(video)) return
+            const liveSnapshot = workerLiveSnapshotActiveRef.current
+            const message = 'The worker-prepared stream could not reconnect after one rebuild. Try refreshing the stream or choose another source.'
+            setLoading(false)
+            setPaused(true)
+            setError(message)
+            if (liveSnapshot) setLiveSnapshotEnded(true)
+            else onPlaybackError?.(message, video.currentTime)
+            return
+          }
           if (video && getPlatformCapabilities(video).platform === 'web' && video.error?.code === 2 && !mediaProxyAttemptedRef.current) {
             mediaProxyAttemptedRef.current = true
             void createMediaSession(url, undefined, playbackRequestHeaders).then((session) => {
@@ -1641,6 +2036,10 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
               setError('')
               setPlayerNotice('Retrying through your configured Aurales media worker…')
             }).catch(() => {
+              if (getMediaWorkerConfig()) {
+                requestWorkerConversionRef.current?.(video)
+                return
+              }
               const message = browserPlaybackFailureMessage(url, video)
               setLoading(false)
               setError(message)
@@ -1648,8 +2047,13 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
             })
             return
           }
+          if (video && getPlatformCapabilities(video).platform === 'web' && video.error?.code === 2
+            && mediaProxyAttemptedRef.current && getMediaWorkerConfig()) {
+            requestWorkerConversionRef.current?.(video)
+            return
+          }
           const unsupportedMedia = video?.error?.code === 3 || video?.error?.code === 4
-          if (video && unsupportedMedia && workerConversionActiveRef.current && !isHlsUrl(url)) {
+          if (video && unsupportedMedia && workerConversionActiveRef.current) {
             const lastMode = lastWorkerConversionModeRef.current
             const nextMode = lastMode ? nextPlaybackConversionAfterDecodeFailure(lastMode) : null
             if (nextMode && conversionModes.includes(nextMode) && !conversionModesTriedRef.current.includes(nextMode)) {
@@ -1657,8 +2061,12 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
               setError('The browser could not decode the prepared stream. Trying the next playback strategy…')
               setPlayerNotice(nextMode === 'audioAac'
                 ? 'Stream copy was not browser-decodable. Trying AAC audio while keeping the video unchanged…'
-                : 'Audio-only conversion was not enough. Trying H.264/AAC video encoding now…')
-              void convertWithWorker(nextMode)
+                : nextMode === 'h264AacLow'
+                  ? 'The browser rejected standard H.264. Trying a smaller 720p/30 H.264 stream…'
+                  : nextMode === 'h264AacCompat'
+                    ? 'The browser rejected 720p H.264. Trying 480p/30 Baseline H.264…'
+                  : 'Audio-only conversion was not enough. Trying H.264/AAC video encoding now…')
+              void convertWithWorkerFallback(nextMode)
               return
             }
             const message = 'The browser could not decode the prepared stream after the available playback strategies. The source may use an unsupported codec or profile, including some HEVC, VP9, AV1, HDR, or Dolby Vision combinations.'
@@ -1668,44 +2076,11 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
             onPlaybackError?.(message, video.currentTime)
             return
           }
-          if (video && getPlatformCapabilities(video).platform === 'web' && unsupportedMedia && !isHlsUrl(url) && getMediaWorkerConfig()) {
-            const message = browserPlaybackFailureMessage(url, video)
-            setLoading(false)
-            setPaused(true)
-            setError('The browser could not play this stream. Aurales is checking whether your media worker can prepare a browser-compatible copy…')
-            autoplayBlockedRef.current = true
-            if (!conversionOptionsCheckedRef.current) {
-              conversionOptionsCheckedRef.current = true
-              void getMediaWorkerCapabilities().then((capabilities) => {
-                const modes: MediaConversionMode[] = []
-                if (capabilities.mediaRemux) modes.push('auto')
-                if (capabilities.audioTranscode) modes.push('audioAac')
-                if (capabilities.audioTranscode && capabilities.videoTranscode) modes.push('h264Aac')
-                updateConversionModes(modes)
-                if (modes.length === 0) {
-                  const unavailable = `${message} The configured media worker does not offer a compatible conversion.`
-                  setError(unavailable)
-                  onPlaybackError?.(unavailable, video.currentTime)
-                  return
-                }
-                setError('The stream is not browser-compatible. Aurales is trying a stream-copy remux first; the original file is not modified.')
-                void (async () => {
-                  if (await convertWithWorker('auto')) return
-                  const failed = `${message} Automatic conversion attempts failed. Pick another stream or check the media worker logs.`
-                  setError(failed)
-                  onPlaybackError?.(failed, video.currentTime)
-                })()
-              }).catch(() => {
-                setError(`${message} The media worker could not be reached to check conversion support.`)
-                onPlaybackError?.(message, video.currentTime)
-              })
-            } else {
-              const available = conversionModes.filter((mode) => !conversionModesTriedRef.current.includes(mode))
-              if (available.length === 0) onPlaybackError?.(message, video.currentTime)
-            }
+          if (video && getPlatformCapabilities(video).platform === 'web' && unsupportedMedia && getMediaWorkerConfig()) {
+            requestWorkerConversionRef.current?.(video)
             return
           }
-          if (video && getPlatformCapabilities(video).platform === 'web' && unsupportedMedia && !isHlsUrl(url) && !getMediaWorkerConfig()) {
+          if (video && getPlatformCapabilities(video).platform === 'web' && unsupportedMedia && !getMediaWorkerConfig()) {
             const message = 'The browser could not play this stream. Its format may be incompatible, cross-origin access may be blocked, or the signed URL may have expired. Browsers cannot convert media on-device. Add an Aurales media worker in Settings for an automatic playback copy, or choose another stream.'
             setLoading(false)
             setPaused(true)
@@ -1770,11 +2145,12 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       </div>
 
       {error && (
-        <div role="alert" className="absolute left-1/2 top-24 z-20 w-[min(92vw,44rem)] -translate-x-1/2 rounded-2xl border border-red-500/20 bg-black/85 px-5 py-4 text-sm text-red-200 shadow-xl backdrop-blur-xl">
+        <div role="alert" className="absolute left-1/2 top-24 z-20 max-h-[calc(100dvh-8rem)] w-[min(92vw,44rem)] -translate-x-1/2 overflow-y-auto overscroll-contain rounded-2xl border border-red-500/20 bg-black/85 px-5 py-4 text-sm text-red-200 shadow-xl backdrop-blur-xl">
           {error}
+          {liveSnapshotEnded && <button type="button" onClick={refreshLiveSnapshot} disabled={conversionBusy} className="mt-3 block min-h-11 rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-50">Refresh live snapshot</button>}
           {conversionModes.length > 0 && (
             <div className="mt-3 border-t border-white/10 pt-3">
-              <p className="mb-2 text-xs text-white/65">The worker downloads the full source and prepares a seekable MP4 before playback resumes. This uses worker disk space; provider credentials are not forwarded.</p>
+              <p className="mb-2 text-xs text-white/65">The worker downloads the source and prepares a browser-compatible MP4 or HLS copy. This uses worker disk space; source access headers are sent to the worker and are not embedded in playback URLs.</p>
               <div className="flex flex-wrap gap-2">
                 {conversionModes.filter((mode) => !conversionModesTriedRef.current.includes(mode)).map((mode) => (
                   <button
@@ -1784,7 +2160,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
                     onClick={() => { void convertWithWorker(mode) }}
                     className="min-h-11 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-50"
                   >
-                    {mode === 'remux' ? 'Try stream-copy remux' : mode === 'audioAac' ? 'Convert audio to AAC' : 'Convert video to H.264'}
+                    {mode === 'auto' ? 'Try automatic conversion' : mode === 'remux' ? 'Try stream-copy remux' : mode === 'audioAac' ? 'Convert audio to AAC' : mode === 'h264AacLow' ? 'Try smaller 720p/30 H.264' : mode === 'h264AacCompat' ? 'Try 480p/30 H.264' : 'Convert video to H.264'}
                   </button>
                 ))}
               </div>

@@ -1,27 +1,63 @@
 export type ExternalPlayer = 'infuse' | 'aether' | 'nextplayer' | 'mxplayer' | 'justplayer' | 'vlc'
+export type ExternalPlayerPlatform = 'ios' | 'android'
 
 const PREFERRED_PLAYER_KEY = 'aurales.externalPlayer'
+const SETTINGS_PLATFORM_KEY = 'aurales.externalPlayer.settingsPlatform'
 
-export function getPreferredExternalPlayer(): ExternalPlayer | null {
+export function getExternalPlayerPlatform(): ExternalPlayerPlatform {
+  return /Android/i.test(typeof navigator === 'undefined' ? '' : navigator.userAgent) ? 'android' : 'ios'
+}
+
+export function getExternalPlayerSettingsPlatform(): ExternalPlayerPlatform {
   try {
-    const value = window.localStorage.getItem(PREFERRED_PLAYER_KEY)
-    return value === 'infuse' || value === 'aether' || value === 'nextplayer' || value === 'mxplayer' || value === 'justplayer' || value === 'vlc' ? value : null
+    const value = window.localStorage.getItem(SETTINGS_PLATFORM_KEY)
+    if (value === 'ios' || value === 'android') return value
+  } catch { /* Storage can be disabled. */ }
+  return getExternalPlayerPlatform()
+}
+
+export function setExternalPlayerSettingsPlatform(platform: ExternalPlayerPlatform): void {
+  try { window.localStorage.setItem(SETTINGS_PLATFORM_KEY, platform) } catch { /* Storage can be disabled. */ }
+}
+
+function isExternalPlayer(value: string | null): value is ExternalPlayer {
+  return value === 'infuse' || value === 'aether' || value === 'nextplayer' || value === 'mxplayer' || value === 'justplayer' || value === 'vlc'
+}
+
+function playerPlatform(player: ExternalPlayer): ExternalPlayerPlatform {
+  return player === 'infuse' || player === 'aether' ? 'ios' : 'android'
+}
+
+export function getPreferredExternalPlayer(platform = getExternalPlayerPlatform()): ExternalPlayer | null {
+  try {
+    const stored = window.localStorage.getItem(`${PREFERRED_PLAYER_KEY}.${platform}`)
+    if (isExternalPlayer(stored) && playerPlatform(stored) === platform) return stored
+    // Migrate the old single preference only for the platform it belongs to.
+    const legacy = window.localStorage.getItem(PREFERRED_PLAYER_KEY)
+    if (isExternalPlayer(legacy) && playerPlatform(legacy) === platform) {
+      window.localStorage.setItem(`${PREFERRED_PLAYER_KEY}.${platform}`, legacy)
+      return legacy
+    }
+    return null
   } catch {
     return null
   }
 }
 
-export function setPreferredExternalPlayer(player: ExternalPlayer): void {
+export function setPreferredExternalPlayer(player: ExternalPlayer, platform = playerPlatform(player)): void {
+  if (playerPlatform(player) !== platform) return
   try {
-    window.localStorage.setItem(PREFERRED_PLAYER_KEY, player)
+    window.localStorage.setItem(`${PREFERRED_PLAYER_KEY}.${platform}`, player)
   } catch {
     // Private browsing settings can disable storage; launching still works.
   }
 }
 
-export function clearPreferredExternalPlayer(): void {
+export function clearPreferredExternalPlayer(platform = getExternalPlayerPlatform()): void {
   try {
-    window.localStorage.removeItem(PREFERRED_PLAYER_KEY)
+    window.localStorage.removeItem(`${PREFERRED_PLAYER_KEY}.${platform}`)
+    const legacy = window.localStorage.getItem(PREFERRED_PLAYER_KEY)
+    if (isExternalPlayer(legacy) && playerPlatform(legacy) === platform) window.localStorage.removeItem(PREFERRED_PLAYER_KEY)
   } catch {
     // Storage can be disabled in private browsing.
   }

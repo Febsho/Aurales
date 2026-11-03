@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { AUTOPLAY_GESTURE_MESSAGE, browserPlaybackFailureMessage, isAutoplayGestureError, isMediaSessionExpired, nextPlaybackConversionAfterDecodeFailure } from './browserPlayback'
 
 describe('browser decode fallback order', () => {
-  it('escalates from stream copy to audio-only and video only as the final step', () => {
+  it('escalates from stream copy through standard and low-resolution video profiles', () => {
     expect(nextPlaybackConversionAfterDecodeFailure('remux')).toBe('audioAac')
     expect(nextPlaybackConversionAfterDecodeFailure('audioAac')).toBe('h264Aac')
-    expect(nextPlaybackConversionAfterDecodeFailure('h264Aac')).toBeNull()
+    expect(nextPlaybackConversionAfterDecodeFailure('h264Aac')).toBe('h264AacLow')
+    expect(nextPlaybackConversionAfterDecodeFailure('h264AacLow')).toBe('h264AacCompat')
+    expect(nextPlaybackConversionAfterDecodeFailure('h264AacCompat')).toBeNull()
   })
 })
 

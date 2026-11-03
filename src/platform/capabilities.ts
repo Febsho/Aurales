@@ -71,8 +71,20 @@ export function shouldReloadAfterVaultRestore(): boolean {
 export function isHlsUrl(url: string): boolean {
   try {
     const parsed = new URL(url, typeof location !== 'undefined' ? location.href : 'https://aurales.invalid')
-    return /\.m3u8$/i.test(parsed.pathname) || parsed.searchParams.get('format')?.toLowerCase() === 'hls'
+    const hasHlsFormat = [...parsed.searchParams].some(([name, value]) => name.toLowerCase() === 'format' && value.toLowerCase() === 'hls')
+    return /\.m3u8$/i.test(parsed.pathname) || hasHlsFormat
   } catch {
     return /\.m3u8(?:$|\?)/i.test(url) || /[?&]format=hls(?:&|$)/i.test(url)
+  }
+}
+
+/** DASH is not supported by most native browser video pipelines. */
+export function isDashUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url, typeof location !== 'undefined' ? location.href : 'https://aurales.invalid')
+    const hasDashFormat = [...parsed.searchParams].some(([name, value]) => name.toLowerCase() === 'format' && value.toLowerCase() === 'dash')
+    return /\.mpd$/i.test(parsed.pathname) || hasDashFormat
+  } catch {
+    return /\.mpd(?:$|\?)/i.test(url) || /[?&]format=dash(?:&|$)/i.test(url)
   }
 }

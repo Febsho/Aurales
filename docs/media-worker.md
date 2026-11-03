@@ -14,17 +14,29 @@ The browser first plays the provider URL directly. If the browser reports an
 unsupported media format, it asks the configured worker for `mode: "auto"`.
 Desktop converted output is requested as HLS for hls.js over Media Source
 Extensions. Mobile browsers receive a seekable MP4 instead, which uses the
-browser's native video decoder and avoids mobile HLS/MSE compatibility differences.
+browser's native video decoder and avoids mobile HLS/MSE compatibility
+differences. The player inspects the worker's per-format muxer capabilities and
+falls back to the other format only when the preferred one is unavailable.
+Extensionless source URLs are classified from an allowlisted `HEAD` response,
+with a bounded Range request and manifest-prefix sniff when `HEAD` is rejected
+or returns a generic content type.
 The worker downloads the allowlisted HTTPS source into its private conversion
-directory, lets FFmpeg inspect the actual streams, and tries these HLS outputs
-in order:
+directory, lets FFmpeg inspect the actual streams, and `mode: "auto"` tries
+these output profiles in order for the selected container:
 
 1. `-c copy` stream remux (video and audio copied).
 2. `-c:v copy -c:a aac` (only audio encoded).
 3. H.264/AAC encoding (video encoding is the last fallback).
+If the automatic ladder cannot produce output or a browser rejects standard
+H.264 playback, mobile browsers can escalate through 720p/30 and SD 480-line/
+30 fps H.264/AAC profiles.
 
 Each attempt must complete successfully before it is returned. The status
 response reports the mode that actually worked, and the player shows that mode.
+FFmpeg also regenerates missing presentation timestamps from decoding
+timestamps before muxing and shifts negative output timestamps to zero. These
+steps repair some malformed timelines and help mobile browser demuxers start
+playback and seek reliably.
 Before choosing a conversion result, the worker runs `ffprobe` on the downloaded
 bytes and returns a bounded, token-free summary of the detected container and
 audio/video codec names and profiles to the player. URL suffixes and upstream
@@ -32,8 +44,9 @@ MIME types are not treated as source-format proof.
 If the browser rejects a valid remux or audio-only output, the player asks the
 worker for the next stage; it does not advance merely because the prior FFmpeg
 job completed.
-Browser HLS conversion needs FFmpeg's HLS muxer and MPEG-TS support. AAC-only
-conversion and the later video fallback also need AAC encoding. Video fallback prefers a detected VideoToolbox, NVENC,
+HLS conversion needs FFmpeg's HLS muxer and MPEG-TS support; MP4 conversion
+needs the MP4 muxer. AAC-only conversion and the later video fallback also need
+AAC encoding. Video fallback prefers a detected VideoToolbox, NVENC,
 QSV, or AMF H.264 encoder, then falls back to `libx264` if that encoder cannot
 run. To enable this path, configure `AURALES_FFMPEG_PATH`
 and verify the capabilities endpoint reports conversion support. Browser
@@ -53,20 +66,92 @@ to that signed endpoint and serves it as `video/mp2t`. Existing provider HLS
 uses the proxy session path, which rewrites nested playlists, keys, maps, and
 segment references into expiring signed child sessions; the browser uses native HLS when
 `canPlayType` reports it (notably Safari/iOS) and otherwise loads `hls.js` over
-Media Source Extensions. Codec/container compatibility remains
+Media Source Extensions. Live playlist reloads pass through LL-HLS `_HLS_msn`,
+`_HLS_part`, and `_HLS_skip` directives after validation while preserving the
+provider's original query credentials. Codec/container compatibility remains
 browser-dependent: notably HEVC, AV1, VP9 profiles, HDR, and Dolby Vision vary by
 OS, browser, hardware, and DRM. Successful remux only proves FFmpeg can package
 the streams; it does not guarantee a browser decoder can play them.
-Provider HLS inputs remain secure proxy passthrough sources; the worker does not
-download and reassemble remote segment/key graphs into conversion jobs. If a
-browser cannot decode an HLS source, choose another stream or a direct-file
-source for the worker's remux/transcode ladder.
+When an HLS decoder error occurs, the worker can also convert finite VOD
+playlists. Desktop conversion follows the highest-bandwidth variant. Mobile
+compatibility conversion prefers variants within the encoder's 1080p bounds,
+and favors variants at or below 60 fps when resolution is otherwise equal. If
+none fit the resolution bounds, it selects the smallest known resolution. If
+variants omit resolution metadata, it favors rates up to 60 fps, then the
+highest bandwidth. It downloads allowlisted segments and init maps, materializes
+explicit and implicit byte-range segments
+and byte-range init maps, and supports identity AES-128 keys before feeding a
+local playlist to FFmpeg. For master playlists it preserves up to eight external
+audio renditions, including
+their language and default flags, in the local master playlist. It resolves playlist variables declared
+with `NAME`/`VALUE`, inherited with `IMPORT`, or read from the playlist query
+with `QUERYPARAM`. External subtitle renditions from the selected variant are
+also materialized into local playlists so FFmpeg can expose text tracks to the
+player; an unavailable or unsupported optional subtitle rendition is skipped
+without failing video conversion. Same-origin HLS references inherit missing query parameters from their
+manifest URL; AWS `X-Amz-*` signed URLs remain unchanged. A finite live media
+playlist can be materialized as a snapshot of its currently listed full
+segments; the generated local playlist is ended after that snapshot. In Low-Latency
+HLS playlists the worker materializes trailing parts only from the first part
+marked `INDEPENDENT=YES`, and ignores preload hints. This also permits a
+part-only snapshot when it contains an independent part; delta updates, nested
+audio or subtitle masters, SAMPLE-AES, DRM key formats, and non-HTTP resources
+are rejected. Live passthrough remains
+available through the secure HLS proxy for streams the browser can decode.
+
+Static MPEG-DASH MPDs with a single-file `SegmentBase`, finite `SegmentList`
+entries, or bounded `SegmentTemplate` timelines are materialized, including multiple periods. Dynamic MPDs are supported as finite snapshots when their segment references are bounded. On mobile, an MPD with `availabilityStartTime` can also snapshot open-ended `SegmentTemplate` timelines across periods: the worker estimates the live edge from the manifest publication time (or its clock), applies the suggested presentation delay, and retains the advertised time-shift buffer (five minutes when omitted):
+When that window contains more than 4,096 references, the snapshot keeps the
+newest references within the worker's bounded manifest limit.
+mobile compatibility conversion prefers video representations within the
+encoder's 1080p bounds and favors rates up to 60 fps when resolution is
+otherwise equal. If none fit, it selects the smallest known resolution;
+representations without resolution metadata favor rates up to 60 fps, then
+highest bandwidth. Desktop keeps the highest-bandwidth representation. The worker
+downloads the selected video and up to eight language-labeled audio
+representations through the same HTTPS allowlist, validates ranged segments,
+then exposes them to FFmpeg as local HLS VOD playlists with discontinuities and
+period-specific init maps.
+Supported text subtitle representations are materialized across periods and
+extracted to WebVTT sidecars alongside embedded and HLS subtitle tracks.
+For `SegmentBase`, the worker passes the complete media resource to FFmpeg as a
+single HLS segment and includes a separately hosted initialization resource
+when the MPD provides one. Relative DASH references inherit missing query
+parameters from same-origin base URLs, while AWS `X-Amz-*` signed URLs keep
+their path-specific query unchanged.
+Template expansion supports `RepresentationID`,
+`Bandwidth`, `Number`, `Time`, and zero-padded numeric formats. Bounded `r="-1"`
+timeline repeats are expanded using the next explicit timeline time, the finite
+segment list, or the period duration. Dynamic MPDs without a usable
+`availabilityStartTime` for an open-ended timeline, dynamic `SegmentBase`
+representations, more than 128 periods, unbounded/oversized
+timelines, inconsistent audio presence between periods, and protected
+representations are rejected.
 
 The repository's FFmpeg integration fixtures exercise these paths: H.264/AAC
 MP4 is stream-copy remuxed; H.264/Opus Matroska becomes AAC audio with copied
 H.264 video; VP8/Opus WebM reaches the H.264/AAC video fallback. The browser
 matrix covers HLS VOD seeking through MSE on desktop; mobile conversion uses
-native MP4 playback.
+native MP4 playback. For mobile video encoding (including HLS fallback when
+MP4 muxing is unavailable), the worker uses H.264 Baseline Level 4.2 and scales
+landscape video to at most 1920×1080 and portrait video to at most 1080×1920.
+Its video filter caps output frame rates at 60 fps while preserving known
+lower source rates; when source frame-rate metadata is missing or invalid, it
+uses 30 fps. Using the filter avoids a dependency on newer FFmpeg output
+options and keeps the fallback within Level 4.2 frame-size and macroblock-rate
+limits for wider mobile decoder compatibility. Desktop HLS encoding retains
+the source resolution; remux and audio-only paths keep source video unchanged.
+Audio-transcode fallbacks encode AAC-LC at 48 kHz and
+downmix to stereo in both MP4 and HLS output for wider browser decoder support;
+stream-copy remux keeps the source codec, sample rate, and channel layout.
+MP4 outputs retain all audio tracks for language
+selection when possible; if conversion fails with multiple tracks, the worker
+retries the first eight tracks individually and reports when it had to reduce
+the track set. The
+single-variant HLS output retains its first audio track. Up to eight embedded
+or selected external HLS/DASH text subtitle tracks are
+extracted to signed WebVTT sidecars for the player; bitmap subtitle formats such
+as PGS are not converted.
 
 ## Build and run
 
@@ -191,6 +276,8 @@ Set these variables for the service:
 | `AURALES_MEDIA_EXTERNAL_TLS` | Only for public binds | Set to `1` only when binding a non-loopback address behind a TLS-terminating reverse proxy. |
 | `AURALES_FFMPEG_PATH` | Optional | Explicit FFmpeg executable path. Unset disables conversions. FFprobe must be installed beside FFmpeg or on `PATH`; startup checks both tools and discovers AAC, `libx264`, hardware encoders, and the HLS/MPEG-TS muxers needed for browser conversion. MP4 muxing is needed only for explicit MP4 conversion requests. |
 | `AURALES_MEDIA_CONVERSION_DIR` | Optional with FFmpeg | Private, dedicated directory for source and converted files. Defaults to the OS temporary directory under `aurales-media-worker`. |
+| `AURALES_MEDIA_MAX_CONVERSION_GIB` | Optional with FFmpeg | Maximum bytes for each downloaded source and converted output, in GiB. Defaults to `8`; accepts integers from `1` to `64`. Ensure the private conversion volume has room for concurrent inputs and outputs. |
+| `AURALES_MEDIA_CONVERSION_TIMEOUT_MINUTES` | Optional with FFmpeg | Maximum runtime for one complete conversion job, including source downloads, FFmpeg processing, and subtitle extraction. Defaults to `120` minutes; accepts integers from `1` to `1440`. |
 
 Example local launch:
 
@@ -241,6 +328,10 @@ authenticated `POST /v1/providers/trakt`, authenticated `POST /v1/providers/torb
 authenticated `POST /v1/providers/aurales-sync`,
 authenticated `POST /v1/media/conversions`, authenticated
 `GET /v1/media/conversions/{jobId}`, and signed `GET`/`HEAD /v1/media/{id}`.
+The capabilities response includes `conversionTimeoutSeconds` so the browser
+can keep polling for the configured FFmpeg runtime.
+Conversion requests from mobile browsers set `mobileCompatibility: true`; this
+also applies the mobile H.264 limits when the worker must fall back to HLS.
 The MDBList relay accepts only GET/POST/PUT/DELETE calls to the fixed
 `api.mdblist.com` HTTPS origin. It supports JSON account requests, API-key
 requests, and form-encoded OAuth token exchanges; it never follows redirects.
@@ -300,8 +391,9 @@ outside the web root, owned by the worker account, and inaccessible to other
 users. A dedicated disk or volume is recommended. The worker downloads a source
 only after HTTPS allowlist validation, public DNS resolution, IP pinning, and
 per-redirect revalidation. FFmpeg reads a local downloaded file; it never opens
-a provider URL or follows a network redirect. Provider credentials and
-authorization headers are not accepted.
+a provider URL or follows a network redirect. Optional provider request headers
+are accepted only in the authenticated request and scoped to the original
+source origin.
 
 After a direct-play browser decode error, Aurales automatically tries the
 conversion modes reported by the worker in this order:
@@ -312,10 +404,20 @@ conversion modes reported by the worker in this order:
   track to AAC, avoiding a full video transcode when only audio is incompatible.
 - **H.264/AAC conversion** encodes the first video track to H.264 and audio to
   AAC. It is offered only when the configured FFmpeg build has both encoders.
+- **Lower compatibility H.264/AAC conversion** limits output to 720p/30 and
+  Baseline Level 3.1 for devices that reject the standard mobile profile. The
+  worker advertises this mode separately so older worker versions are not sent
+  an unsupported request.
+- **SD compatibility H.264/AAC conversion** limits output to 480 lines/30 fps
+  and Baseline Level 3.0 for devices that reject the 720p profile.
 
 The full source is downloaded before converted playback starts. Each source
-and output is capped at 8 GiB, two conversions may run concurrently, eight jobs
-may be retained, and FFmpeg is capped at two hours per job. Finished files and
+and output defaults to an 8 GiB cap, configurable up to 64 GiB with
+`AURALES_MEDIA_MAX_CONVERSION_GIB`. Two conversions may run concurrently, eight jobs
+may be retained, and each whole conversion job is capped at two hours by
+default; this can be configured up to 24 hours with
+`AURALES_MEDIA_CONVERSION_TIMEOUT_MINUTES`.
+Finished files and
 signed playback sessions expire after four hours; a cleanup task removes them,
 and stale worker-named files are cleared at startup. The signed media endpoint
 supports Range requests for seeking after conversion completes. Allow enough
@@ -327,9 +429,12 @@ Aurales always tries direct playback first. If it fails with a browser decode
 error and a compatible worker conversion is available, the player automatically
 tries the modes above and switches to the first successful seekable copy. The
 original source is not modified. This requires a configured worker with FFmpeg
-enabled; a browser cannot transcode media on-device. The worker does not convert
-HLS, accept provider authorization headers, handle DRM, or accept arbitrary
-FFmpeg arguments.
+enabled; a browser cannot transcode media on-device. The worker converts
+allowlisted direct media and supported finite HLS/DASH inputs, including bounded
+snapshots of live manifests. Provider request headers are accepted only in the
+authenticated conversion request and are scoped to the original source origin.
+The worker cannot convert DRM-protected media or accept arbitrary FFmpeg
+arguments.
 
 The PMDB relay is fixed to HTTPS `publicmetadb.com` under `/api/external`; it
 does not accept arbitrary origins, follows no redirects, allows only GET,
@@ -348,6 +453,6 @@ URLs, AES key URLs, and subtitle playlists. HLS bodies are limited to 2 MiB
 and 4,096 references per playlist; child URLs share the parent expiry and stale
 children receive a short grace period. Non-HTTP schemes such as `skd://` are
 preserved for platform DRM handling. HLS sessions remain direct proxy sessions;
-FFmpeg jobs accept allowlisted direct media files only. They cannot solve
-provider URL expiry or DRM requirements that depend on provider-specific
-HTTP headers.
+FFmpeg jobs accept allowlisted direct media files and supported HLS VOD only.
+They cannot solve provider URL expiry or DRM requirements that depend on
+provider-specific HTTP headers.

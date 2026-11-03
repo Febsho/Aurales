@@ -45,7 +45,6 @@ test('InAppPlayer plays and seeks an HLS VOD source', async ({ page }, testInfo)
   await expect(page.locator('body')).not.toHaveAttribute('data-playback-error', /.+/)
 })
 
-
 test('native Safari HLS plays the checked-in fixture and seeks', async ({ page }, testInfo) => {
   test.skip(!testInfo.project.name.includes('webkit'), 'Native HLS is specific to WebKit in this browser matrix.')
   const manifestBody = await readFile(resolve(process.cwd(), 'tests/browser/fixtures/h264-aac.m3u8'), 'utf8')

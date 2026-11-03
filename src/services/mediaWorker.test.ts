@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { cancelMediaConversion, createMediaSession, getMediaConversionStatus, getMediaWorkerConfig, getMediaWorkerCapabilities, proxyAuralesSyncRequest, proxyMdblistRequest, proxyPmdbRequest, proxyTorboxRequest, proxyTraktRequest, rankStreamsWithWorker, saveMediaWorkerConfig, startMediaConversion } from './mediaWorker'
+import { cancelMediaConversion, createMediaSession, getMediaConversionOutputFormat, getSupportedMediaConversionOutputFormat, getMediaConversionStatus, getMediaWorkerConfig, getMediaWorkerCapabilities, proxyAuralesSyncRequest, proxyMdblistRequest, proxyPmdbRequest, proxyTorboxRequest, proxyTraktRequest, rankStreamsWithWorker, saveMediaWorkerConfig, startMediaConversion } from './mediaWorker'
 import type { SmartScoreContext } from './streams/smartScoring'
 
 const context: SmartScoreContext = { title: 'Example', preferredAudio: [], preferredSubtitles: [], subtitles: [], mode: 'best', player: 'web', history: {}, playbackMemories: [] }
@@ -9,6 +9,14 @@ describe('optional Aurales media worker adapter', () => {
   beforeEach(() => {
     localStorage.clear()
     vi.stubGlobal('fetch', vi.fn())
+  })
+
+  it('chooses mobile-native MP4 when available and falls back to the available worker muxer', () => {
+    expect(getMediaConversionOutputFormat('Mozilla/5.0 (Linux; Android 14; Pixel 7) Mobile')).toBe('mp4')
+    expect(getSupportedMediaConversionOutputFormat({ mediaRemux: true, mediaMp4: true, mediaHls: true }, 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)')).toBe('mp4')
+    expect(getSupportedMediaConversionOutputFormat({ mediaRemux: true, mediaMp4: false, mediaHls: true }, 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)')).toBe('hls')
+    expect(getSupportedMediaConversionOutputFormat({ mediaRemux: true, mediaMp4: true, mediaHls: false }, 'Mozilla/5.0 (X11; Linux x86_64) Chrome/120')).toBe('mp4')
+    expect(getSupportedMediaConversionOutputFormat({ mediaRemux: false, mediaMp4: false, mediaHls: false }, 'Android')).toBeNull()
   })
 
   it('stores only an HTTPS worker endpoint and a sufficiently long private key', () => {

@@ -14,18 +14,23 @@ test('decode failures automatically try worker conversion and load a signed seek
   await page.route('**/v1/capabilities', (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
-    body: JSON.stringify({ streamRanking: true, mediaDirectProxy: true, pmdbProxy: true, mediaRemux: true, audioTranscode: true, videoTranscode: true }),
+    body: JSON.stringify({ streamRanking: true, mediaDirectProxy: true, pmdbProxy: true, mediaRemux: true, mediaMp4: true, mediaHls: true, audioTranscode: true, videoTranscode: true }),
   }))
   let requestedMode = ''
+  let requestedOutputFormat = ''
   let workerManifestRequested = ''
   await page.route('**/v1/media/conversions', async (route) => {
-    requestedMode = JSON.parse(route.request().postData() || '{}').mode
+    const body = JSON.parse(route.request().postData() || '{}')
+    requestedMode = body.mode
+    requestedOutputFormat = body.outputFormat
     await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId, status: 'processing' }) })
   })
   await page.route(`**/v1/media/conversions/${jobId}`, (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
-    body: JSON.stringify({ jobId, status: 'ready', mode: 'remux', bytes: 1024, url: sessionUrl }),
+    body: JSON.stringify({ jobId, status: 'ready', mode: 'remux', bytes: 1024, url: requestedOutputFormat === 'mp4'
+      ? '/v1/media/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?expires=1893456000&signature=mp4-test'
+      : sessionUrl }),
   }))
   await page.route(`**/v1/media/${mediaId}?*`, (route) => {
     workerManifestRequested = route.request().url()
@@ -34,6 +39,11 @@ test('decode failures automatically try worker conversion and load a signed seek
     return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: manifest })
   })
   await page.route(`**/v1/media/${mediaId}/segment.ts?*`, (route) => route.fulfill({ status: 200, contentType: 'video/mp2t', body: hlsSegment }))
+  await page.route('**/v1/media/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?*', async (route) => {
+    const fixtureUrl = new URL('/tests/browser/fixtures/h264-aac.mp4', route.request().url()).toString()
+    const fixture = await route.fetch({ url: fixtureUrl })
+    await route.fulfill({ response: fixture })
+  })
 
   await page.goto('/tests/browser/player-harness.html?source=' + encodeURIComponent('/tests/browser/fixtures/vp8-opus.webm'))
   const video = page.locator('video')
@@ -43,9 +53,68 @@ test('decode failures automatically try worker conversion and load a signed seek
     element.dispatchEvent(new Event('error'))
   })
   await expect.poll(() => requestedMode).toBe('auto')
-  await expect.poll(() => workerManifestRequested).toContain(`/v1/media/${mediaId}?`)
-  expect(workerManifestRequested).toContain('format=hls')
+  const isAndroidBrowser = testInfo.project.name === 'android-chromium'
+  expect(requestedOutputFormat).toBe(isAndroidBrowser ? 'mp4' : 'hls')
+  if (isAndroidBrowser) {
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain('/v1/media/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?')
+  } else {
+    await expect.poll(() => workerManifestRequested).toContain(`/v1/media/${mediaId}?`)
+    expect(workerManifestRequested).toContain('format=hls')
+  }
   expect(requestedMode).toBe('auto')
+})
+
+test('mobile HLS decoder failures are converted to a native MP4 by the worker', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'android-chromium', 'This verifies the mobile MP4 handoff in Chromium Android.')
+  const sourcePath = '/mobile-conversion-source.m3u8'
+  const sourceUrl = new URL(sourcePath, String(testInfo.project.use.baseURL)).toString()
+  const sourceMediaId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+  const outputMediaId = 'cccccccccccccccccccccccccccccccc'
+  const jobId = '22222222222222222222222222222222'
+  const hlsSegment = await readFile(resolve(process.cwd(), 'tests/browser/fixtures/hls-segment-000.m2ts'))
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+  })
+  await page.route('**/v1/capabilities', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ streamRanking: true, mediaDirectProxy: true, pmdbProxy: true, mediaRemux: true, mediaMp4: true, mediaHls: false, audioTranscode: true, videoTranscode: true }),
+  }))
+  let sourceManifestRequested = false
+  await page.route(`**${sourcePath}`, (route) => {
+    sourceManifestRequested = true
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/vnd.apple.mpegurl',
+      body: '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\n/mobile-source.ts\n#EXT-X-ENDLIST\n',
+    })
+  })
+  await page.route('**/mobile-source.ts', (route) => route.fulfill({ status: 200, contentType: 'video/mp2t', body: hlsSegment }))
+  let conversionRequest: Record<string, unknown> | null = null
+  await page.route('**/v1/media/conversions', async (route) => {
+    conversionRequest = JSON.parse(route.request().postData() || '{}')
+    await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId, status: 'processing' }) })
+  })
+  await page.route(`**/v1/media/conversions/${jobId}`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ jobId, status: 'ready', mode: 'h264Aac', bytes: 1024, url: `/v1/media/${outputMediaId}?expires=1893456000&signature=mobile-mp4` }),
+  }))
+  await page.route(`**/v1/media/${outputMediaId}?*`, async (route) => {
+    const fixture = await route.fetch({ url: new URL('/tests/browser/fixtures/h264-aac.mp4', route.request().url()).toString() })
+    await route.fulfill({ response: fixture })
+  })
+
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent(sourceUrl)}`)
+  const video = page.locator('video')
+  await expect.poll(() => sourceManifestRequested).toBe(true)
+  await video.evaluate((element: HTMLVideoElement) => {
+    Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 3 }) })
+    element.dispatchEvent(new Event('error'))
+  })
+  await expect.poll(() => conversionRequest).not.toBeNull()
+  expect(conversionRequest).toMatchObject({ url: sourceUrl, mode: 'auto', outputFormat: 'mp4' })
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputMediaId}?`)
 })
 
 test('unsupported media tries remux, AAC audio copy, then H.264/AAC automatically', async ({ page }, testInfo) => {

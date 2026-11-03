@@ -15,12 +15,34 @@ export interface MediaWorkerCapabilities {
   torboxProxy?: boolean
   auralesSyncProxy?: boolean
   mediaRemux: boolean
+  mediaMp4?: boolean
+  mediaHls?: boolean
   audioTranscode: boolean
   videoTranscode: boolean
+  mobileSafeVideoTranscode?: boolean
+  conversionTimeoutSeconds?: number
 }
 
-export type MediaConversionMode = 'auto' | 'remux' | 'audioAac' | 'h264Aac'
+export type MediaConversionMode = 'auto' | 'remux' | 'audioAac' | 'h264Aac' | 'h264AacLow' | 'h264AacCompat'
 export type MediaConversionOutputFormat = 'mp4' | 'hls'
+export interface MediaConversionSubtitle {
+  url: string
+  lang: string
+  label: string
+  forced: boolean
+}
+
+export class MediaWorkerHttpError extends Error {
+  readonly status: number
+  readonly errorCode?: string
+
+  constructor(status: number, errorCode?: string) {
+    super(workerError(status))
+    this.name = 'MediaWorkerHttpError'
+    this.status = status
+    this.errorCode = errorCode
+  }
+}
 
 /** MP4 has broader native playback support on phones; desktop can use HLS/MSE. */
 export function getMediaConversionOutputFormat(userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : ''): MediaConversionOutputFormat {
@@ -28,23 +50,92 @@ export function getMediaConversionOutputFormat(userAgent = typeof navigator !== 
   return /Android|iPhone|iPad|iPod|Mobile/i.test(userAgent) || iPadDesktopMode ? 'mp4' : 'hls'
 }
 
+export function getSupportedMediaConversionOutputFormat(
+  capabilities: Pick<MediaWorkerCapabilities, 'mediaRemux' | 'mediaMp4' | 'mediaHls'>,
+  userAgent?: string,
+  canPlayHls = true,
+): MediaConversionOutputFormat | null {
+  const preferred = getMediaConversionOutputFormat(userAgent)
+  const supports = (format: MediaConversionOutputFormat) => {
+    if (format === 'hls' && !canPlayHls) return false
+    const explicit = format === 'mp4' ? capabilities.mediaMp4 : capabilities.mediaHls
+    // Older workers exposed `mediaRemux` for their HLS-only converter. Never
+    // infer MP4 support from that legacy flag: mobile would otherwise request
+    // MP4 from a worker that can only return HLS.
+    return explicit ?? (format === 'hls' && capabilities.mediaRemux)
+  }
+  if (supports(preferred)) return preferred
+  const fallback = preferred === 'mp4' ? 'hls' : 'mp4'
+  return supports(fallback) ? fallback : null
+}
+
 export type MediaConversionStatus =
   | { jobId: string; status: 'processing' }
   | { jobId: string; status: 'cancelled' }
   | { jobId: string; status: 'failed'; error: string }
-  | { jobId: string; status: 'ready'; mode: Exclude<MediaConversionMode, 'auto'>; bytes: number; url: string; sourceInfo?: { container: string; streams: Array<{ codec_type?: string; codec_name?: string; profile?: string }> } }
+  | { jobId: string; status: 'ready'; mode: Exclude<MediaConversionMode, 'auto'>; bytes: number; url: string; subtitles: MediaConversionSubtitle[]; liveSnapshot?: boolean; audioTracksReduced?: boolean; sourceInfo?: { container: string; streams: Array<{ codec_type?: string; codec_name?: string; profile?: string }> } }
 
 export type PlaybackRequestHeaders = Record<string, string>
 
+/** Use a timer-backed abort so worker requests also work in older mobile Safari. */
+function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit, timeoutMs: number, signal?: AbortSignal): Promise<Response> {
+  const callerSignal = signal ?? init.signal ?? undefined
+  const requestInit = { ...init }
+  delete requestInit.signal
+  const timeoutError = () => {
+    const error = new Error('Media worker request timed out.')
+    error.name = 'TimeoutError'
+    return error
+  }
+  if (typeof AbortController === 'undefined') {
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined
+    const timeout = new Promise<Response>((_resolve, reject) => {
+      timer = globalThis.setTimeout(() => reject(timeoutError()), timeoutMs)
+    })
+    let removeAbortListener = () => {}
+    const aborted = callerSignal && new Promise<Response>((_resolve, reject) => {
+      const rejectAbort = () => {
+        const error = new Error('Media worker request was cancelled.')
+        error.name = 'AbortError'
+        reject(error)
+      }
+      if (callerSignal.aborted) rejectAbort()
+      else {
+        callerSignal.addEventListener('abort', rejectAbort, { once: true })
+        removeAbortListener = () => callerSignal.removeEventListener('abort', rejectAbort)
+      }
+    })
+    return Promise.race([fetch(input, { ...requestInit, ...(callerSignal ? { signal: callerSignal } : {}) }), timeout, ...(aborted ? [aborted] : [])]).finally(() => {
+      if (timer !== undefined) globalThis.clearTimeout(timer)
+      removeAbortListener()
+    })
+  }
+  const controller = new AbortController()
+  let timedOut = false
+  const abortFromCaller = () => controller.abort()
+  if (callerSignal?.aborted) controller.abort()
+  else callerSignal?.addEventListener('abort', abortFromCaller, { once: true })
+  const timer = globalThis.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+  return fetch(input, { ...requestInit, signal: controller.signal }).catch((error: unknown) => {
+    if (timedOut) throw timeoutError()
+    throw error
+  }).finally(() => {
+    globalThis.clearTimeout(timer)
+    callerSignal?.removeEventListener('abort', abortFromCaller)
+  })
+}
+
 export async function createMediaSession(url: string, signal?: AbortSignal, requestHeaders: PlaybackRequestHeaders = {}): Promise<{ url: string; expiresAt: number }> {
   const config = requireConfig()
-  const response = await fetch(`${config.baseUrl}/v1/media/sessions`, {
+  const response = await fetchWithTimeout(`${config.baseUrl}/v1/media/sessions`, {
     method: 'POST',
     headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
     credentials: workerCredentials(config),
     body: JSON.stringify({ url, headers: validatePlaybackRequestHeaders(requestHeaders) }),
-    signal: signal ?? AbortSignal.timeout(10_000),
-  })
+  }, 10_000, signal)
   if (!response.ok) throw new Error(workerError(response.status))
   const data = await response.json() as { url?: unknown; expiresAt?: unknown }
   if (typeof data.url !== 'string' || typeof data.expiresAt !== 'number' || !Number.isFinite(data.expiresAt)) {
@@ -53,16 +144,22 @@ export async function createMediaSession(url: string, signal?: AbortSignal, requ
   return { url: validateMediaSessionUrl(data.url, config.baseUrl), expiresAt: data.expiresAt }
 }
 
-export async function startMediaConversion(url: string, mode: MediaConversionMode, signal?: AbortSignal, requestHeaders: PlaybackRequestHeaders = {}, outputFormat: MediaConversionOutputFormat = 'mp4'): Promise<string> {
+export async function startMediaConversion(url: string, mode: MediaConversionMode, signal?: AbortSignal, requestHeaders: PlaybackRequestHeaders = {}, outputFormat: MediaConversionOutputFormat = 'mp4', mobileCompatibility = false): Promise<string> {
   const config = requireConfig()
-  const response = await fetch(`${config.baseUrl}/v1/media/conversions`, {
+  const response = await fetchWithTimeout(`${config.baseUrl}/v1/media/conversions`, {
     method: 'POST',
     headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
     credentials: workerCredentials(config),
-    body: JSON.stringify({ url, mode, outputFormat, headers: validatePlaybackRequestHeaders(requestHeaders) }),
-    signal: signal ?? AbortSignal.timeout(10_000),
-  })
-  if (!response.ok) throw new Error(workerError(response.status))
+    body: JSON.stringify({ url, mode, outputFormat, ...(mobileCompatibility ? { mobileCompatibility: true } : {}), headers: validatePlaybackRequestHeaders(requestHeaders) }),
+  }, 10_000, signal)
+  if (!response.ok) {
+    let errorCode: string | undefined
+    if (response.status === 429) {
+      const body = await response.clone().json().catch(() => null) as { error?: unknown } | null
+      if (typeof body?.error === 'string') errorCode = body.error
+    }
+    throw new MediaWorkerHttpError(response.status, errorCode)
+  }
   const data = await response.json() as { jobId?: unknown; status?: unknown }
   if (typeof data.jobId !== 'string' || !/^[a-f\d]{32}$/i.test(data.jobId) || data.status !== 'processing') {
     throw new Error('Media worker returned an invalid conversion job.')
@@ -73,12 +170,11 @@ export async function startMediaConversion(url: string, mode: MediaConversionMod
 export async function getMediaConversionStatus(jobId: string, signal?: AbortSignal): Promise<MediaConversionStatus> {
   if (!/^[a-f\d]{32}$/i.test(jobId)) throw new Error('Invalid media conversion job ID.')
   const config = requireConfig()
-  const response = await fetch(`${config.baseUrl}/v1/media/conversions/${jobId}`, {
+  const response = await fetchWithTimeout(`${config.baseUrl}/v1/media/conversions/${jobId}`, {
     headers: workerHeaders(config, { Accept: 'application/json' }),
     credentials: workerCredentials(config),
-    signal: signal ?? AbortSignal.timeout(10_000),
-  })
-  if (!response.ok) throw new Error(workerError(response.status))
+  }, 10_000, signal)
+  if (!response.ok) throw new MediaWorkerHttpError(response.status)
   const data = await response.json() as Record<string, unknown>
   if (data.jobId !== jobId || !['processing', 'cancelled', 'ready', 'failed'].includes(String(data.status))) {
     throw new Error('Media worker returned an invalid conversion status.')
@@ -86,8 +182,21 @@ export async function getMediaConversionStatus(jobId: string, signal?: AbortSign
   if (data.status === 'processing') return { jobId, status: 'processing' }
   if (data.status === 'cancelled') return { jobId, status: 'cancelled' }
   if (data.status === 'failed') return { jobId, status: 'failed', error: typeof data.error === 'string' ? data.error : 'conversion_failed' }
-  if (typeof data.bytes !== 'number' || !Number.isFinite(data.bytes) || typeof data.mode !== 'string' || !['remux', 'audioAac', 'h264Aac'].includes(data.mode) || typeof data.url !== 'string') {
+  if (typeof data.bytes !== 'number' || !Number.isFinite(data.bytes) || typeof data.mode !== 'string' || !['remux', 'audioAac', 'h264Aac', 'h264AacLow', 'h264AacCompat'].includes(data.mode) || typeof data.url !== 'string') {
     throw new Error('Media worker returned an invalid conversion result.')
+  }
+  if (data.subtitles !== undefined && (!Array.isArray(data.subtitles) || data.subtitles.length > 8 || data.subtitles.some((track) => {
+    if (!track || typeof track !== 'object') return true
+    const subtitle = track as Record<string, unknown>
+    return typeof subtitle.url !== 'string' || typeof subtitle.lang !== 'string' || typeof subtitle.label !== 'string' || typeof subtitle.forced !== 'boolean'
+  }))) {
+    throw new Error('Media worker returned invalid converted subtitle tracks.')
+  }
+  if (data.liveSnapshot !== undefined && typeof data.liveSnapshot !== 'boolean') {
+    throw new Error('Media worker returned an invalid live snapshot indicator.')
+  }
+  if (data.audioTracksReduced !== undefined && typeof data.audioTracksReduced !== 'boolean') {
+    throw new Error('Media worker returned an invalid audio track fallback indicator.')
   }
   return {
     jobId,
@@ -95,6 +204,12 @@ export async function getMediaConversionStatus(jobId: string, signal?: AbortSign
     mode: data.mode as Exclude<MediaConversionMode, 'auto'>,
     bytes: data.bytes,
     url: validateMediaSessionUrl(data.url, config.baseUrl),
+    subtitles: ((data.subtitles || []) as MediaConversionSubtitle[]).map((track) => ({
+      ...track,
+      url: validateMediaSessionUrl(track.url, config.baseUrl),
+    })),
+    ...(typeof data.liveSnapshot === 'boolean' ? { liveSnapshot: data.liveSnapshot } : {}),
+    ...(typeof data.audioTracksReduced === 'boolean' ? { audioTracksReduced: data.audioTracksReduced } : {}),
     ...(isMediaSourceInfo(data.sourceInfo) ? { sourceInfo: data.sourceInfo } : {}),
   }
 }
@@ -115,12 +230,11 @@ function isMediaSourceInfo(value: unknown): value is NonNullable<Extract<MediaCo
 export async function cancelMediaConversion(jobId: string): Promise<void> {
   if (!/^[a-f\d]{32}$/i.test(jobId)) throw new Error('Invalid media conversion job ID.')
   const config = requireConfig()
-  const response = await fetch(`${config.baseUrl}/v1/media/conversions/${jobId}`, {
+  const response = await fetchWithTimeout(`${config.baseUrl}/v1/media/conversions/${jobId}`, {
     method: 'DELETE',
     headers: workerHeaders(config, { Accept: 'application/json' }),
     credentials: workerCredentials(config),
-    signal: AbortSignal.timeout(8_000),
-  })
+  }, 8_000)
   if (!response.ok && response.status !== 404) throw new Error(workerError(response.status))
 }
 
@@ -154,13 +268,12 @@ export async function proxyPmdbRequest(
   signal?: AbortSignal,
 ): Promise<ProviderProxyResponse> {
   const config = requireConfig()
-  const response = await fetch(`${config.baseUrl}/v1/providers/pmdb`, {
+  const response = await fetchWithTimeout(`${config.baseUrl}/v1/providers/pmdb`, {
     method: 'POST',
     headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
     credentials: workerCredentials(config),
     body: JSON.stringify({ method, path, apiKey: providerApiKey, body: body ?? null }),
-    signal: signal ?? AbortSignal.timeout(32_000),
-  })
+  }, 32_000, signal)
   if (!response.ok) throw new Error(workerError(response.status))
   const data = await readBoundedResponseJson<Partial<ProviderProxyResponse>>(
     response,
@@ -183,13 +296,12 @@ export async function proxyMdblistRequest(
   signal?: AbortSignal,
 ): Promise<ProviderProxyResponse> {
   const config = requireConfig()
-  const response = await fetch(`${config.baseUrl}/v1/providers/mdblist`, {
+  const response = await fetchWithTimeout(`${config.baseUrl}/v1/providers/mdblist`, {
     method: 'POST',
     headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
     credentials: workerCredentials(config),
     body: JSON.stringify({ method, path, ...credentials, body: body ?? null, contentType }),
-    signal: signal ?? AbortSignal.timeout(32_000),
-  })
+  }, 32_000, signal)
   if (!response.ok) throw new Error(workerError(response.status))
   const data = await readBoundedResponseJson<Partial<ProviderProxyResponse>>(
     response,
@@ -224,13 +336,12 @@ export async function proxyTraktRequest(
     safeHeaders[normalized] = value
   }
   const config = requireConfig()
-  const response = await fetch(`${config.baseUrl}/v1/providers/trakt`, {
+  const response = await fetchWithTimeout(`${config.baseUrl}/v1/providers/trakt`, {
     method: 'POST',
     headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
     credentials: workerCredentials(config),
     body: JSON.stringify({ method, path: `${target.pathname}${target.search}`, headers: safeHeaders, body: body ?? null }),
-    signal: signal ?? AbortSignal.timeout(32_000),
-  })
+  }, 32_000, signal)
   if (!response.ok) throw new Error(workerError(response.status))
   const data = await readBoundedResponseJson<Partial<ProviderProxyResponse>>(
     response,
@@ -253,13 +364,12 @@ export async function proxyTorboxRequest(
   signal?: AbortSignal,
 ): Promise<ProviderProxyResponse> {
   const config = requireConfig()
-  const response = await fetch(`${config.baseUrl}/v1/providers/torbox`, {
+  const response = await fetchWithTimeout(`${config.baseUrl}/v1/providers/torbox`, {
     method: 'POST',
     headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
     credentials: workerCredentials(config),
     body: JSON.stringify({ method, path, token: token || null, body: body ?? null, contentType }),
-    signal: signal ?? AbortSignal.timeout(32_000),
-  })
+  }, 32_000, signal)
   if (!response.ok) throw new Error(workerError(response.status))
   const data = await readBoundedResponseJson<Partial<ProviderProxyResponse>>(response, 20 * 1024 * 1024, 'TorBox worker response')
   if (!Number.isInteger(data.status) || typeof data.ok !== 'boolean' || typeof data.body !== 'string') {
@@ -276,13 +386,12 @@ export async function proxyAuralesSyncRequest(
   signal?: AbortSignal,
 ): Promise<ProviderProxyResponse> {
   const config = requireConfig()
-  const response = await fetch(`${config.baseUrl}/v1/providers/aurales-sync`, {
+  const response = await fetchWithTimeout(`${config.baseUrl}/v1/providers/aurales-sync`, {
     method: 'POST',
     headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
     credentials: workerCredentials(config),
     body: JSON.stringify({ method: 'POST', path, bearerToken: bearerToken ?? null, body }),
-    signal: signal ?? AbortSignal.timeout(35_000),
-  })
+  }, 35_000, signal)
   if (!response.ok) throw new Error(workerError(response.status))
   const data = await readBoundedResponseJson<Partial<ProviderProxyResponse>>(response, 40 * 1024 * 1024, 'Aurales Sync worker response')
   if (!Number.isInteger(data.status) || typeof data.ok !== 'boolean' || typeof data.body !== 'string') {
@@ -300,13 +409,12 @@ export async function probeStreamWithWorker(
   if (!config) return null
   let response: Response
   try {
-    response = await fetch(`${config.baseUrl}/v1/media/probe`, {
+    response = await fetchWithTimeout(`${config.baseUrl}/v1/media/probe`, {
       method: 'POST',
       headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
     credentials: workerCredentials(config),
       body: JSON.stringify({ url, timeoutMs }),
-      signal: signal ?? AbortSignal.timeout(Math.min(35_000, Math.max(8_000, timeoutMs + 5_000))),
-    })
+    }, Math.min(35_000, Math.max(8_000, timeoutMs + 5_000)), signal)
   } catch {
     return null
   }
@@ -344,13 +452,12 @@ export function isIntegratedMediaWorkerConnected(): boolean {
 
 export async function connectIntegratedMediaWorker(accessCode: string): Promise<void> {
   if (!INTEGRATED_MEDIA_WORKER || typeof window === 'undefined') throw new Error('The integrated media worker is not enabled for this site.')
-  const response = await fetch(`${window.location.origin}/v1/access/session`, {
+  const response = await fetchWithTimeout(`${window.location.origin}/v1/access/session`, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ accessCode }),
-    signal: AbortSignal.timeout(10_000),
-  })
+  }, 10_000)
   if (!response.ok) throw new Error(response.status === 429 ? 'Too many attempts. Wait before trying again.' : 'The instance access code is incorrect or unavailable.')
   localStorage.setItem(INTEGRATED_ACCESS_KEY, '1')
   try { await getMediaWorkerCapabilities() }
@@ -398,12 +505,11 @@ export function saveMediaWorkerConfig(config: MediaWorkerConfig | null): void {
 
 export async function getMediaWorkerCapabilities(signal?: AbortSignal): Promise<MediaWorkerCapabilities> {
   const config = requireConfig()
-  const response = await fetch(`${config.baseUrl}/v1/capabilities`, {
+  const response = await fetchWithTimeout(`${config.baseUrl}/v1/capabilities`, {
     headers: workerHeaders(config, { Accept: 'application/json' }),
     credentials: workerCredentials(config),
-    signal: signal ?? AbortSignal.timeout(8_000),
-  })
-  if (!response.ok) throw new Error(workerError(response.status))
+  }, 8_000, signal)
+  if (!response.ok) throw new MediaWorkerHttpError(response.status)
   return await response.json() as MediaWorkerCapabilities
 }
 
@@ -414,13 +520,12 @@ export async function rankStreamsWithWorker(
 ): Promise<ScoredStream[] | null> {
   const config = getMediaWorkerConfig()
   if (!config) return null
-  const response = await fetch(`${config.baseUrl}/v1/streams/rank`, {
+  const response = await fetchWithTimeout(`${config.baseUrl}/v1/streams/rank`, {
     method: 'POST',
     headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
     credentials: workerCredentials(config),
     body: JSON.stringify({ streams, context }),
-    signal: signal ?? AbortSignal.timeout(8_000),
-  })
+  }, 8_000, signal)
   if (!response.ok) throw new Error(workerError(response.status))
   const data = await response.json() as { candidates?: Array<{ stream: SmartStream; score: number; reasons: string[]; fingerprint: string }> }
   if (!Array.isArray(data.candidates) || data.candidates.length !== streams.length) {

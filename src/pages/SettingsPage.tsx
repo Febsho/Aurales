@@ -49,7 +49,7 @@ import ServerIntegrationsSettings from '../components/settings/ServerIntegration
 import AuralesSyncSettings from '../components/settings/AuralesSyncSettings'
 import AccountsHub from '../components/settings/AccountsHub'
 import { getUpcomingPreferences, setUpcomingPreferences } from '../services/upcoming'
-import { clearPreferredExternalPlayer, getPreferredExternalPlayer, setPreferredExternalPlayer, type ExternalPlayer } from '../services/player/externalPlayers'
+import { clearPreferredExternalPlayer, getExternalPlayerSettingsPlatform, getPreferredExternalPlayer, setExternalPlayerSettingsPlatform, setPreferredExternalPlayer, type ExternalPlayer, type ExternalPlayerPlatform } from '../services/player/externalPlayers'
 import { getBetterPostersUrl, type BetterPostersRatingSource } from '../services/betterPosters'
 import { getSimklDerivedCatalogItems } from '../services/simkl/lists'
 import { getActiveProfileId, getProfileBackupEntries, isProfileBackupStorageKey, profileBackupStorageKeyForImport, profileStorageKey, PROFILE_BACKUP_KEYS } from '../services/profiles'
@@ -817,11 +817,12 @@ export default function SettingsPage() {
   const store = useAppStore()
   const wtStore = useWatchTogetherStore()
   const [searchParams] = useSearchParams()
-  type SettingsTab = 'overview' | 'accounts' | 'servers' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'upcoming' | 'profiles' | 'sync' | 'subtitles' | 'player' | 'advanced' | 'interface' | 'watch-together' | 'discovery' | 'shortcuts'
+  type SettingsTab = 'overview' | 'accounts' | 'servers' | 'addons' | 'metadata' | 'artwork' | 'search' | 'progress' | 'upcoming' | 'profiles' | 'sync' | 'subtitles' | 'player' | 'external-players' | 'advanced' | 'interface' | 'watch-together' | 'discovery' | 'shortcuts'
   const requestedTab = searchParams.get('tab')
-  const [activeTab, setActiveTab] = useState<SettingsTab>(() => requestedTab && ['accounts', 'servers', 'addons', 'metadata', 'artwork', 'search', 'progress', 'upcoming', 'profiles', 'sync', 'subtitles', 'player', 'advanced', 'interface', 'watch-together', 'discovery', 'shortcuts'].includes(requestedTab) ? requestedTab as SettingsTab : 'overview')
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() => requestedTab && ['accounts', 'servers', 'addons', 'metadata', 'artwork', 'search', 'progress', 'upcoming', 'profiles', 'sync', 'subtitles', 'player', 'external-players', 'advanced', 'interface', 'watch-together', 'discovery', 'shortcuts'].includes(requestedTab) ? requestedTab as SettingsTab : 'overview')
   const [settingsSearch, setSettingsSearch] = useState('')
-  const [externalPlayer, setExternalPlayer] = useState<ExternalPlayer | ''>(() => getPreferredExternalPlayer() ?? '')
+  const [externalPlayerPlatform, setExternalPlayerPlatform] = useState<ExternalPlayerPlatform>(() => getExternalPlayerSettingsPlatform())
+  const [externalPlayer, setExternalPlayer] = useState<ExternalPlayer | ''>(() => getPreferredExternalPlayer(externalPlayerPlatform) ?? '')
   // Jellyfin is available through the browser integration as well as Tauri.
   // Keep the server settings category visible on every platform; WebDAV remains
   // hidden inside the connection editor when the native backend is unavailable.
@@ -1915,6 +1916,22 @@ export default function SettingsPage() {
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.43l-1.003.828c-.293.241-.438.613-.43.992a7.723 7.723 0 010 .255c-.008.378.137.75.43.991l1.004.827a1.125 1.125 0 01.26 1.43l-1.297 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.43l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.991l-1.004-.827a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.28z" />
               <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          )
+        }
+      ]
+    },
+    {
+      title: 'EXTRA',
+      items: [
+        {
+          id: 'external-players',
+          label: 'Video Players',
+          description: 'Choose a preferred external video player for iOS or Android.',
+          icon: (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="m10 8 6 4-6 4V8z" />
             </svg>
           )
         }
@@ -3236,6 +3253,51 @@ export default function SettingsPage() {
           {/* ═══════════════════════════════════════════════
               PLAYER TAB
               ═══════════════════════════════════════════════ */}
+          {activeTab === 'external-players' && (
+            <SettingSection title="External video player" description="Choose a platform, then select the player Aurales should open by default on that device. Without a saved preference, the playback menu lets you choose a player; that choice is then remembered.">
+              <SettingRow label="Platform" description="Choose which device preference to edit.">
+                <SelectMenu
+                  aria-label="Platform for external video player"
+                  value={externalPlayerPlatform}
+                  onChange={(event) => {
+                    const platform = event.target.value as ExternalPlayerPlatform
+                    setExternalPlayerPlatform(platform)
+                    setExternalPlayerSettingsPlatform(platform)
+                    setExternalPlayer(getPreferredExternalPlayer(platform) ?? '')
+                  }}
+                  className="w-44"
+                >
+                  <option value="ios">iOS</option>
+                  <option value="android">Android</option>
+                </SelectMenu>
+              </SettingRow>
+              <SettingRow label="Preferred player" description="The selection is saved separately for iOS and Android.">
+                <SelectMenu
+                  aria-label="Preferred external video player"
+                  value={externalPlayer}
+                  onChange={(event) => {
+                    const value = event.target.value as ExternalPlayer | ''
+                    setExternalPlayer(value)
+                    if (value) setPreferredExternalPlayer(value, externalPlayerPlatform)
+                    else clearPreferredExternalPlayer(externalPlayerPlatform)
+                  }}
+                  className="w-44"
+                >
+                  <option value="">No preferred player</option>
+                  {externalPlayerPlatform === 'android' ? <>
+                    <option value="nextplayer">Next Player</option>
+                    <option value="mxplayer">MX Player</option>
+                    <option value="justplayer">Just Player</option>
+                    <option value="vlc">VLC</option>
+                  </> : <>
+                    <option value="infuse">Infuse</option>
+                    <option value="aether">Aether</option>
+                  </>}
+                </SelectMenu>
+              </SettingRow>
+            </SettingSection>
+          )}
+
           {activeTab === 'player' && (
             <>
               {getPlatformCapabilities().platform === 'tauri' ? (
@@ -3255,35 +3317,6 @@ export default function SettingsPage() {
               )}
 
               {getPlatformCapabilities().platform === 'web' && <MediaWorkerSettings />}
-
-              {(getPlatformCapabilities().platform === 'web' || /Android/i.test(navigator.userAgent)) && (
-                <SettingSection title="External video player" description={/Android/i.test(navigator.userAgent) ? 'Choose the preferred Android player for external playback. The app must be installed to open streams.' : 'Choose which iOS player Aurales opens when you use ‘Open with …’ during playback. App installation cannot be checked from the web app.'}>
-                  <SettingRow label="Preferred player" description="You can still choose another player from the playback controls.">
-                    <SelectMenu
-                      aria-label="Preferred external video player"
-                      value={externalPlayer}
-                      onChange={(event) => {
-                        const value = event.target.value as ExternalPlayer | ''
-                        setExternalPlayer(value)
-                        if (value) setPreferredExternalPlayer(value)
-                        else clearPreferredExternalPlayer()
-                      }}
-                      className="w-44"
-                    >
-                      <option value="">Ask each time</option>
-                      {/Android/i.test(navigator.userAgent) ? <>
-                        <option value="nextplayer">Next Player</option>
-                        <option value="mxplayer">MX Player</option>
-                        <option value="justplayer">Just Player</option>
-                        <option value="vlc">VLC</option>
-                      </> : <>
-                        <option value="infuse">Infuse</option>
-                        <option value="aether">Aether</option>
-                      </>}
-                    </SelectMenu>
-                  </SettingRow>
-                </SettingSection>
-              )}
 
               {/* Cache mode */}
               <section className="space-y-3">
