@@ -983,7 +983,12 @@ export default function DiscoverPage() {
     rankingNow,
     impressions,
     prefsWeights(prefs),
-  ).sort((left, right) => (right.popularity || 0) - (left.popularity || 0) || right.score.total - left.score.total), [activity, currentTrending, feedback, impressions, mode, prefs, rankingNow, tab, tasteProfile])
+  ),
+  // `rankCandidates` already includes current popularity, profile preferences,
+  // feedback and watch history in a stable order. Re-sorting only by the raw
+  // provider popularity number here used to erase those signals in the
+  // editorial pick and the shelves derived from the live trend feed.
+  [activity, currentTrending, feedback, impressions, mode, prefs, rankingNow, tab, tasteProfile])
   // Keep the editorial extra out of adjacent shelves so it reads as its own
   // recommendation instead of a repeated catalog card.
   const spotlightCandidates = useMemo(() => {
