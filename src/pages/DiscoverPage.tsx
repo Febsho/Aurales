@@ -1285,7 +1285,7 @@ export default function DiscoverPage() {
     return selectWidescreenMovies(currentTrendingRanked, ranked, heroMediaKey ?? undefined)
   }, [currentTrendingRanked, heroMediaKey, ranked, tab])
   const bingeRecommendations = useMemo(() => {
-    const bingeRanked = tab === 'movies'
+    const bingeRanked = sortRecommendationsByPopularity(tab === 'movies'
       ? rankCandidates(
         [
           ...bingeTrending
@@ -1303,7 +1303,10 @@ export default function DiscoverPage() {
         impressions,
         prefsWeights(prefs),
       )
-      : ranked
+      // For series and anime, merge the live weekly feed into the saved
+      // personalized ranking. Otherwise a still-valid daily snapshot can
+      // keep old shows ahead of what is trending this week.
+      : [...currentTrendingRanked, ...ranked])
     const matchesTab = (item: SearchResult) => item.type === 'series'
       && (tab === 'anime' ? isAnimeLike(item) : !isAnimeLike(item))
     const seen = new Set<string>()
@@ -1316,7 +1319,7 @@ export default function DiscoverPage() {
         return true
       })
       .slice(0, 5)
-  }, [activity, bingeSeries, bingeTrending, feedback, impressions, mode, prefs, rankingNow, ranked, tab, tasteProfile])
+  }, [activity, bingeSeries, bingeTrending, currentTrendingRanked, feedback, impressions, mode, prefs, rankingNow, ranked, tab, tasteProfile])
   const activeBingeItem = bingeRecommendations.length ? bingeRecommendations[bingeIndex % bingeRecommendations.length] : undefined
   const pickerPool = useMemo(() => {
     const seen = new Set<string>()

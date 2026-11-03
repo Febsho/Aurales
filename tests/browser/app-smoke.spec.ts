@@ -938,6 +938,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await expect(page.locator('.discover-taste-pick')).toHaveCount(10)
   await page.getByRole('button', { name: 'Series', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Your Next Binge' })).toBeVisible()
+  await expect(page.locator('.discover-binge__main-poster img')).toHaveAttribute('alt', 'Weekly trend 1 poster')
   const moods = page.locator('.discover-moods')
   await expect(moods.getByRole('heading', { name: 'Sunday Night Moods' })).toBeVisible()
   await expect(moods.locator('.discover-moods__options button')).toHaveCount(3)
