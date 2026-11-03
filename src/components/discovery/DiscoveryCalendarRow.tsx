@@ -15,6 +15,14 @@ interface DiscoveryCalendarRowProps {
 
 type CalendarRange = 'today' | '30-days'
 
+function markCalendarArtworkLoaded(event: import('react').SyntheticEvent<HTMLImageElement>): void {
+  event.currentTarget.dataset.artworkLoaded = 'true'
+}
+
+function markCalendarArtworkFailed(event: import('react').SyntheticEvent<HTMLImageElement>): void {
+  event.currentTarget.dataset.artworkFailed = 'true'
+}
+
 function addDays(date: Date, days: number): Date {
   const result = new Date(date.getFullYear(), date.getMonth(), date.getDate())
   result.setDate(result.getDate() + days)
@@ -78,7 +86,7 @@ export default function DiscoveryCalendarRow({ watchProgress, traktConnected, si
     </div>
     {visibleEntries.length > 0 ? <div className="discover-calendar__items">
       {visibleEntries.slice(0, 8).map((entry) => <button key={entry.id} type="button" className="discover-calendar__item" onClick={() => navigate(entry.media.type === 'movie' ? `/movie/${entry.media.id}` : `/series/${entry.media.id}`)} aria-label={`${entry.title}, ${entry.subtitle || entry.date}`}>
-        <span className="discover-calendar__poster">{entry.poster && <img src={entry.poster} alt="" loading="lazy" decoding="async"/>}
+        <span className="discover-calendar__poster">{entry.poster && <img src={entry.poster} alt="" loading="lazy" decoding="async" onLoad={markCalendarArtworkLoaded} onError={markCalendarArtworkFailed} />}
           <span className="discover-calendar__date"><strong>{new Date(`${entry.date}T12:00:00`).getDate()}</strong><span>{new Intl.DateTimeFormat(undefined, { month: 'short', weekday: 'short' }).format(new Date(`${entry.date}T12:00:00`))}</span></span>
           <span className="discover-calendar__details"><strong>{entry.title}</strong><small>{entry.subtitle || (entry.kind === 'episode' ? 'New episode' : 'Movie')}</small></span>
         </span>
