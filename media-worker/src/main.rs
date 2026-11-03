@@ -8604,70 +8604,82 @@ mod tests {
             uuid::Uuid::new_v4().simple()
         ));
         tokio::fs::create_dir_all(&dir).await.unwrap();
-        let input = dir.join("pq-source.mkv");
-        let output = dir.join("sdr-mobile.mp4");
-        let generated = tokio::process::Command::new(&ffmpeg)
-            .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                "testsrc2=size=320x180:rate=24:duration=1",
-                "-c:v",
-                "mpeg4",
-                "-q:v",
-                "3",
-                "-pix_fmt",
-                "yuv420p",
-                "-color_primaries",
-                "bt2020",
-                "-color_trc",
-                "smpte2084",
-                "-colorspace",
-                "bt2020nc",
-            ])
-            .arg(&input)
-            .output()
+        for (name, color_transfer) in [("pq", "smpte2084"), ("hlg", "arib-std-b67")] {
+            let input = dir.join(format!("{name}-source.mkv"));
+            let output = dir.join(format!("{name}-sdr-mobile.mp4"));
+            let generated = tokio::process::Command::new(&ffmpeg)
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=320x180:rate=24:duration=1",
+                    "-c:v",
+                    "mpeg4",
+                    "-q:v",
+                    "3",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-color_primaries",
+                    "bt2020",
+                    "-color_trc",
+                    color_transfer,
+                    "-colorspace",
+                    "bt2020nc",
+                ])
+                .arg(&input)
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                generated.status.success(),
+                "failed to prepare tagged {name} fixture"
+            );
+            let source_info = probe_local_media(&ffmpeg, &input).await.unwrap();
+            assert!(source_contains_hdr_video(&source_info));
+            assert!(source_info["streams"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|stream| {
+                    stream["codec_type"] == "video" && stream["color_transfer"] == color_transfer
+                }));
+            let audio_count = source_info["streams"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|stream| stream["codec_type"] == "audio")
+                .count();
+            transcode_conversion_candidate(
+                &ffmpeg,
+                &input,
+                &output,
+                ConversionMode::H264Aac,
+                None,
+                ConversionOutputFormat::Mp4,
+                true,
+                audio_count,
+                &[],
+                true,
+                source_video_frame_rate(&source_info),
+            )
             .await
-            .unwrap();
-        assert!(
-            generated.status.success(),
-            "failed to prepare tagged PQ fixture"
-        );
-        let source_info = probe_local_media(&ffmpeg, &input).await.unwrap();
-        assert!(source_contains_hdr_video(&source_info));
-        let audio_count = source_info["streams"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|stream| stream["codec_type"] == "audio")
-            .count();
-        transcode_conversion_candidate(
-            &ffmpeg,
-            &input,
-            &output,
-            ConversionMode::H264Aac,
-            None,
-            ConversionOutputFormat::Mp4,
-            true,
-            audio_count,
-            &[],
-            true,
-            source_video_frame_rate(&source_info),
-        )
-        .await
-        .expect("HDR source should transcode to mobile MP4");
-        let output_info = probe_local_media(&ffmpeg, &output).await.unwrap();
-        assert!(output_info["streams"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|stream| {
-                stream["codec_type"] == "video" && stream["color_transfer"] == "bt709"
-            }));
+            .unwrap_or_else(|_| panic!("{name} source should transcode to mobile MP4"));
+            let output_info = probe_local_media(&ffmpeg, &output).await.unwrap();
+            assert!(
+                output_info["streams"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|stream| {
+                        stream["codec_type"] == "video" && stream["color_transfer"] == "bt709"
+                    }),
+                "{name} should be tagged for SDR BT.709 output"
+            );
+        }
         tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 
