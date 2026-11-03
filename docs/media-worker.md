@@ -135,7 +135,10 @@ FFmpeg build provides the optional encoders, generated HEVC Main 10/AC-3 and
 AV1/Opus sources also exercise the mobile video-and-audio fallback. The tests
 inspect the produced H.264 profile, level, pixel format, frame rate, and
 dimensions, including a generated 60 fps input. The browser matrix covers HLS
-VOD seeking through MSE on desktop; mobile conversion uses native MP4 playback.
+VOD seeking through MSE on desktop. Its iOS WebKit and Android Chromium
+projects also decode and seek a mobile H.264 Baseline Level 3.0 MP4 fixture;
+Android additionally exercises worker handoff and fallback escalation. These
+projects emulate mobile profiles and do not replace tests on physical devices.
 For mobile video encoding (including HLS fallback when
 MP4 muxing is unavailable), the worker uses H.264 Baseline Level 4.2 and scales
 landscape video to at most 1920×1080 and portrait video to at most 1080×1920.

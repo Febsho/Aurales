@@ -40,7 +40,7 @@ test('decode failures automatically try worker conversion and load a signed seek
   })
   await page.route(`**/v1/media/${mediaId}/segment.ts?*`, (route) => route.fulfill({ status: 200, contentType: 'video/mp2t', body: hlsSegment }))
   await page.route('**/v1/media/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?*', async (route) => {
-    const fixtureUrl = new URL('/tests/browser/fixtures/h264-aac.mp4', route.request().url()).toString()
+    const fixtureUrl = new URL('/tests/browser/fixtures/mobile-h264-compat.mp4', route.request().url()).toString()
     const fixture = await route.fetch({ url: fixtureUrl })
     await route.fulfill({ response: fixture })
   })
@@ -101,7 +101,7 @@ test('mobile HLS decoder failures are converted to a native MP4 by the worker', 
     body: JSON.stringify({ jobId, status: 'ready', mode: 'h264Aac', bytes: 1024, url: `/v1/media/${outputMediaId}?expires=1893456000&signature=mobile-mp4` }),
   }))
   await page.route(`**/v1/media/${outputMediaId}?*`, async (route) => {
-    const fixture = await route.fetch({ url: new URL('/tests/browser/fixtures/h264-aac.mp4', route.request().url()).toString() })
+    const fixture = await route.fetch({ url: new URL('/tests/browser/fixtures/mobile-h264-compat.mp4', route.request().url()).toString() })
     await route.fulfill({ response: fixture })
   })
 
@@ -203,7 +203,7 @@ test('mobile decoder failures escalate through lower H.264 profiles', async ({ p
       body: JSON.stringify({ jobId, status: 'ready', mode: mode === 'auto' ? 'h264Aac' : mode, bytes: 1024, url: `/v1/media/${outputIds[mode]}?expires=1893456000&signature=${mode}` }),
     }))
     await page.route(`**/v1/media/${outputIds[mode]}?*`, async (route) => {
-      const fixture = await route.fetch({ url: new URL('/tests/browser/fixtures/h264-aac.mp4', route.request().url()).toString() })
+      const fixture = await route.fetch({ url: new URL('/tests/browser/fixtures/mobile-h264-compat.mp4', route.request().url()).toString() })
       await route.fulfill({ response: fixture })
     })
   }

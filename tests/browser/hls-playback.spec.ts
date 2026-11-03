@@ -4,6 +4,18 @@ import { expect, test } from '@playwright/test'
 
 const manifest = '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:12\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:12.000000,\n/hls-test/segment-000.m2ts\n#EXT-X-ENDLIST\n'
 
+test('mobile H.264 Baseline Level 3.0 MP4 plays and seeks', async ({ page }, testInfo) => {
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'The compatibility MP4 profile is checked in mobile browser projects.')
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/mobile-h264-compat.mp4')}`)
+  const video = page.locator('video')
+  await page.getByRole('button', { name: 'Play', exact: true }).click()
+  await expect(page.locator('body')).toHaveAttribute('data-playback-started', 'true', { timeout: 15_000 })
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.duration), { timeout: 15_000 }).toBeGreaterThan(2.9)
+  await video.evaluate((element: HTMLVideoElement) => { element.currentTime = 1.5 })
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime), { timeout: 10_000 }).toBeGreaterThan(1.4)
+  await expect(page.locator('body')).not.toHaveAttribute('data-playback-error', /.+/)
+})
+
 test('InAppPlayer plays and seeks an HLS VOD source', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name.includes('webkit'), 'WebKit native HLS is verified by the dedicated Safari playback test below.')
   const segment = await readFile(resolve(process.cwd(), 'tests/browser/fixtures/hls-segment-000.m2ts'))
