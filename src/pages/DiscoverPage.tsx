@@ -13,6 +13,7 @@ import { useCatalogStore } from '../stores/catalogStore'
 import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
 import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
+import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
 import { applyRecommendationFeedback, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, rankCandidates, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
@@ -396,6 +397,7 @@ export default function DiscoverPage() {
   const traktConnected = useAppStore((s) => s.traktConnected)
   const simklConnected = useAppStore((s) => s.simklConnected)
   const anilistConnected = useAppStore((s) => s.anilistConnected)
+  const mdblistApiKey = useAppStore((s) => s.mdblistApiKey)
   const stremioAuthKey = useMemo(() => getStremioAuth()?.authKey ?? null, [])
   const accountScope = useMemo(() => [
     traktConnected ? `trakt:${providerCacheScope('trakt')}` : '',
@@ -1582,6 +1584,7 @@ export default function DiscoverPage() {
           </DiscoveryReveal>}
           {viewState === 'error' && <div className="mx-6 mb-8 grid min-h-72 place-items-center rounded-3xl border border-white/10 bg-white/[.03] p-8 text-center"><div><h2 className="text-xl font-black">Recommendations are unavailable</h2><p className="mt-2 max-w-md text-sm text-white/60">Cached discovery data was not available and recommendation sources could not be loaded. Check your network or TMDB settings.</p><button onClick={() => window.location.reload()} className="mt-5 rounded-full bg-white px-5 py-2 font-bold text-black">Retry</button></div></div>}
           {viewState === 'content' && trendingSection && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--trending"><MediaRow title="OR TRY" items={trendingSection.items.map((entry) => entry.item)} showAllItems={trendingSection.catalogItems?.map((entry) => entry.item)} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-trending-this-week?title=${encodeURIComponent('OR TRY')}`} /></div></DiscoveryReveal>}
+          {viewState === 'content' && <DiscoveryReveal><DiscoveryCalendarRow watchProgress={watchProgress} traktConnected={traktConnected} simklConnected={simklConnected} anilistConnected={anilistConnected} mdblistApiKey={mdblistApiKey} /></DiscoveryReveal>}
           {visiblePersonalizedSections.filter((section) => section.id !== 'trending-this-week').map((section) => {
             const title = section.id === 'made-for-you' ? (mode === 'for-you' ? 'Top 10 For You' : section.title) : section.title.replace(/\s+for you$/i, '')
             const isTopTen = section.id === 'made-for-you'
