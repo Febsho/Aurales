@@ -179,6 +179,66 @@ test('Discovery uses public catalogs when the active profile has no library entr
   await expect(page.locator('.discover-shelf--new-library')).toHaveCount(0)
 })
 
+test('Discovery genre tiles open the matching provider results and full catalog', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.addInitScript(() => {
+    const profileId = 'playwright-discovery-genres'
+    localStorage.setItem('aurales_profiles_v1', JSON.stringify([{
+      id: profileId,
+      name: 'Default',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      isDefault: true,
+    }]))
+    localStorage.setItem('aurales_active_profile_v1', profileId)
+    localStorage.setItem(`aurales_skip_profile_picker:profile:${profileId}`, 'true')
+    localStorage.setItem('aurales_app_managed_metadata', 'false')
+    localStorage.setItem('tmdb_api_key', 'playwright-public-test-key')
+  })
+  await page.route('https://api.ids.moe/**', (route) => route.fulfill({ json: {} }))
+  await page.route('https://api.themoviedb.org/**', async (route) => {
+    const url = new URL(route.request().url())
+    const isTrending = /^\/3\/trending\/(movie|tv)\/week$/.test(url.pathname)
+    const isActionQuery = url.searchParams.get('with_genres') === '28'
+    const results = Array.from({ length: isTrending ? 8 : isActionQuery ? 8 : 12 }, (_, index) => ({
+      id: (isTrending ? 98200 : isActionQuery ? 98300 : 98400) + index,
+      title: isTrending ? `Genre trend ${index + 1}` : isActionQuery ? `Action catalog ${index + 1}` : `Genre source ${index + 1}`,
+      name: isTrending ? `Genre trend ${index + 1}` : isActionQuery ? `Action catalog ${index + 1}` : `Genre source ${index + 1}`,
+      poster_path: `/discovery-genre-${index + 1}.jpg`,
+      backdrop_path: `/discovery-genre-backdrop-${index + 1}.jpg`,
+      overview: 'A fixture used to verify that choosing a genre opens matching titles.',
+      release_date: '2026-10-01',
+      first_air_date: '2026-10-01',
+      vote_average: 8.1,
+      vote_count: 1200,
+      popularity: 180 - index * 8,
+      // The queried results intentionally omit genre_ids, as addon and local
+      // providers often do after filtering has already happened server-side.
+      ...(isActionQuery ? {} : { genre_ids: [28, 35, 18, 878, 14] }),
+      original_language: 'en',
+    }))
+    await route.fulfill({ json: { page: 1, total_pages: 1, total_results: results.length, results } })
+  })
+  await page.route('https://image.tmdb.org/**', (route) => route.fulfill({
+    headers: { 'Access-Control-Allow-Origin': '*' },
+    contentType: 'image/svg+xml',
+    body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 6"><rect width="4" height="6" fill="#35404c"/></svg>',
+  }))
+
+  await page.goto('/discover')
+  const genreTile = page.locator('.discover-genres__grid button').filter({ hasText: /^Action/ })
+  await expect(genreTile).toBeVisible()
+  await genreTile.click()
+  const genreRow = page.locator('#discover-genre-picks')
+  await expect(genreRow.getByRole('heading', { name: 'Action Picks', exact: true })).toBeVisible()
+  await expect(genreRow.locator('.media-row-card-slot img[alt^="Action catalog"]')).toHaveCount(8)
+  await genreRow.getByRole('button', { name: 'Open Action Picks catalog' }).click()
+  const catalog = page.locator('.catalog-page')
+  await expect(catalog.getByRole('heading', { name: 'Action Picks', exact: true })).toBeVisible()
+  await expect(catalog.getByRole('button', { name: /Action catalog 1/ })).toBeVisible()
+  await expect(catalog.locator('button:has(img[alt^="Action catalog"])')).toHaveCount(8)
+})
+
 test('mobile Search uses compact system typography without horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/')
