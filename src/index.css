@@ -6635,6 +6635,26 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-binge__alternatives button { height: auto; align-self: center; aspect-ratio: 2 / 3; }
   .discover-binge__alternatives button span { padding-inline: .55rem; font-size: .76rem; }
 }
+@media (min-width: 1200px) {
+  .discover-binge__feature {
+    min-height: 0;
+    grid-template-columns: minmax(18rem, .82fr) minmax(0, 1.18fr);
+    align-items: stretch;
+    gap: clamp(1.25rem, 2.2vw, 2rem);
+  }
+  .discover-binge__copy { padding-block: .5rem; }
+  .discover-binge__copy h3 { max-width: 34rem; font-size: clamp(1.55rem, 2vw, 2rem); }
+  .discover-binge__copy > div:first-child > p:not(.discover-section-eyebrow) { font-size: .9rem; }
+  .discover-binge__gallery {
+    height: auto;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    align-items: center;
+    gap: clamp(.45rem, .8vw, .75rem);
+  }
+  .discover-binge__alternatives { display: contents; }
+  .discover-binge__main-poster,
+  .discover-binge__alternatives button { width: 100%; height: auto; aspect-ratio: 2 / 3; align-self: center; }
+}
 @media (max-width: 640px) {
   .discover-page__heading .discover-spotlight-heading { margin-block: .9rem .45rem; }
   .discover-spotlight-heading { margin-block: .7rem .55rem; }

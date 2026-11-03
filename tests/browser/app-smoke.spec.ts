@@ -1888,6 +1888,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
           controlsRowsSeparated: modes.top >= tabs.bottom - 1,
           hero: hero.getBoundingClientRect().toJSON(),
           bingePosterRatios: [bingeMainPoster, ...bingeAlternativePosters].filter((bounds): bounds is DOMRect => Boolean(bounds && bounds.width > 0 && bounds.height > 0)).map((bounds) => bounds.width / bounds.height),
+          bingePosterHeights: [bingeMainPoster, ...bingeAlternativePosters].filter((bounds): bounds is DOMRect => Boolean(bounds && bounds.width > 0 && bounds.height > 0)).map((bounds) => bounds.height),
           bingeLayout: binge && bingeCopy && bingeGallery && bingeTitle && bingeActions ? {
             feature: binge.getBoundingClientRect().toJSON(),
             copy: bingeCopy.toJSON(),
@@ -1956,6 +1957,9 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
           expect(actions.top, `${platform} Binge actions should follow the recommendation title`).toBeGreaterThanOrEqual(title.bottom - 1)
           expect(actions.bottom, `${platform} Binge actions should stay inside their copy column`).toBeLessThanOrEqual(copy.bottom + 1)
         }
+      }
+      if (width >= 1200 && layout.bingePosterHeights.length === 5) {
+        expect(Math.max(...layout.bingePosterHeights) - Math.min(...layout.bingePosterHeights), `${platform} desktop Binge posters should share one aligned row at ${width}px`).toBeLessThanOrEqual(2)
       }
       expect(layout.headingFontSize, `${platform} Discovery heading is unexpectedly large at ${width}px`).toBeLessThanOrEqual(44)
       if (width >= 900) {
