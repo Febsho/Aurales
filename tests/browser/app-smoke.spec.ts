@@ -1569,6 +1569,8 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
         const controls = root.querySelector<HTMLElement>('.discover-page__controls')!.getBoundingClientRect()
         const tabs = root.querySelector<HTMLElement>('.discover-page__tabs')!.getBoundingClientRect()
         const modes = root.querySelector<HTMLElement>('.discover-page__modes')!.getBoundingClientRect()
+        const calendarEmptyRow = root.querySelector<HTMLElement>('.discover-calendar__empty-row')
+        const calendarOpenButton = calendarEmptyRow?.querySelector<HTMLElement>('.discover-calendar__open')
         const hero = root.querySelector<HTMLElement>('.discover-next-hero')!
         const heroCopy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
         const heroPoster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
@@ -1605,6 +1607,11 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
           documentWidth: document.documentElement.scrollWidth,
           page: root.getBoundingClientRect().toJSON(),
           controls: controls.toJSON(), tabs: tabs.toJSON(), modes: modes.toJSON(),
+          calendarEmptyStateCompact: Boolean(calendarEmptyRow && calendarOpenButton
+            && getComputedStyle(calendarEmptyRow).display === 'flex'
+            && calendarEmptyRow.getBoundingClientRect().height <= 52
+            && calendarOpenButton.getBoundingClientRect().top >= calendarEmptyRow.getBoundingClientRect().top - 1
+            && calendarOpenButton.getBoundingClientRect().bottom <= calendarEmptyRow.getBoundingClientRect().bottom + 1),
           tabLabelsFit: Array.from(root.querySelectorAll<HTMLElement>('.discover-page__tabs button')).every((button) => button.scrollWidth <= button.clientWidth + 4),
           tabLabelWidths: Array.from(root.querySelectorAll<HTMLElement>('.discover-page__tabs button')).map((button) => ({ label: button.textContent?.trim(), width: button.clientWidth, scrollWidth: button.scrollWidth })),
           controlsRowsSeparated: modes.top >= tabs.bottom - 1,
@@ -1632,6 +1639,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
       expect(layout.sectionsStacked, `${platform} Discovery sections overlap at ${width}px: ${JSON.stringify(layout.sectionDetails)}`).toBe(true)
       expect(layout.editorialControlsInside, `${platform} time/mood controls escape their section at ${width}px`).toBe(true)
       expect(layout.editorialControlsSeparated, `${platform} time/mood headings overlap their controls at ${width}px`).toBe(true)
+      expect(layout.calendarEmptyStateCompact, `${platform} empty calendar should remain one compact row at ${width}px`).toBe(true)
       expect(layout.minEditorialButtonHeight, `${platform} time/mood touch targets are too small at ${width}px`).toBeGreaterThanOrEqual(44)
       expect(layout.controls.left, `${platform} controls shift at ${width}px`).toBeGreaterThanOrEqual(-1)
       expect(layout.controls.right, `${platform} controls exceed the viewport at ${width}px`).toBeLessThanOrEqual(width + 1)

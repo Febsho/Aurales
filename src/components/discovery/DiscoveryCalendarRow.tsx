@@ -66,6 +66,7 @@ export default function DiscoveryCalendarRow({ watchProgress, traktConnected, si
     : range === 'today'
       ? 'No releases scheduled today.'
       : 'No upcoming releases in the next 30 days.'
+  const openCalendarButton = <button type="button" className="discover-calendar__open" onClick={() => navigate('/collections?tab=calendar')}>Open calendar <span aria-hidden="true">›</span></button>
 
   return <section className="discover-calendar row-contain" aria-labelledby="discover-calendar-title" aria-busy={loading}>
     <div className="discover-calendar__heading">
@@ -81,7 +82,10 @@ export default function DiscoveryCalendarRow({ watchProgress, traktConnected, si
         <span className="discover-calendar__title">{entry.title}</span>
         <span className="discover-calendar__subtitle">{entry.subtitle || (entry.kind === 'episode' ? 'New episode' : 'Movie')}</span>
       </button>)}
-    </div> : <p className="discover-calendar__empty" role="status">{loading ? 'Checking your upcoming releases…' : emptyLabel}</p>}
-    <button type="button" className="discover-calendar__open" onClick={() => navigate('/collections?tab=calendar')}>Open calendar <span aria-hidden="true">›</span></button>
+    </div> : <div className="discover-calendar__empty-row">
+      <p className="discover-calendar__empty" role="status">{loading ? 'Checking your upcoming releases…' : emptyLabel}</p>
+      {openCalendarButton}
+    </div>}
+    {visibleEntries.length > 0 && openCalendarButton}
   </section>
 }

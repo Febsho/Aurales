@@ -6575,8 +6575,10 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-calendar__title, .discover-calendar__subtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .discover-calendar__title { color: rgba(255,255,255,.82); font-size: .7rem; font-weight: 650; }
 .discover-calendar__subtitle { color: rgba(255,255,255,.48); font-size: .64rem; }
-.discover-calendar__empty { margin: .35rem 0; color: rgba(255,255,255,.48); font-size: .72rem; }
+.discover-calendar__empty-row { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: .55rem; margin-top: .2rem; }
+.discover-calendar__empty { min-width: 0; flex: 1 1 auto; margin: 0; color: rgba(255,255,255,.48); font-size: .72rem; line-height: 1.25; }
 .discover-calendar__open { margin-top: .2rem; }
+.discover-calendar__empty-row .discover-calendar__open { flex: 0 0 auto; margin-top: 0; }
 .discover-calendar__open span { margin-left: .3rem; font-size: 1.1rem; }
 .discover-binge__feature { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: .7rem; overflow: hidden; padding: 1rem; border: 1px solid rgba(255,255,255,.1); border-radius: 1.2rem; background: linear-gradient(110deg, rgba(28,28,33,.98), rgba(28,28,33,.72)); }
 .discover-binge__art { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
