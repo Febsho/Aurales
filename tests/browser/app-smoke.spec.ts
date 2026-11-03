@@ -211,8 +211,8 @@ test('Discovery uses public catalogs when the active profile has no library entr
       const details = card.querySelector<HTMLElement>('.discover-calendar__details')!.getBoundingClientRect()
       return { width: bounds.width, ratio: poster.width / poster.height, detailsContained: details.left >= poster.left && details.right <= poster.right && details.top >= poster.top && details.bottom <= poster.bottom }
     })
-    expect(cardLayout.width, `Calendar cards should be readable at ${width}px`).toBeGreaterThanOrEqual(176)
-    expect(cardLayout.ratio).toBeCloseTo(1.2, 1)
+    expect(cardLayout.width, `Calendar cards should be readable at ${width}px`).toBeGreaterThanOrEqual(224)
+    expect(cardLayout.ratio).toBeCloseTo(1.65, 1)
     expect(cardLayout.detailsContained).toBe(true)
   }
 })

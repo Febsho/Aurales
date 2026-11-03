@@ -6548,7 +6548,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-calendar__actions button[aria-pressed="true"] { border-color: rgba(255,255,255,.2); background: rgba(255,255,255,.14); color: #fff; }
 .discover-calendar__items { display: flex; gap: .65rem; overflow-x: auto; overscroll-behavior-x: contain; padding: .1rem 0 .35rem; scrollbar-width: none; scroll-snap-type: x proximity; }
 .discover-calendar__items::-webkit-scrollbar { display: none; }
-.discover-calendar__item { display: block; width: clamp(11rem, 15vw, 16rem); min-width: 0; flex: 0 0 auto; padding: 0; border: 0; border-radius: .9rem; background: transparent; color: inherit; text-align: left; cursor: pointer; scroll-snap-align: start; }
+.discover-calendar__item { display: block; width: clamp(14rem, 62vw, 22rem); min-width: 0; flex: 0 0 auto; padding: 0; border: 0; border-radius: .9rem; background: transparent; color: inherit; text-align: left; cursor: pointer; scroll-snap-align: start; }
 .discover-reveal[data-revealed="true"] .discover-calendar__item { animation: discover-calendar-item-in .3s cubic-bezier(.2,.75,.25,1) both; }
 .discover-calendar__item:nth-child(2) { animation-delay: 25ms; }
 .discover-calendar__item:nth-child(3) { animation-delay: 50ms; }
@@ -6564,7 +6564,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-calendar__item:hover .discover-calendar__poster { border-color: rgba(255,255,255,.28); }
 .discover-calendar__item:hover .discover-calendar__poster img { transform: scale(1.035); }
 @keyframes discover-calendar-item-in { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
-.discover-calendar__poster { position: relative; display: block; width: 100%; aspect-ratio: 1.2 / 1; overflow: hidden; border: 1px solid rgba(255,255,255,.1); border-radius: .9rem; background: rgba(255,255,255,.06); box-shadow: 0 8px 24px rgba(0,0,0,.22); }
+.discover-calendar__poster { position: relative; display: block; width: 100%; aspect-ratio: 1.65 / 1; overflow: hidden; border: 1px solid rgba(255,255,255,.1); border-radius: .9rem; background: rgba(255,255,255,.06); box-shadow: 0 8px 24px rgba(0,0,0,.22); }
 .discover-calendar__poster::after { position: absolute; inset: 0; content: ''; background: linear-gradient(180deg, rgba(0,0,0,.2), transparent 35%, rgba(0,0,0,.08) 56%, rgba(0,0,0,.82)); pointer-events: none; }
 .discover-calendar__poster img { width: 100%; height: 100%; object-fit: cover; transition: transform .24s cubic-bezier(.2,.75,.25,1); }
 .discover-calendar__date { position: absolute; top: .55rem; left: .6rem; z-index: 1; display: flex; align-items: center; gap: .4rem; color: #fff; text-shadow: 0 1px 10px rgba(0,0,0,.65); }
