@@ -1324,6 +1324,106 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(pageErrors).toEqual([])
 })
 
+test('Discovery remains correctly composed across Web and Tauri screen sizes', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_app_managed_metadata', 'false')
+    localStorage.setItem('tmdb_api_key', 'playwright-public-test-key')
+  })
+  await page.route('https://api.ids.moe/**', (route) => route.fulfill({ json: {} }))
+  await page.route('https://api.themoviedb.org/**', async (route) => {
+    const url = new URL(route.request().url())
+    const type = url.pathname.includes('/tv/') || url.pathname.endsWith('/trending/tv/week') ? 'series' : 'movie'
+    const results = Array.from({ length: 24 }, (_, index) => ({
+      id: 93000 + index,
+      title: `Layout fixture ${index + 1}`,
+      name: `Layout fixture ${index + 1}`,
+      poster_path: `/layout-fixture-${index % 8}.jpg`,
+      backdrop_path: '/layout-fixture-backdrop.jpg',
+      overview: 'A deterministic popular title for responsive Discovery layout checks.',
+      release_date: '2026-10-01',
+      first_air_date: '2026-10-01',
+      vote_average: 8.2,
+      vote_count: 1400,
+      popularity: 240 - index * 5,
+      genre_ids: type === 'movie' ? [18, 35, 878, 27, 14] : [18, 10759, 10765],
+      original_language: 'en',
+    }))
+    await route.fulfill({ json: { page: Number(url.searchParams.get('page') || 1), total_pages: 1, total_results: results.length, results } })
+  })
+  await page.route('https://image.tmdb.org/**', (route) => route.fulfill({
+    headers: { 'Access-Control-Allow-Origin': '*' },
+    contentType: 'image/svg+xml',
+    body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 3"><rect width="2" height="3" fill="#777"/></svg>',
+  }))
+
+  await page.goto('/discover')
+  await page.getByRole('button', { name: /select profile/i }).click()
+  await expect(page.locator('.discover-page')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Pick by Colour' })).toBeVisible()
+
+  for (const platform of ['web', 'tauri'] as const) {
+    await page.evaluate((runtime) => { document.documentElement.dataset.runtimePlatform = runtime }, platform)
+    for (const width of [390, 768, 1024, 1440, 1920, 2560]) {
+      await page.setViewportSize({ width, height: 900 })
+      const layout = await page.evaluate(() => {
+        const root = document.querySelector<HTMLElement>('.discover-page')!
+        const controls = root.querySelector<HTMLElement>('.discover-page__controls')!.getBoundingClientRect()
+        const tabs = root.querySelector<HTMLElement>('.discover-page__tabs')!.getBoundingClientRect()
+        const modes = root.querySelector<HTMLElement>('.discover-page__modes')!.getBoundingClientRect()
+        const hero = root.querySelector<HTMLElement>('.discover-next-hero')!
+        const heroCopy = hero.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
+        const heroPoster = hero.querySelector<HTMLElement>('.discover-spotlight__poster')!.getBoundingClientRect()
+        const heroTitle = hero.querySelector<HTMLElement>('.discover-spotlight__copy h2')!
+        const textBlocks = Array.from(hero.querySelectorAll<HTMLElement>(
+          '.discover-spotlight__eyebrow, .discover-spotlight__copy h2, .discover-spotlight__meta, .discover-spotlight__overview, .discover-spotlight__actions',
+        )).filter((element) => getComputedStyle(element).display !== 'none' && element.getBoundingClientRect().height > 0)
+          .map((element) => element.getBoundingClientRect())
+        const sections = Array.from(root.querySelectorAll<HTMLElement>(
+          '.discover-next-hero, .discover-shelf, .discover-refine, .discover-colors, .discover-genres, .discover-binge, .discover-more',
+        )).map((section) => section.getBoundingClientRect())
+        const posterCards = Array.from(root.querySelectorAll<HTMLElement>('.discover-shelf .media-row-card-slot'))
+          .map((card) => card.getBoundingClientRect())
+          .filter((bounds) => bounds.width > 0)
+        return {
+          viewport: document.documentElement.clientWidth,
+          documentWidth: document.documentElement.scrollWidth,
+          page: root.getBoundingClientRect().toJSON(),
+          controls: controls.toJSON(), tabs: tabs.toJSON(), modes: modes.toJSON(),
+          hero: hero.getBoundingClientRect().toJSON(),
+          headingFontSize: Number.parseFloat(getComputedStyle(root.querySelector<HTMLElement>('.discover-page__heading h1')!).fontSize),
+          heroFontFamily: getComputedStyle(heroTitle).fontFamily,
+          heroColumnsSeparated: heroCopy.right <= heroPoster.left + 1,
+          heroTextContained: textBlocks.every((bounds) => bounds.left >= heroCopy.left - 1 && bounds.right <= heroCopy.right + 1 && bounds.top >= heroCopy.top - 1 && bounds.bottom <= heroCopy.bottom + 1),
+          heroTextStacked: textBlocks.every((bounds, index) => index === 0 || textBlocks[index - 1]!.bottom <= bounds.top + 2),
+          sectionsInside: sections.every((bounds) => bounds.left >= -1 && bounds.right <= document.documentElement.clientWidth + 1),
+          sectionsStacked: sections.every((bounds, index) => index === 0 || bounds.height === 0 || sections[index - 1]!.height === 0 || sections[index - 1]!.bottom <= bounds.top + 1),
+          maxPosterRatio: Math.max(0, ...posterCards.map((bounds) => bounds.height / bounds.width)),
+        }
+      })
+      expect(layout.documentWidth, `${platform} document overflow at ${width}px`).toBeLessThanOrEqual(width + 1)
+      expect(layout.page.left, `${platform} Discovery shifted at ${width}px`).toBeGreaterThanOrEqual(-1)
+      expect(layout.page.right, `${platform} Discovery exceeds the viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
+      expect(layout.sectionsInside, `${platform} Discovery sections exceed ${width}px`).toBe(true)
+      expect(layout.sectionsStacked, `${platform} Discovery sections overlap at ${width}px`).toBe(true)
+      expect(layout.controls.left, `${platform} controls shift at ${width}px`).toBeGreaterThanOrEqual(-1)
+      expect(layout.controls.right, `${platform} controls exceed the viewport at ${width}px`).toBeLessThanOrEqual(width + 1)
+      expect(Math.abs((layout.tabs.top + layout.tabs.bottom) / 2 - (layout.modes.top + layout.modes.bottom) / 2), `${platform} tabs and actions should share a row at ${width}px`).toBeLessThanOrEqual(2)
+      expect(layout.heroColumnsSeparated, `${platform} spotlight copy overlaps its poster at ${width}px`).toBe(true)
+      expect(layout.heroTextContained, `${platform} spotlight text escapes its copy column at ${width}px`).toBe(true)
+      expect(layout.heroTextStacked, `${platform} spotlight text overlaps at ${width}px`).toBe(true)
+      expect(layout.heroFontFamily, `${platform} spotlight should use the app's standard system font`).toContain('system-ui')
+      expect(layout.maxPosterRatio, `${platform} posters are stretched at ${width}px`).toBeLessThanOrEqual(2.4)
+      expect(layout.headingFontSize, `${platform} Discovery heading is unexpectedly large at ${width}px`).toBeLessThanOrEqual(44)
+      if (width >= 900) {
+        expect(layout.hero.height, `${platform} spotlight is too short at ${width}px`).toBeGreaterThanOrEqual(300)
+        expect(layout.hero.height, `${platform} spotlight is too tall at ${width}px`).toBeLessThanOrEqual(500)
+      }
+    }
+  }
+})
+
 test('mobile series detail uses compact system typography and contained episode cards', async ({ page }) => {
   const renderLoopWarnings: string[] = []
   page.on('console', (message) => {
