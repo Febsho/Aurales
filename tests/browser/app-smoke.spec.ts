@@ -670,7 +670,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     const title = card.querySelector<HTMLElement>('.discover-spotlight__bottom > .discover-spotlight__logo, .discover-spotlight__bottom > h2')!.getBoundingClientRect()
     const copy = card.querySelector<HTMLElement>('.discover-spotlight__copy')!.getBoundingClientRect()
     const change = card.querySelector<HTMLElement>('.discover-spotlight__change')!.getBoundingClientRect()
-    return { viewport: document.documentElement.clientWidth, card: card.getBoundingClientRect().toJSON(), poster: poster.toJSON(), title: title.toJSON(), copy: copy.toJSON(), change: change.toJSON() }
+    return { viewport: document.documentElement.clientWidth, card: card.getBoundingClientRect().toJSON(), poster: poster.toJSON(), title: title.toJSON(), copy: copy.toJSON(), change: { ...change.toJSON(), backgroundColor: getComputedStyle(card.querySelector<HTMLElement>('.discover-spotlight__change')!).backgroundColor } }
   })
   expect(obsessionLayout.card.left, 'the editorial pick should align with the mobile page gutter').toBeGreaterThanOrEqual(12)
   expect(obsessionLayout.poster.width, 'the editorial poster should remain visible in the mobile spotlight').toBeGreaterThanOrEqual(84)
@@ -681,6 +681,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(obsessionLayout.card.height, 'the mobile editorial spotlight should fit its Tonight copy without a large blank lower half').toBeLessThanOrEqual(360)
   expect(obsessionLayout.change.height, 'the alternate editorial pick should keep a comfortable touch target').toBeGreaterThanOrEqual(44)
   expect(obsessionLayout.change.width, 'the alternate editorial pick should remain a compact link instead of filling a gray row').toBeLessThan(obsessionLayout.copy.width * .65)
+  expect(obsessionLayout.change.backgroundColor, 'the alternate editorial pick should look like a compact text action, not a filled button row').toBe('rgba(0, 0, 0, 0)')
   await expect(heroSpotlight.getByText('Tonight', { exact: true })).toBeVisible()
   await expect(heroSpotlight.locator('.discover-spotlight__accolade')).toBeVisible()
   await expect(heroSpotlight.locator('.discover-spotlight__accolade')).toHaveText(/^(In Cinema|New Movie|Top Rated)$/)
