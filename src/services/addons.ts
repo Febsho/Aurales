@@ -1,5 +1,7 @@
 import type { StremioAddonManifest, SearchResult, StreamResult, SubtitleResult } from '../types'
 import { invoke } from '@tauri-apps/api/core'
+import { getPlatformCapabilities } from '../platform/capabilities'
+import { getHttpText } from '../platform/httpText'
 import { MOCK_ADDON_MANIFEST, MOCK_TRENDING, MOCK_POPULAR_SHOWS } from '../data/mock'
 import { cachedFetch } from './cache/sqliteCache'
 import { CACHE_CATEGORIES, CACHE_TTLS } from './cache/constants'
@@ -8,6 +10,7 @@ import { addonServerScope } from './cache/homeRowCacheKeys'
 import { cancelRequestGroup, coordinatedJson, type RequestPriority } from './network/requestCoordinator'
 import { recoverArtworkSource } from './imageCache'
 import { loadAddonCatalogNative, loadAddonMetaNative, nativeAddonCatalogAvailable } from './addonCatalogLoader'
+import { createMediaSession, getMediaWorkerConfig } from './mediaWorker'
 
 export interface InstalledAddon {
   manifest: StremioAddonManifest
@@ -426,7 +429,14 @@ export async function getAddonSubtitles(
     })
   } catch (_) {
     try {
-      const body = await invoke<string>('http_get_text', { url })
+      let body: string
+      if (getPlatformCapabilities().platform === 'web') {
+        if (!getMediaWorkerConfig()) return []
+        const session = await createMediaSession(url)
+        body = await getHttpText(session.url, { timeoutMs: 8_000, maxBytes: 2 * 1024 * 1024 })
+      } else {
+        body = await invoke<string>('http_get_text', { url })
+      }
       const data = JSON.parse(body)
       return normalize(Array.isArray(data.subtitles) ? data.subtitles : [])
     } catch (_) {
