@@ -1988,16 +1988,21 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
         if (layout.bingeLayout) {
           const { feature, copy, gallery, title, actions } = layout.bingeLayout
           expect(copy.left, `${platform} Binge copy should stay inside its feature`).toBeGreaterThanOrEqual(feature.left)
-          expect(copy.right, `${platform} Binge copy should not overlap the poster gallery`).toBeLessThanOrEqual(gallery.left + 1)
+          expect(copy.bottom, `${platform} Binge copy should sit above its poster gallery`).toBeLessThanOrEqual(gallery.top + 1)
           expect(gallery.right, `${platform} Binge gallery should stay inside its feature`).toBeLessThanOrEqual(feature.right)
           expect(title.left, `${platform} Binge title should stay inside its copy column`).toBeGreaterThanOrEqual(copy.left)
           expect(title.right, `${platform} Binge title should stay inside its copy column`).toBeLessThanOrEqual(copy.right + 1)
-          expect(actions.top, `${platform} Binge actions should follow the recommendation title`).toBeGreaterThanOrEqual(title.bottom - 1)
+          expect(
+            actions.top >= title.bottom - 1 || actions.left >= title.right - 1,
+            `${platform} Binge actions should sit beside or below the recommendation title`,
+          ).toBe(true)
           expect(actions.bottom, `${platform} Binge actions should stay inside their copy column`).toBeLessThanOrEqual(copy.bottom + 1)
         }
       }
       if (width >= 900 && layout.bingePosterHeights.length === 5) {
-        expect(Math.max(...layout.bingePosterHeights) - Math.min(...layout.bingePosterHeights), `${platform} desktop Binge posters should share one aligned row at ${width}px`).toBeLessThanOrEqual(2)
+        const [featuredPosterHeight, ...alternativePosterHeights] = layout.bingePosterHeights
+        expect(featuredPosterHeight, `${platform} featured Binge poster should be larger than the alternatives at ${width}px`).toBeGreaterThan(Math.max(...alternativePosterHeights) * 1.5)
+        expect(Math.max(...alternativePosterHeights) - Math.min(...alternativePosterHeights), `${platform} alternative Binge posters should align in a two-by-two grid at ${width}px`).toBeLessThanOrEqual(2)
       }
       expect(layout.headingFontSize, `${platform} Discovery heading is unexpectedly large at ${width}px`).toBeLessThanOrEqual(44)
       if (width >= 900) {

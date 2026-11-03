@@ -6610,31 +6610,33 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 @media (min-width: 900px) {
   .discover-binge__feature {
     min-height: 0;
-    grid-template-columns: minmax(15rem, .72fr) minmax(0, 1.28fr);
-    align-items: center;
-    gap: clamp(1.1rem, 2.5vw, 2rem);
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: clamp(.8rem, 1.2vw, 1.1rem);
     padding: clamp(1rem, 2vw, 1.5rem);
   }
   .discover-binge__art::after { background: linear-gradient(90deg, rgba(17,17,20,.58), rgba(17,17,20,.7)), linear-gradient(180deg, rgba(17,17,20,.18), rgba(17,17,20,.48)); }
   .discover-binge__copy {
-    min-height: 100%;
-    align-items: flex-start;
-    flex-direction: column;
-    justify-content: center;
+    min-height: 0;
+    align-items: center;
+    flex-direction: row;
+    justify-content: space-between;
   }
+  .discover-binge__copy > div:first-child { min-width: 0; flex: 1 1 auto; }
   .discover-binge__copy h3 { max-width: 28rem; font-size: clamp(1.35rem, 1.8vw, 1.75rem); line-height: 1.15; }
   .discover-binge__actions { gap: .55rem; margin-top: 1rem; }
   .discover-binge__copy button { min-height: 2.8rem; padding-inline: 1rem; font-size: .82rem; }
   .discover-binge__gallery {
-    height: clamp(8rem, 12.5vw, 11rem);
-    grid-column: 2;
-    grid-row: 1;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    width: min(100%, 42rem);
+    height: clamp(17rem, 30vw, 27rem);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     align-self: center;
+    margin-inline: auto;
   }
-  .discover-binge__alternatives { display: contents; }
-  .discover-binge__main-poster,
-  .discover-binge__alternatives button { width: auto; max-width: 100%; height: 100%; aspect-ratio: 2 / 3; justify-self: center; align-self: center; }
+  .discover-binge__main-poster { grid-column: 1; grid-row: 1; width: auto; max-width: 100%; height: 100%; justify-self: center; align-self: center; }
+  .discover-binge__alternatives { display: grid; grid-column: 2; grid-row: 1; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); align-items: center; gap: .6rem; }
+  .discover-binge__alternatives button { width: auto; max-width: 100%; height: 100%; justify-self: center; align-self: center; }
   .discover-binge__alternatives button span { padding-inline: .55rem; font-size: .76rem; }
 }
 @media (min-width: 701px) and (max-width: 899px) {
@@ -6643,13 +6645,17 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     gap: .85rem;
   }
   .discover-binge__copy { align-items: center; flex-direction: row; }
+  .discover-binge__copy > div:first-child { min-width: 0; flex: 1 1 auto; }
   .discover-binge__gallery {
-    height: clamp(9rem, 22vw, 12rem);
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    width: min(100%, 42rem);
+    height: clamp(17rem, 38vw, 24rem);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    margin-inline: auto;
   }
-  .discover-binge__alternatives { display: contents; }
-  .discover-binge__main-poster,
-  .discover-binge__alternatives button { width: auto; max-width: 100%; height: 100%; aspect-ratio: 2 / 3; justify-self: center; align-self: center; }
+  .discover-binge__main-poster { grid-column: 1; grid-row: 1; width: auto; max-width: 100%; height: 100%; justify-self: center; align-self: center; }
+  .discover-binge__alternatives { display: grid; grid-column: 2; grid-row: 1; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); align-items: center; gap: .6rem; }
+  .discover-binge__alternatives button { width: auto; max-width: 100%; height: 100%; justify-self: center; align-self: center; }
 }
 @media (max-width: 640px) {
   .discover-page__heading .discover-spotlight-heading { margin-block: .9rem .45rem; }
