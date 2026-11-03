@@ -5439,43 +5439,27 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   }
 }
 
-/* Phones cannot lock screen orientation in every browser (notably iOS Safari).
-   Present the web player in a landscape canvas anyway, rotating the player UI
-   while the device remains portrait. If the device rotates, this rule drops
-   away and the normal landscape layout takes over. */
+/* Keep the player upright on phones. Safari's browser chrome stays in portrait
+   even when CSS rotates a full-screen page, which makes controls and errors
+   appear sideways and difficult to reach. */
 @media (max-width: 700px) and (orientation: portrait) and (pointer: coarse) {
-  html[data-runtime-platform="web"].full-player-active body > .fixed.inset-0.bg-black.text-white {
-    inset: auto;
-    top: 50%;
-    left: 50%;
-    right: auto;
-    bottom: auto;
-    width: 100dvh;
-    height: 100vw;
-    max-width: none;
-    max-height: none;
-    transform: translate(-50%, -50%) rotate(90deg);
-    transform-origin: center;
-  }
-
   html[data-runtime-platform="web"].full-player-active .inapp-player-header {
-    padding: .55rem .8rem !important;
+    padding: max(.75rem, env(safe-area-inset-top)) .85rem .5rem !important;
   }
   html[data-runtime-platform="web"].full-player-active .inapp-player-header > div:last-child {
-    max-width: 68%;
+    max-width: min(68%, 18rem);
   }
   html[data-runtime-platform="web"].full-player-active .inapp-player-controls {
-    padding: .45rem .8rem .55rem !important;
+    padding: .75rem .85rem max(.85rem, env(safe-area-inset-bottom)) !important;
   }
   html[data-runtime-platform="web"].full-player-active .inapp-player-controls > div:first-child {
-    gap: .5rem;
-    margin-bottom: .4rem;
+    gap: .65rem;
+    margin-bottom: .65rem;
   }
   html[data-runtime-platform="web"].full-player-active .inapp-player-control-row {
-    flex-direction: row;
-    flex-wrap: wrap;
-    justify-content: space-between;
-    gap: .35rem .75rem;
+    flex-direction: column;
+    align-items: stretch;
+    gap: .65rem;
   }
   html[data-runtime-platform="web"].full-player-active .inapp-player-transport,
   html[data-runtime-platform="web"].full-player-active .inapp-player-options {
@@ -5486,13 +5470,13 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     width: auto;
   }
   html[data-runtime-platform="web"].full-player-active .inapp-player-options {
-    gap: .2rem;
+    gap: .45rem;
   }
   html[data-runtime-platform="web"].full-player-active .inapp-player-options select {
-    max-width: 20dvh;
+    max-width: 100%;
   }
   html[data-runtime-platform="web"].full-player-active .inapp-player-options input[type="range"] {
-    width: clamp(4rem, 10dvh, 7rem);
+    width: min(36vw, 8rem);
   }
   html[data-runtime-platform="web"].full-player-active .inapp-player-options > div:last-child {
     grid-column: auto;
@@ -5501,8 +5485,20 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     max-width: min(20rem, calc(100% - 1.5rem));
   }
   html[data-runtime-platform="web"].full-player-active .inapp-player-notice {
-    top: max(4.75rem, calc(env(safe-area-inset-top) + 4rem)) !important;
-    max-width: calc(100% - 1.5rem);
+    top: max(5.25rem, calc(env(safe-area-inset-top) + 4.5rem)) !important;
+    max-width: calc(100% - 1.25rem);
+  }
+  html[data-runtime-platform="web"].full-player-active [role="alert"] {
+    top: max(5.75rem, calc(env(safe-area-inset-top) + 4.75rem));
+    max-height: calc(100dvh - 11rem);
+    width: min(94vw, 34rem);
+    padding: 1rem;
+    font-size: .875rem;
+    line-height: 1.35rem;
+  }
+  html[data-runtime-platform="web"].full-player-active [role="alert"] button {
+    width: 100%;
+    min-height: 2.75rem;
   }
 }
 

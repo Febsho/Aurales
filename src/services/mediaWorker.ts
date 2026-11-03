@@ -158,7 +158,7 @@ export async function startMediaConversion(url: string, mode: MediaConversionMod
   }, 10_000, signal)
   if (!response.ok) {
     let errorCode: string | undefined
-    if (response.status === 429) {
+    if (response.status === 403 || response.status === 429 || response.status === 503) {
       const body = await response.clone().json().catch(() => null) as { error?: unknown } | null
       if (typeof body?.error === 'string') errorCode = body.error
     }
@@ -600,6 +600,7 @@ export function validatePlaybackRequestHeaders(headers: PlaybackRequestHeaders):
 
 function workerError(status: number): string {
   if (status === 401) return INTEGRATED_MEDIA_WORKER ? 'Aurales media service session expired. Unlock the service again in Settings.' : 'Worker rejected its API key. Check the saved key.'
+  if (status === 403) return 'The media worker rejected this source host. Add the exact source hostname to its MEDIA_ALLOWED_HOSTS setting, then retry playback.'
   if (status === 413) return 'Worker rejected the request because it is too large.'
   if (status === 429) return 'Worker is busy. Try again shortly.'
   if (status === 503) return 'This media conversion mode is unavailable on the configured worker.'
