@@ -1712,7 +1712,20 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           continue
         }
         if (status.status === 'cancelled') return false
-        if (status.status === 'failed') throw new Error('The media worker could not convert this stream.')
+        if (status.status === 'failed') {
+          const failureMessages: Record<string, string> = {
+            source_unavailable: 'The media worker could not fetch this source. Check its signed URL, request headers, and allowed hostname.',
+            unsupported_input: 'The media worker could not identify a supported video or playlist in this source.',
+            no_compatible_output: 'FFmpeg could not create a compatible copy with its available codecs and output formats.',
+            conversion_timed_out: 'The media worker conversion exceeded its time limit. Aurales will try a smaller mobile profile if one is available.',
+            conversion_internal_error: 'The media worker encountered an internal error while preparing this source. Check its logs.',
+          }
+          const message = failureMessages[status.error] || `The media worker could not convert this stream (${status.error}).`
+          if (status.error === 'source_unavailable' || status.error === 'unsupported_input') {
+            conversionFatalErrorRef.current = message
+          }
+          throw new Error(message)
+        }
         if (status.status !== 'ready') {
           if (Date.now() - startedAt >= maxConversionWaitMs) {
             throw new Error('The media worker conversion exceeded its configured time limit.')

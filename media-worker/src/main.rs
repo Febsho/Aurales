@@ -136,7 +136,34 @@ enum ConversionStatus {
         live_snapshot: bool,
         audio_tracks_reduced: bool,
     },
-    Failed,
+    Failed(ConversionFailure),
+}
+
+#[derive(Clone, Copy)]
+enum ConversionFailure {
+    SourceUnavailable,
+    UnsupportedInput,
+    NoCompatibleOutput,
+    TimedOut,
+    Internal,
+}
+
+impl ConversionFailure {
+    fn code(self) -> &'static str {
+        match self {
+            Self::SourceUnavailable => "source_unavailable",
+            Self::UnsupportedInput => "unsupported_input",
+            Self::NoCompatibleOutput => "no_compatible_output",
+            Self::TimedOut => "conversion_timed_out",
+            Self::Internal => "conversion_internal_error",
+        }
+    }
+}
+
+impl From<()> for ConversionFailure {
+    fn from(_: ()) -> Self {
+        Self::Internal
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -1267,7 +1294,7 @@ async fn media_conversion_status(
             audio_tracks_reduced: Some(*audio_tracks_reduced),
             error: None,
         },
-        ConversionStatus::Failed => MediaConversionStatusResponse {
+        ConversionStatus::Failed(failure) => MediaConversionStatusResponse {
             job_id: id,
             status: "failed",
             mode: None,
@@ -1277,7 +1304,7 @@ async fn media_conversion_status(
             subtitles: None,
             live_snapshot: None,
             audio_tracks_reduced: None,
-            error: Some("conversion_failed"),
+            error: Some(failure.code()),
         },
     };
     Json(response).into_response()
@@ -1371,7 +1398,8 @@ async fn run_media_conversion(
                     &state.conversion_dir.join(format!("{id}.input-assets")),
                     mobile_compatibility,
                 )
-                .await?
+                .await
+                .map_err(|_| ConversionFailure::SourceUnavailable)?
             } else if dash_input {
                 download_dash_conversion_input(
                     &state,
@@ -1381,12 +1409,17 @@ async fn run_media_conversion(
                     &state.conversion_dir.join(format!("{id}.input-assets")),
                     mobile_compatibility,
                 )
-                .await?
+                .await
+                .map_err(|_| ConversionFailure::SourceUnavailable)?
             } else {
-                download_allowlisted_media(&state, &url, &request_headers, &input_path).await?;
+                download_allowlisted_media(&state, &url, &request_headers, &input_path)
+                    .await
+                    .map_err(|_| ConversionFailure::SourceUnavailable)?;
                 false
             };
-            let source_info = probe_local_media(ffmpeg.as_ref(), &input_path).await?;
+            let source_info = probe_local_media(ffmpeg.as_ref(), &input_path)
+                .await
+                .map_err(|_| ConversionFailure::UnsupportedInput)?;
             let source_frame_rate = source_video_frame_rate(&source_info);
             let source_audio_track_count = source_info
                 .get("streams")
@@ -1458,7 +1491,7 @@ async fn run_media_conversion(
                     }
                     let Some((bytes, actual_mode, candidate_path, audio_tracks_reduced)) = result
                     else {
-                        return Err(());
+                        return Err(ConversionFailure::NoCompatibleOutput);
                     };
                     let ready_path = if output_format == ConversionOutputFormat::Mp4 {
                         tokio::fs::rename(&candidate_path, &output_path)
@@ -1468,7 +1501,7 @@ async fn run_media_conversion(
                     } else {
                         candidate_path
                     };
-                    Ok::<_, ()>((bytes, actual_mode, ready_path, audio_tracks_reduced))
+                    Ok::<_, ConversionFailure>((bytes, actual_mode, ready_path, audio_tracks_reduced))
                 } else {
                     let hardware_encoder = if matches!(
                         mode,
@@ -1495,8 +1528,9 @@ async fn run_media_conversion(
                         tone_map_hdr,
                         source_frame_rate,
                     )
-                    .await?;
-                    Ok((bytes, mode, output_path.clone(), audio_tracks_reduced))
+                    .await
+                    .map_err(|_| ConversionFailure::NoCompatibleOutput)?;
+                    Ok::<_, ConversionFailure>((bytes, mode, output_path.clone(), audio_tracks_reduced))
                 }?;
             let session_url = create_local_media_session(&state, ready_path.clone()).await?;
             let subtitles = extract_text_subtitle_tracks(
@@ -1508,7 +1542,7 @@ async fn run_media_conversion(
                 &source_info,
             )
             .await;
-            Ok::<_, ()>((
+            Ok::<_, ConversionFailure>((
                 bytes,
                 actual_mode,
                 ready_path,
@@ -1521,7 +1555,7 @@ async fn run_media_conversion(
         },
     )
     .await
-    .unwrap_or(Err(()));
+    .unwrap_or(Err(ConversionFailure::TimedOut));
     let _ = tokio::fs::remove_file(&input_path).await;
     let _ =
         tokio::fs::remove_dir_all(state.conversion_dir.join(format!("{id}.input-assets"))).await;
@@ -1550,9 +1584,9 @@ async fn run_media_conversion(
                     audio_tracks_reduced,
                 }
             }
-            Err(()) => {
+            Err(failure) => {
                 cleanup_conversion_files(state.conversion_dir.as_ref(), &id).await;
-                ConversionStatus::Failed
+                ConversionStatus::Failed(failure)
             }
         };
     }
