@@ -1152,7 +1152,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   await contentTypeControls.getByRole('button', { name: 'Movies', exact: true }).click()
   const discoveryFlow = await page.locator('.discover-page').evaluate((root) => {
     const headings = Array.from(root.querySelectorAll<HTMLElement>('h2, h3')).map((heading) => heading.textContent?.trim() || '')
-    const referenceOrder = ['Your Next Obsession', 'OR TRY', 'Top 10 For You', 'How Much Time Tonight?', 'Pick Three You Like', 'Pick by Colour', 'Your Genres', 'Your Next Binge', 'Sunday Night Moods', 'Made for the Big Screen', 'Hidden Gems', 'Keep Exploring']
+    const referenceOrder = ['Calendar', 'Your Next Obsession', 'OR TRY', 'Top 10 For You', 'How Much Time Tonight?', 'Pick Three You Like', 'Pick by Colour', 'Your Genres', 'Your Next Binge', 'Sunday Night Moods', 'Made for the Big Screen', 'Hidden Gems', 'Keep Exploring']
     return referenceOrder.filter((title) => headings.includes(title)).map((title) => headings.indexOf(title))
   })
   expect(discoveryFlow.every((position, index) => index === 0 || position > discoveryFlow[index - 1]!), 'the taste picker should stay near the Tonight recommendations before the deeper catalog shelves').toBe(true)
@@ -1829,12 +1829,15 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
   await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeHidden()
   await expect(page.getByRole('heading', { name: 'Your Next Obsession' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'OR TRY', exact: true })).toBeVisible()
-  const calendarFollowsSpotlight = await page.evaluate(() => {
-    const trending = document.querySelector<HTMLElement>('.discover-shelf--trending')
+  const calendarLeadsEditorialFlow = await page.evaluate(() => {
     const calendar = document.querySelector<HTMLElement>('.discover-calendar')
-    return Boolean(trending && calendar && calendar.getBoundingClientRect().top >= trending.getBoundingClientRect().bottom)
+    const spotlight = document.querySelector<HTMLElement>('.discover-next-hero')
+    const trending = document.querySelector<HTMLElement>('.discover-shelf--trending')
+    return Boolean(calendar && spotlight && trending
+      && calendar.getBoundingClientRect().bottom <= spotlight.getBoundingClientRect().top
+      && spotlight.getBoundingClientRect().bottom <= trending.getBoundingClientRect().top)
   })
-  expect(calendarFollowsSpotlight, 'keep Calendar available after the Tonight and OR TRY editorial content').toBe(true)
+  expect(calendarLeadsEditorialFlow, 'the reference flow starts with Calendar, followed by Tonight and OR TRY').toBe(true)
   const calendarLeadsTheCatalogs = await page.evaluate(() => {
     const calendar = document.querySelector<HTMLElement>('.discover-calendar')
     const tastePicker = document.querySelector<HTMLElement>('.discover-refine')
@@ -2024,6 +2027,7 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
   await page.evaluate(() => { document.documentElement.dataset.runtimePlatform = 'web' })
   await page.setViewportSize({ width: 320, height: 568 })
   await page.evaluate(() => document.querySelector<HTMLElement>('.app-scroll-root')?.scrollTo({ top: 0, behavior: 'instant' }))
+  await page.locator('.discover-spotlight').scrollIntoViewIfNeeded()
   await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
   const compactViewportActions = await page.evaluate(() => {
     const hero = document.querySelector<HTMLElement>('.discover-spotlight')!
