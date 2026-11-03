@@ -5609,21 +5609,85 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] .mobile-web-profile__manage { margin-top: .25rem; border-top: 1px solid rgba(255,255,255,.1); border-radius: 0 0 .75rem .75rem; }
 
   html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] > .mobile-home-hero {
-    width: 100%;
-    height: clamp(640px, 78svh, 900px) !important;
-    border: 0;
-    border-radius: 0;
-    box-shadow: none;
+    width: calc(100% - 2rem);
+    height: clamp(31rem, 62svh, 36rem) !important;
+    margin: 0 auto 1.8rem;
+    overflow: visible !important;
+    border: 1px solid rgba(255,255,255,.13);
+    border-radius: 1.55rem;
+    background: rgba(12,12,16,.18);
+    box-shadow: 0 1.1rem 2.8rem rgba(0,0,0,.32);
     cursor: pointer;
   }
-  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .hero-content-overlay { padding: 0 1.4rem 3.7rem !important; }
-  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .hero-title-logo { max-width: 88%; max-height: 4.2rem; }
-  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .hero-title-text { font-size: 2.1rem !important; }
-  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .mobile-home-hero-overview { display: -webkit-box; overflow: hidden; color: rgba(255,255,255,.88); font-size: .9rem !important; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .home-hero-ratings { margin-bottom: .45rem; }
-  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .hero-dots { position: absolute; right: 0; bottom: 1.1rem; left: 0; justify-content: center; }
+  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] > .mobile-home-hero > div:not(.hero-content-overlay):not(.hero-carousel-arrow) {
+    overflow: hidden;
+    border-radius: inherit;
+  }
+  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .hero-content-overlay {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0 1.25rem .7rem !important;
+    text-align: center;
+  }
+  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .hero-content-overlay > div:first-child {
+    width: 100%;
+    min-height: 0;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: .65rem;
+  }
+  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .hero-title-logo { max-width: 88%; max-height: 4.2rem; object-position: center; }
+  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .hero-title-text { width: 100%; max-width: 100%; font-size: 2.1rem !important; }
+  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .hero-content-overlay > p:not(.mobile-home-hero-overview) {
+    margin-bottom: .55rem;
+    color: rgba(255,255,255,.78);
+    font-size: .76rem;
+  }
+  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .home-hero-ratings { justify-content: center; margin: 0 auto .55rem; }
+  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .mobile-home-hero-overview {
+    display: -webkit-box;
+    width: 100%;
+    max-width: 32rem;
+    overflow: hidden;
+    margin: 0 auto .25rem;
+    color: rgba(255,255,255,.83);
+    font-size: .82rem !important;
+    line-height: 1.35;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .hero-content-overlay > div:last-child {
+    display: flex;
+    width: 100%;
+    justify-content: center;
+    margin: 0;
+  }
+  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .hero-dots {
+    position: absolute;
+    right: auto;
+    bottom: -1.65rem;
+    left: 50%;
+    justify-content: center;
+    margin: 0;
+    transform: translateX(-50%);
+  }
   html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .hero-carousel-arrow { display: none; }
   html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero:focus-visible { outline: 2px solid rgba(255,255,255,.8); outline-offset: -3px; }
+
+  html[data-runtime-platform="web"].hero-bg-active::before {
+    filter: blur(30px) brightness(.42);
+    transform: scale(1.08);
+  }
+  html[data-runtime-platform="web"].hero-bg-active::after {
+    background: linear-gradient(
+      to bottom,
+      rgb(var(--ambient-rgb, 43 42 73) / .34) 0%,
+      rgb(var(--ambient-rgb, 43 42 73) / .48) 46%,
+      rgb(var(--ambient-rgb, 43 42 73) / .62) 100%
+    );
+    opacity: .92;
+  }
 
   html[data-runtime-platform="web"] .mobile-web-nav__item {
     display: flex;
