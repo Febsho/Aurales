@@ -592,6 +592,8 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   expect(obsessionLayout.title.right).toBeLessThanOrEqual(obsessionLayout.card.right - 8)
   expect(obsessionLayout.card.height, 'the mobile editorial spotlight should fit its Tonight copy without a large blank lower half').toBeLessThanOrEqual(360)
   await expect(heroSpotlight.getByText('Tonight', { exact: true })).toBeVisible()
+  await expect(heroSpotlight.locator('.discover-spotlight__accolade')).toBeVisible()
+  await expect(heroSpotlight.locator('.discover-spotlight__accolade')).toHaveText(/^(In Cinema|New Movie|Top Rated)$/)
   await expect(heroSpotlight.getByRole('button', { name: /Another option/ })).toBeEnabled()
   const editorialPoster = heroSpotlight.locator('.discover-spotlight__poster img')
   await expect(editorialPoster).toHaveAttribute('data-artwork-loaded', 'true')

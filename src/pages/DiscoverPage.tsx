@@ -32,6 +32,7 @@ import { getBerlinDateKey, getNextBerlinMidnight } from '../services/discovery/b
 import { DISCOVERY_ALGORITHM_VERSION, discoverySourcesSettled, latestSnapshotForScope, makeDailySnapshotKey } from '../services/discovery/dailySnapshot'
 import { getActiveProfile, getActiveProfileId } from '../services/profiles'
 import { mediaIdentity } from '../services/mediaPresentation'
+import { editorialAccolade } from '../services/accolades'
 import { getLocalWatchlist, subscribeLocalWatchlist, type LocalWatchlistItem } from '../services/localWatchlist'
 import { buildNewLibraryItems, parseLibraryAddedAt, type DatedLibraryItem } from '../services/discovery/libraryItems'
 import { preferredScrollBehavior } from '../services/motion'
@@ -1011,6 +1012,13 @@ export default function DiscoverPage() {
   }, [spotlightCandidates, spotlightSelectionKey, trendingReadyScope, trendingScope])
   const heroItem = heroRecommendation?.item
   const heroMediaKey = heroItem ? mediaIdentity(heroItem) : null
+  const heroEditorialLabel = heroItem ? editorialAccolade({
+    type: heroItem.type,
+    year: heroItem.year,
+    releaseDate: heroItem.releaseDate,
+    rating: heroItem.rating,
+    voteCount: heroItem.voteCount,
+  }) : null
   useEffect(() => {
     const previousKey = previousSpotlightKeyRef.current
     previousSpotlightKeyRef.current = heroMediaKey
@@ -1733,7 +1741,7 @@ export default function DiscoverPage() {
                     </div>
                   </div>
                 </div>
-                {heroPoster && <div className="discover-spotlight__poster"><img key={heroPoster} className="discover-artwork-enter" src={heroPoster} alt={`${heroRecommendation.item.title} poster`} draggable={false} loading="eager" decoding="async" onLoad={revealDiscoveryArtwork} />{heroRecommendation.item.rating != null && <span className="discover-picker__rating">★ {Number(heroRecommendation.item.rating).toFixed(1)}</span>}</div>}
+                {heroPoster && <div className="discover-spotlight__poster"><img key={heroPoster} className="discover-artwork-enter" src={heroPoster} alt={`${heroRecommendation.item.title} poster`} draggable={false} loading="eager" decoding="async" onLoad={revealDiscoveryArtwork} />{heroEditorialLabel && <span className="discover-spotlight__accolade">{heroEditorialLabel}</span>}{heroRecommendation.item.rating != null && <span className="discover-picker__rating">★ {Number(heroRecommendation.item.rating).toFixed(1)}</span>}</div>}
               </section>
             </>
           </DiscoveryReveal>}
