@@ -1805,7 +1805,9 @@ async fn transcode_local_output_using_encoder_with_audio_policy(
     } else {
         // The single-variant HLS output path packages one audio track. On
         // mobile, honor the requested language order when selecting it.
-        let audio_track_index = preferred_audio_track_indices.first().copied().unwrap_or(0);
+        let audio_track_index = audio_track_index
+            .or_else(|| preferred_audio_track_indices.first().copied())
+            .unwrap_or(0);
         command
             .arg("-map")
             .arg(format!("0:a:{audio_track_index}?"));
@@ -1959,7 +1961,7 @@ async fn transcode_conversion_candidate(
         return Ok((bytes, false));
     }
     remove_conversion_output(output_path).await;
-    if output_format != ConversionOutputFormat::Mp4 || source_audio_track_count <= 1 {
+    if source_audio_track_count <= 1 {
         return Err(());
     }
 
