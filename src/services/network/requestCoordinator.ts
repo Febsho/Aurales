@@ -538,8 +538,10 @@ export async function coordinatedJson<T>(
   const origin = normalizedOrigin(options.origin || url)
   const dedupeKey = `${options.dedupeKey}|url:${url}`
   return requestCoordinator.run({ ...options, origin, dedupeKey }, async (signal) => {
+    // Visible results are already on the user's current screen; one short
+    // retry protects shelves from transient provider 5xx responses too.
     const maxAttempts = options.retry === 'interactive-once'
-      && (options.priority === 'interactive' || options.priority === 'playback')
+      && (options.priority === 'interactive' || options.priority === 'playback' || options.priority === 'visible')
       ? 2
       : 1
     let lastError: unknown

@@ -114,6 +114,26 @@ describe('request coordinator', () => {
     vi.useRealTimers()
   })
 
+  it('retries one visible metadata request after a transient server error', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 503 }))
+      .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = coordinatedJson<{ ok: boolean }>('https://api.example/discover', {}, {
+      label: 'Visible discovery metadata',
+      kind: 'metadata',
+      dedupeKey: 'discover:visible',
+      priority: 'visible',
+      retry: 'interactive-once',
+    })
+
+    await vi.advanceTimersByTimeAsync(500)
+    await expect(result).resolves.toEqual({ ok: true })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    vi.useRealTimers()
+  })
+
   it('cancels queued work by group', async () => {
     const blocker = deferred<string>()
     const first = requestCoordinator.run({
