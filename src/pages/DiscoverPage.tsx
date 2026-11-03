@@ -1738,7 +1738,7 @@ export default function DiscoverPage() {
                     <p className="discover-spotlight__eyebrow">Tonight</p>
                     <p className="discover-spotlight__duration">Usually {formatWatchDuration(heroRecommendation.runtimeMinutes || tasteProfile.preferredRuntimeMinutes || (tab === 'movies' ? 105 : 45))}</p>
                   </div>
-                  <div className="discover-spotlight__bottom">
+                  <div className={`discover-spotlight__bottom${heroRecommendation.reasons[0] ? ' has-editorial-reason' : ''}`}>
                     {heroLogo && !heroLogoError ? <img key={heroRecommendation.item.id} src={heroLogo} alt={heroRecommendation.item.title} draggable={false} onError={() => setHeroLogoError(true)} className="discover-spotlight__logo" /> : <h2 key={heroRecommendation.item.id}>{heroRecommendation.item.title}</h2>}
                     <div className="discover-spotlight__meta">
                       {heroRecommendation.item.year && <span>{heroRecommendation.item.year}</span>}

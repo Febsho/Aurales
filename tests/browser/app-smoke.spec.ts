@@ -826,11 +826,12 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   })
   expect(obsessionLayout.card.left, 'the editorial pick should align with the mobile page gutter').toBeGreaterThanOrEqual(12)
   expect(obsessionLayout.poster.width, 'the editorial poster should remain visible in the mobile spotlight').toBeGreaterThanOrEqual(84)
-  expect(obsessionLayout.poster.width).toBeLessThanOrEqual(124)
+  expect(obsessionLayout.poster.width).toBeLessThanOrEqual(100)
   expect(obsessionLayout.poster.left).toBeGreaterThan(obsessionLayout.copy.right)
   expect(obsessionLayout.title.left).toBeGreaterThanOrEqual(obsessionLayout.card.left + 8)
   expect(obsessionLayout.title.right).toBeLessThanOrEqual(obsessionLayout.card.right - 8)
-  expect(obsessionLayout.card.height, 'the mobile editorial spotlight should fit its Tonight copy without a large blank lower half').toBeLessThanOrEqual(360)
+  expect(obsessionLayout.card.height, 'the mobile editorial spotlight should stay compact like the reference card').toBeLessThanOrEqual(280)
+  await expect(heroSpotlight.locator('.discover-spotlight__overview')).toBeHidden()
   expect(obsessionLayout.change.height, 'the alternate editorial pick should keep a comfortable touch target').toBeGreaterThanOrEqual(44)
   expect(obsessionLayout.change.width, 'the alternate editorial pick should remain a compact link instead of filling a gray row').toBeLessThan(obsessionLayout.copy.width * .65)
   expect(obsessionLayout.change.backgroundColor, 'the alternate editorial pick should look like a compact text action, not a filled button row').toBe('rgba(0, 0, 0, 0)')
@@ -1310,6 +1311,12 @@ test('mobile Discover and movie details keep text, hero and controls within the 
           const bounds = element.getBoundingClientRect()
           return { visible: getComputedStyle(element).display !== 'none' && bounds.height > 0, left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom }
         })(),
+        reason: (() => {
+          const element = hero.querySelector<HTMLElement>('.discover-spotlight__reason')
+          if (!element) return null
+          const bounds = element.getBoundingClientRect()
+          return { visible: getComputedStyle(element).display !== 'none' && bounds.height > 0, bottom: bounds.bottom }
+        })(),
         actionsTop: hero.querySelector<HTMLElement>('.discover-spotlight__actions')?.getBoundingClientRect().top ?? 0,
       } : null,
       posterVisible: Boolean(poster && poster.getBoundingClientRect().width > 0),
@@ -1344,10 +1351,9 @@ test('mobile Discover and movie details keep text, hero and controls within the 
     expect(discoveryLayout!.hero.bottom).toBeLessThanOrEqual(discoveryLayout!.hero.bottomNavTop)
     expect(discoveryLayout!.hero.ambientArtwork).toBe(true)
     expect(discoveryLayout!.hero.backgroundColor).toBe('rgb(39, 39, 43)')
-    expect(discoveryLayout!.hero.overview?.visible, 'the phone spotlight should include the compact synopsis shown in the reference').toBe(true)
-    expect(discoveryLayout!.hero.overview?.left).toBeGreaterThanOrEqual(0)
-    expect(discoveryLayout!.hero.overview?.right).toBeLessThanOrEqual(discoveryLayout!.viewport)
-    expect(discoveryLayout!.hero.actionsTop).toBeGreaterThanOrEqual(discoveryLayout!.hero.overview!.bottom - 1)
+    expect(discoveryLayout!.hero.reason?.visible, 'the phone spotlight should show its concise editorial signal').toBe(true)
+    expect(discoveryLayout!.hero.overview?.visible, 'do not stack a long synopsis under the editorial signal on a phone').toBe(false)
+    expect(discoveryLayout!.hero.actionsTop).toBeGreaterThanOrEqual(discoveryLayout!.hero.reason!.bottom - 1)
     expect(discoveryLayout!.posterVisible).toBe(true)
     expect(discoveryLayout!.posterRightAligned).toBe(true)
     expect(discoveryLayout!.actionsFit).toBe(true)
