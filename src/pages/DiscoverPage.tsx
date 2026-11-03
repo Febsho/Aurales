@@ -935,6 +935,10 @@ export default function DiscoverPage() {
       ? applyRecommendationFeedback(fallbackRankedSnapshot.filter((entry) => matchesDiscoverTab(entry.item, tab)), feedback)
       : liveRanked,
   [snapshotIsValid, validRankedSnapshot, feedback, dailySnapshotMeta, dailySnapshotKey, fallbackRankedSnapshot, tab, liveRanked])
+  // A persisted provider snapshot can briefly outlive a content-tab switch
+  // while its replacement loads. Keep every Discovery surface scoped to the
+  // active tab so another media type never flashes into the recommendations.
+  const tabRanked = useMemo(() => ranked.filter((entry) => matchesDiscoverTab(entry.item, tab)), [ranked, tab])
   const currentTrendingRanked = useMemo(() => sortRecommendationsByPopularity(rankCandidates(
     currentTrending
       .filter((item) => item.poster && matchesDiscoverTab(item, tab) && candidatePassesPrefs(item, prefs))
@@ -954,7 +958,7 @@ export default function DiscoverPage() {
   // Wait for either personalized results or current trends before making an
   // additional runtime request, so a browser-only session can use whichever
   // source is available without blocking the main Discovery feed.
-  const hasDiscoveryItems = ranked.length > 0 || currentTrendingRanked.length > 0
+  const hasDiscoveryItems = tabRanked.length > 0 || currentTrendingRanked.length > 0
   const timeTonight = useDiscoverRow(
     makeConfig(contentType, 'popularity.desc', preferences, {
       runtimeMin: selectedRuntimeBucket.min,
@@ -987,14 +991,14 @@ export default function DiscoverPage() {
   // recommendation instead of a repeated catalog card.
   const spotlightCandidates = useMemo(() => {
     const seen = new Set<string>()
-    return [...currentTrendingRanked, ...ranked].filter((entry) => {
+    return [...currentTrendingRanked, ...tabRanked].filter((entry) => {
       const key = mediaIdentity(entry.item)
       if (!entry.item.poster || seen.has(key)) return false
       seen.add(key)
       return true
     })
-  }, [currentTrendingRanked, ranked])
-  const heroRecommendation = spotlightCandidates.find((entry) => mediaIdentity(entry.item) === spotlightSelectionKey) ?? spotlightCandidates[0] ?? ranked[0]
+  }, [currentTrendingRanked, tabRanked])
+  const heroRecommendation = spotlightCandidates.find((entry) => mediaIdentity(entry.item) === spotlightSelectionKey) ?? spotlightCandidates[0]
   // Lock the first available editorial pick for this Discovery scope. Catalog
   // sources settle at different times across browsers. Wait for the live weekly
   // feed before pinning the first card, so a stale daily snapshot cannot outrank
@@ -1017,11 +1021,11 @@ export default function DiscoverPage() {
     ], { duration: 300, delay: index * 35, easing: 'cubic-bezier(.2,.75,.25,1)' }))
     return () => animations.forEach((animation) => animation.cancel())
   }, [heroMediaKey])
-  const shelfRanked = useMemo(() => heroMediaKey ? ranked.filter((entry) => mediaIdentity(entry.item) !== heroMediaKey) : ranked, [heroMediaKey, ranked])
+  const shelfRanked = useMemo(() => heroMediaKey ? tabRanked.filter((entry) => mediaIdentity(entry.item) !== heroMediaKey) : tabRanked, [heroMediaKey, tabRanked])
   // A successful public weekly feed is useful Discovery content even if every
   // broad catalog request failed. Do not hide that available content behind a
   // full-page error state.
-  const viewState = discoveryViewState(ranked.length, initialWaitComplete, currentTrendingRanked.length)
+  const viewState = discoveryViewState(tabRanked.length, initialWaitComplete, currentTrendingRanked.length)
   const loadMoreDiscovery = useCallback(async () => {
     if (moreToDiscoverLoadingRef.current || moreToDiscoverStatusRef.current === 'done' || moreToDiscoverStatusRef.current === 'error') return
     const requestScope = `${tab}:${discoveryQueryKey}`
@@ -1062,7 +1066,7 @@ export default function DiscoverPage() {
       // weekly feed can contain titles missing from an older daily snapshot.
       const featuredIds = new Set([
         ...currentTrendingRanked.map((entry) => mediaIdentity(entry.item)),
-        ...ranked.map((entry) => mediaIdentity(entry.item)),
+        ...tabRanked.map((entry) => mediaIdentity(entry.item)),
       ])
       const existingIds = new Set([
         ...featuredIds,
@@ -1107,7 +1111,7 @@ export default function DiscoverPage() {
     } finally {
       if (moreToDiscoverScopeRef.current === requestScope) moreToDiscoverLoadingRef.current = false
     }
-  }, [activity, contentType, currentTrendingRanked, discoveryQueryKey, feedback, heroMediaKey, impressions, mode, prefs, preferences, ranked, rankingNow, tab, tasteProfile])
+  }, [activity, contentType, currentTrendingRanked, discoveryQueryKey, feedback, heroMediaKey, impressions, mode, prefs, preferences, tabRanked, rankingNow, tab, tasteProfile])
 
   useEffect(() => { loadMoreDiscoveryRef.current = loadMoreDiscovery }, [loadMoreDiscovery])
   useEffect(() => {
@@ -1125,15 +1129,15 @@ export default function DiscoverPage() {
   }, [continuationScope, viewState])
   const genreTiles = useMemo(() => genreOptions.map((genre) => ({
     option: { title: genre.title, genres: [genre.id] },
-    item: ranked.find((entry) => entry.item.genreIds?.includes(genre.id))?.item,
-  })), [genreOptions, ranked])
+    item: tabRanked.find((entry) => entry.item.genreIds?.includes(genre.id))?.item,
+  })), [genreOptions, tabRanked])
   const genreSelectionItems = useMemo(() => {
     if (selectedGenreId == null) return []
     const seen = new Set<string>()
     // genreItems came from a provider query that already includes this genre.
     // Some addon/local metadata omits genreIds on returned records, so checking
     // that field again incorrectly turns a successful genre query into an empty row.
-    return [...genreItems, ...ranked.filter((entry) => entry.item.genreIds?.includes(selectedGenreId)).map((entry) => entry.item)]
+    return [...genreItems, ...tabRanked.filter((entry) => entry.item.genreIds?.includes(selectedGenreId)).map((entry) => entry.item)]
       .filter((item) => {
         const key = mediaIdentity(item)
         if (seen.has(key)) return false
@@ -1141,7 +1145,7 @@ export default function DiscoverPage() {
         return true
       })
       .slice(0, 20)
-  }, [genreItems, ranked, selectedGenreId])
+  }, [genreItems, selectedGenreId, tabRanked])
   useEffect(() => {
     // Today's snapshot is immutable once committed. History, feedback and
     // provider refreshes influence tomorrow instead of reshuffling the page.
@@ -1221,7 +1225,7 @@ export default function DiscoverPage() {
     const currentKeys = new Set(current.map((entry) => mediaIdentity(entry.item)))
     // Fall back to the strongest current popularity signals when the public
     // weekly feed is unavailable or too small to fill a useful shelf.
-    const popular = ranked
+    const popular = tabRanked
       .filter((entry) => {
         const key = mediaIdentity(entry.item)
         return entry.item.poster && key !== heroKey && !alreadyFeatured.has(key) && !currentKeys.has(key)
@@ -1230,7 +1234,7 @@ export default function DiscoverPage() {
     const catalogItems = [...current, ...popular]
     if (catalogItems.length < 5) return undefined
     return { id: 'trending-this-week', title: 'OR TRY', items: catalogItems.slice(0, 10), catalogItems }
-  }, [currentTrendingRanked, heroItem, ranked, visiblePersonalizedSections])
+  }, [currentTrendingRanked, heroItem, tabRanked, visiblePersonalizedSections])
   const hiddenGemsSection = personalizedSections.find((section) => section.id === 'hidden-gems')
   const hiddenGemItems = useMemo(
     () => (hiddenGemsSection?.catalogItems ?? hiddenGemsSection?.items ?? []).map((entry) => entry.item).filter((item) => Boolean(item.poster)).slice(0, 10),
@@ -1261,23 +1265,23 @@ export default function DiscoverPage() {
       ...(trendingSection ? trendingSection.items.map((entry) => mediaIdentity(entry.item)) : []),
     ])
     const seen = new Set<string>()
-    return [...currentTrendingRanked, ...ranked].map((entry) => entry.item).filter((item) => {
+    return [...currentTrendingRanked, ...tabRanked].map((entry) => entry.item).filter((item) => {
       const key = mediaIdentity(item)
       if (!item.poster || featured.has(key) || seen.has(key) || !matchesDiscoverTab(item, tab)) return false
       seen.add(key)
       return true
     }).slice(0, 10)
-  }, [currentTrendingRanked, heroItem, ranked, tab, trendingSection, visiblePersonalizedSections])
+  }, [currentTrendingRanked, heroItem, tab, tabRanked, trendingSection, visiblePersonalizedSections])
   const activeDiscoveryMood = DISCOVERY_MOODS.find((mood) => mood.id === selectedDiscoveryMoodId) ?? DISCOVERY_MOODS[2]
   const moodItems = useMemo(() => {
     const seen = new Set<string>()
-    return [...currentTrendingRanked, ...ranked].map((entry) => entry.item).filter((item) => {
+    return [...currentTrendingRanked, ...tabRanked].map((entry) => entry.item).filter((item) => {
       const key = mediaIdentity(item)
       if (!item.poster || !matchesDiscoverTab(item, tab) || seen.has(key) || !item.genreIds?.some((genreId) => activeDiscoveryMood.genres.some((id) => id === genreId))) return false
       seen.add(key)
       return true
     }).slice(0, 10)
-  }, [activeDiscoveryMood, currentTrendingRanked, ranked, tab])
+  }, [activeDiscoveryMood, currentTrendingRanked, tab, tabRanked])
   const newLibraryItems = useMemo(
     () => buildNewLibraryItems(localWatchlist, connectedActivity.watchlist, (item) => matchesDiscoverTab(item, tab)).slice(0, 10),
     [connectedActivity.watchlist, localWatchlist, tab],
@@ -1304,7 +1308,7 @@ export default function DiscoverPage() {
       // For series and anime, merge the live weekly feed into the saved
       // personalized ranking. Otherwise a still-valid daily snapshot can
       // keep old shows ahead of what is trending this week.
-      : [...currentTrendingRanked, ...ranked])
+      : [...currentTrendingRanked, ...tabRanked])
     const matchesTab = (item: SearchResult) => item.type === 'series'
       && (tab === 'anime' ? isAnimeLike(item) : !isAnimeLike(item))
     const seen = new Set<string>()
@@ -1317,13 +1321,13 @@ export default function DiscoverPage() {
         return true
       })
       .slice(0, 5)
-  }, [activity, bingeSeries, bingeTrending, currentTrendingRanked, feedback, impressions, mode, prefs, rankingNow, ranked, tab, tasteProfile])
+  }, [activity, bingeSeries, bingeTrending, currentTrendingRanked, feedback, impressions, mode, prefs, rankingNow, tab, tabRanked, tasteProfile])
   const activeBingeItem = bingeRecommendations.length ? bingeRecommendations[bingeIndex % bingeRecommendations.length] : undefined
   const pickerPool = useMemo(() => {
     const seen = new Set<string>()
     // Live weekly trends lead the randomizer too; a still-valid daily snapshot
     // must not hide newly popular choices until the next Berlin day boundary.
-    return [...currentTrendingRanked, ...ranked].filter((entry) => {
+    return [...currentTrendingRanked, ...tabRanked].filter((entry) => {
       const key = mediaIdentity(entry.item)
       // The spotlight is an extra editorial recommendation, not one of the
       // randomizer's choices. Keep its title and the randomizer pool distinct.
@@ -1331,10 +1335,10 @@ export default function DiscoverPage() {
       seen.add(key)
       return true
     })
-  }, [currentTrendingRanked, heroMediaKey, ranked])
+  }, [currentTrendingRanked, heroMediaKey, tabRanked])
   const colorCandidateItems = useMemo(() => {
     const seen = new Set<string>()
-    return [...currentTrendingRanked, ...ranked]
+    return [...currentTrendingRanked, ...tabRanked]
       .map((entry) => entry.item)
       .filter((item) => {
         const key = mediaIdentity(item)
@@ -1343,7 +1347,7 @@ export default function DiscoverPage() {
         return true
       })
       .slice(0, 24)
-  }, [currentTrendingRanked, heroMediaKey, ranked])
+  }, [currentTrendingRanked, heroMediaKey, tabRanked])
   useEffect(() => {
     const controller = new AbortController()
     const pending = [...new Set(colorCandidateItems.flatMap((item) => item.poster ? [item.poster] : []))]
@@ -1401,12 +1405,12 @@ export default function DiscoverPage() {
     })
   }, [pickerFrameId, surpriseSpinning])
   const tastePickPool = useMemo(() => {
-    if (!ranked.length) return []
+    if (!tabRanked.length) return []
     const query = tasteQuery.trim().toLocaleLowerCase()
-    return ranked
+    return tabRanked
       .filter((entry) => entry.item.poster && !pickedIds.includes(mediaIdentity(entry.item)) && (!query || `${entry.item.title} ${entry.item.genres?.join(' ') || ''} ${entry.item.year || ''}`.toLocaleLowerCase().includes(query)))
       .map((entry) => entry.item)
-  }, [ranked, pickedIds, tasteQuery])
+  }, [pickedIds, tabRanked, tasteQuery])
   const tastePickCandidates = useMemo(() => tastePickPool.slice(0, 10 + pickOffset), [tastePickPool, pickOffset])
   useEffect(() => { setPickerSelectionKey(null); setPickerLogoError(false); setHeroLogoError(false) }, [tab, mode, discoveryQueryKey])
   useEffect(() => { setSpotlightSelectionKey(null) }, [tab, mode, discoveryQueryKey])
@@ -1469,10 +1473,10 @@ export default function DiscoverPage() {
   }, [activeDiscoveryMood.id, bigScreenItems, catalogSetCache, discoveryQueryKey, hiddenGemItems, moodItems, newLibraryItems, selectedRuntimeBucket.id, tab, timeTonightAnimeMovies, timeTonightItems])
   useEffect(() => {
     const key = `${berlinDateKey}:${tab}:${mode}`
-    if (!ranked.length || IMPRESSIONS_RECORDED.has(key)) return
+    if (!tabRanked.length || IMPRESSIONS_RECORDED.has(key)) return
     rememberDiscoverSessionKey(IMPRESSIONS_RECORDED, key)
-    recordRecommendationImpressions(ranked.slice(0,40).map((entry)=>entry.item))
-  }, [ranked, tab, mode, berlinDateKey])
+    recordRecommendationImpressions(tabRanked.slice(0,40).map((entry)=>entry.item))
+  }, [tabRanked, tab, mode, berlinDateKey])
 
   const submitFeedback = (item: SearchResult, kind: Parameters<typeof saveRecommendationFeedback>[1]) => {
     setFeedback(saveRecommendationFeedback(item, kind))
@@ -1501,6 +1505,16 @@ export default function DiscoverPage() {
 
     const delays = [65, 75, 90, 115, 150, 200, 270, 360]
     updateSurpriseSpinning(true)
+    // A throttled background tab or a slow embedded WebKit timer must never
+    // leave the roulette busy indefinitely. The normal sequence completes in
+    // about 1.6 seconds; this only releases the already-selected winner when
+    // the browser stalls the scheduled frames.
+    const finishTimer = window.setTimeout(() => {
+      if (surpriseRunRef.current !== runId) return
+      onSelect(winner.item)
+      surpriseRunRef.current += 1
+      updateSurpriseSpinning(false)
+    }, 2_800)
     // Keep the winner out of the rolling frames and exclude the previously
     // displayed title on each tick so the roulette visibly advances.
     let previousId = currentId
@@ -1527,6 +1541,7 @@ export default function DiscoverPage() {
         // and `false` state together, so the selected title appears to jump.
         await new Promise<void>((resolve) => window.setTimeout(resolve, 320))
       } finally {
+        window.clearTimeout(finishTimer)
         if (surpriseRunRef.current === runId) updateSurpriseSpinning(false)
       }
     })()
@@ -1610,7 +1625,7 @@ export default function DiscoverPage() {
     submitFeedback(item, 'more-like-this')
   }
   const resetTastePicks = () => {
-    const selected = ranked.map((entry) => entry.item).filter((item) => pickedIds.includes(mediaIdentity(item)))
+    const selected = tabRanked.map((entry) => entry.item).filter((item) => pickedIds.includes(mediaIdentity(item)))
     setFeedback(resetTasteFeedback(selected))
     setPickedIds([])
     setPickOffset(0)
@@ -1733,7 +1748,7 @@ export default function DiscoverPage() {
               showAllPath={`/catalog/discover-section-${tab}-${activeSimilaritySection.id}?title=${encodeURIComponent(`Because you ${activeSimilaritySection.id.startsWith('because-favorited') ? 'favorited' : 'watched'} ${activeSimilarityTitle}`)}`}
             />
           </div></DiscoveryReveal>}
-          {ranked.length > 0 && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
+          {tabRanked.length > 0 && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
             <p className="discover-section-eyebrow">Refine your taste</p>
             <div className="discover-refine__heading">
               <h2 id="discover-refine-title">Pick Three You Like</h2>

@@ -58,13 +58,14 @@ export default function DiscoveryCalendarRow({ watchProgress, traktConnected, si
   }, [progressSignature, traktConnected, simklConnected, anilistConnected, mdblistConnected, serverRevision, today, horizon])
 
   const visibleEntries = range === 'today' ? entries.filter((entry) => entry.date === today) : entries
-  // Keep Discovery focused on titles when there is nothing to show. If a
-  // refresh is running, keep the current entries mounted to avoid a layout
-  // jump; the full release calendar remains available from Library.
-  if (entries.length === 0) return null
   const dateLabel = range === 'today'
     ? new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric' }).format(new Date())
     : `${new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(new Date())} – ${new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(addDays(new Date(), 30))}`
+  const emptyLabel = visibleEntries.length > 0
+    ? ''
+    : range === 'today'
+      ? 'No releases scheduled today.'
+      : 'No upcoming releases in the next 30 days.'
 
   return <section className="discover-calendar row-contain" aria-labelledby="discover-calendar-title" aria-busy={loading}>
     <div className="discover-calendar__heading">
@@ -80,7 +81,7 @@ export default function DiscoveryCalendarRow({ watchProgress, traktConnected, si
         <span className="discover-calendar__title">{entry.title}</span>
         <span className="discover-calendar__subtitle">{entry.subtitle || (entry.kind === 'episode' ? 'New episode' : 'Movie')}</span>
       </button>)}
-    </div> : <p className="discover-calendar__empty">Nothing new on your calendar today.</p>}
+    </div> : <p className="discover-calendar__empty" role="status">{loading ? 'Checking your upcoming releases…' : emptyLabel}</p>}
     <button type="button" className="discover-calendar__open" onClick={() => navigate('/collections?tab=calendar')}>Open calendar <span aria-hidden="true">›</span></button>
   </section>
 }
