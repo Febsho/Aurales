@@ -419,15 +419,22 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
 
     if (canCheckMobileCompatibility && autoExternalCapabilityCheckRef.current !== url) {
       autoExternalCapabilityCheckRef.current = url
+      const prepareExternalStream = (video: HTMLVideoElement, mode: Exclude<MediaConversionMode, 'auto'>) => {
+        const started = requestWorkerConversionRef.current?.(
+          video,
+          getPlatformCapabilities(video).nativeHls,
+          mode,
+        ) ?? false
+        if (started) autoExternalConversionRequestedRef.current = url
+        return started
+      }
       const video = videoRef.current
       if (video && mobileSourceNeedsH264(video, url, {
         container: sourceContainer,
         videoCodec: sourceVideoCodec,
         audioCodec: sourceAudioCodec,
       })) {
-        autoExternalConversionRequestedRef.current = url
-        requestWorkerConversionRef.current?.(video, getPlatformCapabilities(video).nativeHls, 'h264Aac')
-        return
+        if (prepareExternalStream(video, 'h264Aac')) return
       }
 
       void browserMediaCapabilitiesConversionMode(navigator.mediaCapabilities, {
@@ -440,10 +447,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       }, 'h264Aac').then((preferredMode) => {
         if (cancelled || autoExternalLaunchRef.current === url) return
         if (preferredMode) {
-          autoExternalConversionRequestedRef.current = url
           const currentVideo = videoRef.current
-          if (currentVideo) requestWorkerConversionRef.current?.(currentVideo, getPlatformCapabilities(currentVideo).nativeHls, preferredMode)
-          return
+          if (currentVideo && prepareExternalStream(currentVideo, preferredMode)) return
         }
         autoExternalCapabilityAcceptedRef.current = url
         if (externalAutoPlaybackReady) {
@@ -457,14 +462,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         // an unsupported original URL straight to Infuse/VLC/etc.
         if (cancelled || autoExternalLaunchRef.current === url) return
         const currentVideo = videoRef.current
-        if (currentVideo && requestWorkerConversionRef.current?.(
-          currentVideo,
-          getPlatformCapabilities(currentVideo).nativeHls,
-          'h264Aac',
-        )) {
-          autoExternalConversionRequestedRef.current = url
-          return
-        }
+        if (currentVideo && prepareExternalStream(currentVideo, 'h264Aac')) return
         autoExternalCapabilityAcceptedRef.current = url
         if (externalAutoPlaybackReady) {
           autoExternalLaunchRef.current = url
