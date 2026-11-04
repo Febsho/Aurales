@@ -87,9 +87,11 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
 
       - name: Install Playwright browsers
+        if: always()
         run: npx playwright install --with-deps chromium firefox webkit
 
       - name: Browser integration tests
+        if: always()
         # Linux WebKit reports H.264 support but its bundled WebKit cannot
         # decode the media fixtures reliably. Run real WebKit playback on macOS.
         run: npm run test:browser -- --project=chromium --project=firefox --project=android-chromium
