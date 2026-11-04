@@ -472,11 +472,13 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     const capabilities = getPlatformCapabilities(video)
     const mobileSafari = /iPhone|iPad|iPod/i.test(navigator.userAgent)
       || (navigator.maxTouchPoints > 1 && /Macintosh/i.test(navigator.userAgent))
+    // Keep original HLS worker proxy sessions in HLS.js on modern Safari so
+    // Aurales can expose and switch their audio/subtitle tracks. Converted
+    // worker outputs stay on Safari's native path for maximum compatibility.
     const useHlsJsForNativeHls = capabilities.nativeHls
       && capabilities.mediaSource
       && mobileSafari
       && !workerPlaybackUrl
-      && !isWorkerMediaSessionUrl(sourceUrl)
     if (capabilities.nativeHls && !useHlsJsForNativeHls) {
       video.src = sourceUrl
       setPlayerNotice(workerPlaybackDescriptionRef.current || 'Using native HLS playback. Available audio and subtitle tracks depend on this browser and stream.')
