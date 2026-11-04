@@ -451,9 +451,20 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           openExternalPlayer(preferredExternalPlayer)
         }
       }).catch(() => {
-        // If the browser cannot answer its capability query, wait for its
-        // media pipeline to become playable before handing off the source.
+        // A failed capability query does not mean the selected external
+        // player's decoder supports this source. Prepare a mobile-safe copy
+        // before handing it off; otherwise Safari's query failure could send
+        // an unsupported original URL straight to Infuse/VLC/etc.
         if (cancelled || autoExternalLaunchRef.current === url) return
+        const currentVideo = videoRef.current
+        if (currentVideo && requestWorkerConversionRef.current?.(
+          currentVideo,
+          getPlatformCapabilities(currentVideo).nativeHls,
+          'h264Aac',
+        )) {
+          autoExternalConversionRequestedRef.current = url
+          return
+        }
         autoExternalCapabilityAcceptedRef.current = url
         if (externalAutoPlaybackReady) {
           autoExternalLaunchRef.current = url
