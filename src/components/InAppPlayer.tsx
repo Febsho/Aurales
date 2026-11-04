@@ -479,6 +479,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       && capabilities.mediaSource
       && mobileSafari
       && !workerPlaybackUrl
+      && (!isWorkerMediaSessionUrl(sourceUrl) || Boolean(getMediaWorkerConfig()))
     if (capabilities.nativeHls && !useHlsJsForNativeHls) {
       video.src = sourceUrl
       setPlayerNotice(workerPlaybackDescriptionRef.current || 'Using native HLS playback. Available audio and subtitle tracks depend on this browser and stream.')
