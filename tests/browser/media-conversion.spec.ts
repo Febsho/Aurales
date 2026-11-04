@@ -160,7 +160,7 @@ test('mobile startup silence starts worker conversion without waiting for a medi
 
   await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/startup-stall.mp4')}`)
   await expect(page.locator('video')).toBeAttached()
-  await page.clock.fastForward(10_001)
+  await page.clock.fastForward(5_001)
   await expect.poll(() => conversionRequest).toMatchObject({ mode: 'auto', outputFormat: 'mp4', mobileCompatibility: true })
 })
 

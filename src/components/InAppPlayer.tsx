@@ -46,7 +46,7 @@ import { createExternalPlaybackReturnUrl } from '../services/player/externalPlay
 // without dispatching `error`. Keep the no-frame fallback short so the worker
 // can prepare a compatible copy before users are left staring at a spinner.
 const MOBILE_MEDIA_STALL_RECOVERY_MS = 10_000
-const MOBILE_MEDIA_STARTUP_TIMEOUT_MS = 10_000
+const MOBILE_MEDIA_STARTUP_TIMEOUT_MS = 5_000
 
 interface InAppPlayerProps {
   url: string
