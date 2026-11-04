@@ -561,7 +561,6 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       && browserCapabilities.platform === 'web'
       && getMediaConversionOutputFormat() === 'mp4'
       && getMediaWorkerConfig()
-      && (sourceContainer || sourceVideoCodec || sourceAudioCodec)
       && mobileSourceNeedsH264(video, sourceUrl, { container: sourceContainer, videoCodec: sourceVideoCodec, audioCodec: sourceAudioCodec })
       && requestWorkerConversionRef.current?.(video, browserCapabilities.nativeHls, 'h264Aac')) {
       return
