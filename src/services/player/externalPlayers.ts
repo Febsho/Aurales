@@ -3,6 +3,7 @@ export type ExternalPlayerPlatform = 'ios' | 'android'
 
 const PREFERRED_PLAYER_KEY = 'aurales.externalPlayer'
 const SETTINGS_PLATFORM_KEY = 'aurales.externalPlayer.settingsPlatform'
+const AUTO_OPEN_KEY = 'aurales.externalPlayer.autoOpen'
 
 export function getExternalPlayerPlatform(): ExternalPlayerPlatform {
   return /Android/i.test(typeof navigator === 'undefined' ? '' : navigator.userAgent) ? 'android' : 'ios'
@@ -61,6 +62,14 @@ export function clearPreferredExternalPlayer(platform = getExternalPlayerPlatfor
   } catch {
     // Storage can be disabled in private browsing.
   }
+}
+
+export function getAutoOpenExternalPlayer(platform = getExternalPlayerPlatform()): boolean {
+  try { return window.localStorage.getItem(`${AUTO_OPEN_KEY}.${platform}`) === 'true' } catch { return false }
+}
+
+export function setAutoOpenExternalPlayer(enabled: boolean, platform = getExternalPlayerPlatform()): void {
+  try { window.localStorage.setItem(`${AUTO_OPEN_KEY}.${platform}`, String(enabled)) } catch { /* Storage can be disabled. */ }
 }
 
 export function buildExternalPlayerUrl(

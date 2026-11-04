@@ -61,6 +61,8 @@ export interface PlaybackItem extends MediaRef {
   /** Present only when playback came from a connected Jellyfin library. */
   serverConnectionId?: string
   serverItemId?: string
+  serverSeason?: number
+  serverEpisode?: number
   serverMediaSourceId?: string
   serverPlaySessionId?: string
   serverPlayMethod?: 'DirectPlay' | 'DirectStream' | 'Transcode'

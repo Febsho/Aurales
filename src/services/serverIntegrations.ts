@@ -127,6 +127,9 @@ export type JellyfinPlaybackEvent = 'start' | 'progress' | 'pause' | 'unpause' |
 export interface JellyfinPlaybackReport {
   connectionId: string
   itemId: string
+  /** Set only when itemId is a Jellyfin series id that needs episode resolution. */
+  season?: number
+  episode?: number
   mediaSourceId?: string
   playSessionId: string
   positionTicks: number
