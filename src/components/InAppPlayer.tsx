@@ -413,9 +413,6 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       && Boolean(getMediaWorkerConfig())
       && !isHlsUrl(url)
       && !isDashUrl(url)
-      && Boolean(sourceVideoCodec && sourceResolution)
-      && typeof navigator !== 'undefined'
-      && 'mediaCapabilities' in navigator
 
     if (canCheckMobileCompatibility && autoExternalCapabilityCheckRef.current !== url) {
       autoExternalCapabilityCheckRef.current = url
@@ -437,39 +434,44 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         if (prepareExternalStream(video, 'h264Aac')) return
       }
 
-      void browserMediaCapabilitiesConversionMode(navigator.mediaCapabilities, {
-        container: sourceContainer,
-        videoCodec: sourceVideoCodec,
-        audioCodec: sourceAudioCodec,
-        resolution: sourceResolution,
-        bitrate: sourceBitrate,
-        frameRate: sourceFrameRate,
-      }, 'h264Aac').then((preferredMode) => {
-        if (cancelled || autoExternalLaunchRef.current === url) return
-        if (preferredMode) {
+      const mediaCapabilities = typeof navigator !== 'undefined' && 'mediaCapabilities' in navigator
+        ? navigator.mediaCapabilities
+        : undefined
+      if (mediaCapabilities && sourceVideoCodec && sourceResolution) {
+        void browserMediaCapabilitiesConversionMode(mediaCapabilities, {
+          container: sourceContainer,
+          videoCodec: sourceVideoCodec,
+          audioCodec: sourceAudioCodec,
+          resolution: sourceResolution,
+          bitrate: sourceBitrate,
+          frameRate: sourceFrameRate,
+        }, 'h264Aac').then((preferredMode) => {
+          if (cancelled || autoExternalLaunchRef.current === url) return
+          if (preferredMode) {
+            const currentVideo = videoRef.current
+            if (currentVideo && prepareExternalStream(currentVideo, preferredMode)) return
+          }
+          autoExternalCapabilityAcceptedRef.current = url
+          if (externalAutoPlaybackReady) {
+            autoExternalLaunchRef.current = url
+            openExternalPlayer(preferredExternalPlayer)
+          }
+        }).catch(() => {
+          // A failed capability query does not mean the selected external
+          // player's decoder supports this source. Prepare a mobile-safe copy
+          // before handing it off to Infuse, VLC, or another player.
+          if (cancelled || autoExternalLaunchRef.current === url) return
           const currentVideo = videoRef.current
-          if (currentVideo && prepareExternalStream(currentVideo, preferredMode)) return
-        }
-        autoExternalCapabilityAcceptedRef.current = url
-        if (externalAutoPlaybackReady) {
-          autoExternalLaunchRef.current = url
-          openExternalPlayer(preferredExternalPlayer)
-        }
-      }).catch(() => {
-        // A failed capability query does not mean the selected external
-        // player's decoder supports this source. Prepare a mobile-safe copy
-        // before handing it off; otherwise Safari's query failure could send
-        // an unsupported original URL straight to Infuse/VLC/etc.
-        if (cancelled || autoExternalLaunchRef.current === url) return
-        const currentVideo = videoRef.current
-        if (currentVideo && prepareExternalStream(currentVideo, 'h264Aac')) return
-        autoExternalCapabilityAcceptedRef.current = url
-        if (externalAutoPlaybackReady) {
-          autoExternalLaunchRef.current = url
-          openExternalPlayer(preferredExternalPlayer)
-        }
-      })
-      return () => { if (autoExternalCurrentUrlRef.current !== url) cancelled = true }
+          if (currentVideo && prepareExternalStream(currentVideo, 'h264Aac')) return
+          autoExternalCapabilityAcceptedRef.current = url
+          if (externalAutoPlaybackReady) {
+            autoExternalLaunchRef.current = url
+            openExternalPlayer(preferredExternalPlayer)
+          }
+        })
+        return () => { if (autoExternalCurrentUrlRef.current !== url) cancelled = true }
+      }
+      autoExternalCapabilityAcceptedRef.current = url
     }
 
     if (canCheckMobileCompatibility && autoExternalCapabilityCheckRef.current === url
