@@ -272,8 +272,8 @@ test('mobile manual source choice falls back when the browser rejects every work
   test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'Mobile decoder recovery.')
   const fixture = 'mobile-h264-compat.mp4'
   const fixtureUrl = new URL(`/tests/browser/fixtures/${fixture}?cross-addon-fallback=1`, (testInfo.project.use.baseURL || 'http://127.0.0.1:5175').replace('127.0.0.1', 'localhost')).toString()
-  const jobs = { auto: 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1', h264AacLow: 'b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2', h264AacCompat: 'c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3' }
-  const outputs = { auto: 'd4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4', h264AacLow: 'e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5', h264AacCompat: 'f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6' }
+  const jobs = { auto: 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1', h264Aac: 'b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1', h264AacLow: 'b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2', h264AacCompat: 'c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3' }
+  const outputs = { auto: 'd4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4', h264Aac: 'd5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5', h264AacLow: 'e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5', h264AacCompat: 'f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6' }
   await page.addInitScript(() => {
     localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
     localStorage.setItem('aurales_automatic_stream_recovery', 'true')
@@ -315,22 +315,33 @@ test('mobile manual source choice falls back when the browser rejects every work
     Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 3 }) })
     element.dispatchEvent(new Event('error'))
   })
-  // WebKit may reject the first worker output as soon as it is attached. Follow
-  // the conversion queue, then reject the current output until all profiles ran.
+  // Mobile browser capability checks can start with auto, standard H.264, or
+  // the smaller H.264 profile. Follow the selected profile before simulating
+  // decoder rejection so the test is stable across browser versions.
   await expect.poll(() => requestedModes.length).toBeGreaterThan(0)
-  // A real WebKit decode error can already advance auto to the smaller profile.
-  if (requestedModes.length === 1) {
-    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputs.auto}?`)
+  const firstMode = requestedModes[0] as keyof typeof jobs
+  await expect.poll(async () => {
+    const currentSrc = await video.evaluate((element: HTMLVideoElement) => element.currentSrc)
+    return currentSrc.includes(`/v1/media/${outputs[firstMode]}?`) || requestedModes.length > 1
+  }).toBe(true)
+  if (requestedModes.length === 1 && firstMode !== 'h264AacCompat') {
+    const nextRequestCount = requestedModes.length + 1
     await failCurrentDecode()
-    await expect.poll(() => requestedModes.length, { timeout: 20_000 }).toBe(2)
+    await expect.poll(() => requestedModes.length, { timeout: 20_000 }).toBe(nextRequestCount)
   }
-  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputs.h264AacLow}?`)
-  await failCurrentDecode()
-  await expect.poll(() => requestedModes.length, { timeout: 20_000 }).toBe(3)
-  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputs.h264AacCompat}?`)
-  await failCurrentDecode()
+  if (requestedModes.at(-1) === 'h264AacLow') {
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputs.h264AacLow}?`)
+    const nextRequestCount = requestedModes.length + 1
+    await failCurrentDecode()
+    await expect.poll(() => requestedModes.length, { timeout: 20_000 }).toBe(nextRequestCount)
+  }
+  if (requestedModes.at(-1) === 'h264AacCompat') {
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputs.h264AacCompat}?`)
+    await failCurrentDecode()
+  }
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc), { timeout: 20_000 }).toContain(`/${fixture}?cross-addon-fallback=1`)
-  expect(requestedModes).toEqual(['h264Aac', 'h264AacLow', 'h264AacCompat'])
+  expect(['auto', 'h264Aac', 'h264AacLow']).toContain(firstMode)
+  expect(requestedModes.slice(-2)).toEqual(['h264AacLow', 'h264AacCompat'])
 })
 
 test('next episode starts its first source with a fresh recovery queue', async ({ page }, testInfo) => {

@@ -2714,6 +2714,55 @@ async fn local_hls_subtitle_playlist_paths(input_path: &FsPath) -> Vec<LocalHlsS
         .collect()
 }
 
+async fn extract_local_hls_webvtt_playlist(input_path: &FsPath, output_path: &FsPath) -> bool {
+    let Ok(manifest) = tokio::fs::read_to_string(input_path).await else {
+        return false;
+    };
+    if manifest.len() > MAX_HLS_MANIFEST_BYTES || manifest.contains("#EXT-X-MAP:") {
+        return false;
+    }
+    let Some(parent) = input_path.parent() else {
+        return false;
+    };
+    let mut combined = String::new();
+    let mut total_bytes = 0u64;
+    for line in manifest.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let relative = FsPath::new(line);
+        if relative.is_absolute()
+            || relative.components().any(|component| {
+                !matches!(component, std::path::Component::Normal(_))
+            })
+            || !relative.extension().is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("vtt")
+                    || extension.eq_ignore_ascii_case("webvtt")
+            })
+        {
+            return false;
+        }
+        let segment_path = parent.join(relative);
+        let Ok(metadata) = tokio::fs::metadata(&segment_path).await else {
+            return false;
+        };
+        total_bytes = total_bytes.saturating_add(metadata.len());
+        if !metadata.is_file() || total_bytes > MAX_CONVERTED_SUBTITLE_BYTES {
+            return false;
+        }
+        let Ok(segment) = tokio::fs::read_to_string(segment_path).await else {
+            return false;
+        };
+        combined.push_str(&segment);
+        combined.push('\n');
+    }
+    let Some(normalized) = normalize_hls_webvtt(&combined) else {
+        return false;
+    };
+    normalized.len() as u64 <= MAX_CONVERTED_SUBTITLE_BYTES
+        && tokio::fs::write(output_path, normalized).await.is_ok()
+}
+
 async fn extract_text_subtitle_tracks(
     ffmpeg: &FsPath,
     input_path: &FsPath,
@@ -2876,30 +2925,35 @@ async fn extract_text_subtitle_tracks(
         }
         let asset_name = format!("{conversion_id}-subtitle-external-{index}.vtt");
         let output_path = conversion_dir.join(&asset_name);
-        let succeeded = tokio::process::Command::new(ffmpeg)
-            .args([
-                "-hide_banner",
-                "-nostdin",
-                "-loglevel",
-                "error",
-                "-y",
-                "-protocol_whitelist",
-                "file,pipe,crypto,data",
-                "-i",
-            ])
-            .arg(&playlist.path)
-            .args(["-map", "0:s:0", "-c:s", "webvtt", "-f", "webvtt"])
-            .arg(&output_path)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .output();
-        let succeeded = tokio::time::timeout(Duration::from_secs(90), succeeded)
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .is_some_and(|output| output.status.success());
-        let succeeded = if succeeded {
+        let direct_webvtt = extract_local_hls_webvtt_playlist(&playlist.path, &output_path).await;
+        let succeeded = if direct_webvtt {
+            true
+        } else {
+            let command = tokio::process::Command::new(ffmpeg)
+                .args([
+                    "-hide_banner",
+                    "-nostdin",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-protocol_whitelist",
+                    "file,pipe,crypto,data",
+                    "-i",
+                ])
+                .arg(&playlist.path)
+                .args(["-map", "0:s:0", "-c:s", "webvtt", "-f", "webvtt"])
+                .arg(&output_path)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .output();
+            tokio::time::timeout(Duration::from_secs(90), command)
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .is_some_and(|output| output.status.success())
+        };
+        let succeeded = if succeeded && !direct_webvtt {
             match tokio::fs::read_to_string(&output_path).await {
                 Ok(contents) => match normalize_hls_webvtt(&contents) {
                     Some(normalized) => tokio::fs::write(&output_path, normalized)
@@ -2910,7 +2964,7 @@ async fn extract_text_subtitle_tracks(
                 Err(_) => false,
             }
         } else {
-            false
+            succeeded
         };
         let length = if succeeded {
             tokio::fs::metadata(&output_path)
@@ -9661,6 +9715,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(selected_audio_tracks.len(), 1);
         assert_eq!(selected_audio_tracks[0]["codec_name"], "aac");
+        let local_subtitle_playlists = local_hls_subtitle_playlist_paths(&input).await;
+        assert_eq!(local_subtitle_playlists.len(), 2, "input master: {}", tokio::fs::read_to_string(&input).await.unwrap());
         // Some FFmpeg builds do not expose external HLS WebVTT renditions in
         // FFprobe output. The worker must still return them from the local
         // subtitle playlists below.
