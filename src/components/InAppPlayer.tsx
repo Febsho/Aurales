@@ -437,7 +437,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         resolution: sourceResolution,
         bitrate: sourceBitrate,
         frameRate: sourceFrameRate,
-      }).then((preferredMode) => {
+      }, 'h264Aac').then((preferredMode) => {
         if (cancelled || autoExternalLaunchRef.current === url) return
         if (preferredMode) {
           autoExternalConversionRequestedRef.current = url

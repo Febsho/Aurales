@@ -213,6 +213,7 @@ function resolutionDimensions(value?: string): { width: number; height: number }
 export async function browserMediaCapabilitiesConversionMode(
   mediaCapabilities: Pick<MediaCapabilities, 'decodingInfo'> | undefined,
   mediaInfo: { container?: string; videoCodec?: string; audioCodec?: string; resolution?: string; bitrate?: number; frameRate?: number },
+  queryFailureMode: Exclude<MediaConversionMode, 'auto'> | null = null,
 ): Promise<Exclude<MediaConversionMode, 'auto'> | null> {
   if (!mediaCapabilities || !mediaInfo.videoCodec) return null
   const videoCodec = normalizedCodec(mediaInfo.videoCodec)
@@ -247,7 +248,10 @@ export async function browserMediaCapabilitiesConversionMode(
     if (result.smooth === false) return 'h264AacLow'
     return null
   } catch {
-    return null
+    // Most callers can continue with normal playback when the browser does
+    // not expose reliable capability data. Callers handing off to a different
+    // player's decoder may choose a compatibility profile instead.
+    return queryFailureMode
   }
 }
 
