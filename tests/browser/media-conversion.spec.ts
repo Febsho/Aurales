@@ -134,6 +134,30 @@ test('mobile explains when the worker blocks a source host before conversion sta
   await expect.poll(() => conversionModes).toEqual(['h264Aac'])
 })
 
+test('player explains an empty worker media allowlist before starting a doomed conversion', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+  })
+  await page.route('**/v1/capabilities', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ mediaDirectProxy: false, mediaMp4: true, mediaRemux: true, audioTranscode: true, videoTranscode: true }),
+  }))
+  let conversionStarts = 0
+  await page.route('**/v1/media/conversions', (route) => {
+    conversionStarts += 1
+    return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId: 'abababababababababababababababab', status: 'processing' }) })
+  })
+
+  const query = new URLSearchParams({ source: 'https://signed.cdn.example/video.mkv', container: 'mkv' })
+  await page.goto(`/tests/browser/player-harness.html?${query}`)
+  const alert = page.getByRole('alert')
+  await expect(alert).toContainText('no source hosts enabled')
+  await expect(alert).toContainText('signed.cdn.example')
+  await expect(alert).toContainText('AURALES_MEDIA_ALLOWED_HOSTS')
+  expect(conversionStarts).toBe(0)
+})
+
 test('mobile startup silence starts worker conversion without waiting for a media error', async ({ page }, testInfo) => {
   test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'Silent startup recovery is checked on mobile browsers.')
   await page.clock.install()

@@ -2333,6 +2333,19 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       }
       void loadCapabilities().then((capabilities) => {
         if (!isCurrentRun()) return
+        if (capabilities.mediaDirectProxy === false) {
+          const sourceHost = sourceHostname(url)
+          const unavailable = `The media worker has no source hosts enabled${sourceHost ? ` (including ${sourceHost})` : ''}. Add the source and its redirect/CDN hostnames to AURALES_MEDIA_ALLOWED_HOSTS on the worker, then retry playback.`
+          conversionOptionsCheckedRef.current = false
+          conversionSourceAccessBlockedRef.current = true
+          conversionFatalErrorRef.current = unavailable
+          updateConversionModes([])
+          setLoading(false)
+          setError(unavailable)
+          if (!refreshingLiveSnapshot) playbackStartupRef.current.onPlaybackError?.(unavailable, video.currentTime)
+          if (conversionSequenceRunRef.current === playbackRun) conversionSequenceRunRef.current = null
+          return
+        }
         const timeoutSeconds = capabilities.conversionTimeoutSeconds
         if (typeof timeoutSeconds === 'number' && Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
           workerConversionTimeoutMsRef.current = Math.min(timeoutSeconds, 24 * 60 * 60) * 1000
