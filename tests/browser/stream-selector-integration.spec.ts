@@ -53,7 +53,9 @@ test('mobile StreamSelector passes inferred HEVC Main 10 and 4K metadata into au
     contentType: 'application/json',
     body: JSON.stringify({ streams: [{
       name: 'Test addon',
-      title: 'Film.2160p.WEB-DL.HEVC.Main10.DDP5.1.35Mbps.59.94fps.mkv',
+      // Keep the container out of the filename so the test exercises the
+      // browser's detailed capability probe instead of the MKV fast path.
+      title: 'Film.2160p.WEB-DL.HEVC.Main10.DDP5.1.35Mbps.59.94fps',
       url: 'https://signed.cdn.example/film?token=redacted',
     }] }),
   }))
@@ -75,11 +77,13 @@ test('mobile StreamSelector passes inferred HEVC Main 10 and 4K metadata into au
   await page.locator('[data-stream-choice]').click()
   await expect.poll(() => conversionRequest).toMatchObject({
     url: 'https://signed.cdn.example/film?token=redacted',
-    mode: 'auto', outputFormat: 'mp4', mobileCompatibility: true,
+    // WebKit's capability probe rejects this HEVC Main 10 profile, so mobile
+    // playback should go straight to H.264 instead of wasting time on `auto`.
+    mode: 'h264Aac', outputFormat: 'mp4', mobileCompatibility: true,
   })
   const profile = await page.evaluate(() => (window as Window & { __decodingProfiles?: Array<{ video?: { contentType: string; width: number; height: number; bitrate: number; framerate: number } }> }).__decodingProfiles?.[0])
   expect(profile?.video).toMatchObject({
-    contentType: 'video/webm; codecs="hvc1.2.4.L120.B0,ec-3"',
+    contentType: 'video/mp4; codecs="hvc1.2.4.L120.B0,ec-3"',
     width: 3840, height: 2160, bitrate: 35_000_000, framerate: 59.94,
   })
   const conversionError = page.getByRole('alert')
@@ -311,13 +315,22 @@ test('mobile manual source choice falls back when the browser rejects every work
     Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 3 }) })
     element.dispatchEvent(new Event('error'))
   })
-  for (const [index, mode] of (['auto', 'h264AacLow', 'h264AacCompat'] as const).entries()) {
-    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputs[mode]}?`)
+  // WebKit may reject the first worker output as soon as it is attached. Follow
+  // the conversion queue, then reject the current output until all profiles ran.
+  await expect.poll(() => requestedModes.length).toBeGreaterThan(0)
+  // A real WebKit decode error can already advance auto to the smaller profile.
+  if (requestedModes.length === 1) {
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputs.auto}?`)
     await failCurrentDecode()
-    if (index < 2) await expect.poll(() => requestedModes.length).toBe(index + 2)
+    await expect.poll(() => requestedModes.length, { timeout: 20_000 }).toBe(2)
   }
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputs.h264AacLow}?`)
+  await failCurrentDecode()
+  await expect.poll(() => requestedModes.length, { timeout: 20_000 }).toBe(3)
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputs.h264AacCompat}?`)
+  await failCurrentDecode()
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc), { timeout: 20_000 }).toContain(`/${fixture}?cross-addon-fallback=1`)
-  expect(requestedModes).toEqual(['auto', 'h264AacLow', 'h264AacCompat'])
+  expect(requestedModes).toEqual(['h264Aac', 'h264AacLow', 'h264AacCompat'])
 })
 
 test('next episode starts its first source with a fresh recovery queue', async ({ page }, testInfo) => {
