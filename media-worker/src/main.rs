@@ -2639,6 +2639,8 @@ fn local_media_asset_url(session_url: &str, asset_name: &str) -> Result<String, 
 struct LocalHlsSubtitlePlaylist {
     path: PathBuf,
     language: Option<String>,
+    label: Option<String>,
+    forced: bool,
 }
 
 fn match_local_hls_subtitle_playlist(
@@ -2705,6 +2707,8 @@ async fn local_hls_subtitle_playlist_paths(input_path: &FsPath) -> Vec<LocalHlsS
             Some(LocalHlsSubtitlePlaylist {
                 path: parent.join(relative),
                 language: rendition.language,
+                label: rendition.name,
+                forced: rendition.forced,
             })
         })
         .collect()
@@ -2718,13 +2722,15 @@ async fn extract_text_subtitle_tracks(
     media_session_url: &str,
     source_info: &Value,
 ) -> Vec<ConvertedSubtitleTrack> {
-    let Some(streams) = source_info.get("streams").and_then(Value::as_array) else {
-        return Vec::new();
-    };
+    let streams = source_info
+        .get("streams")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let external_hls_playlists = local_hls_subtitle_playlist_paths(input_path).await;
     let mut used_external_hls_playlists = HashSet::new();
     let mut tracks = Vec::new();
-    for stream in streams {
+    for stream in &streams {
         if tracks.len() >= MAX_CONVERTED_SUBTITLE_TRACKS
             || stream.get("codec_type").and_then(Value::as_str) != Some("subtitle")
             || !stream
@@ -2856,6 +2862,107 @@ async fn extract_text_subtitle_tracks(
                 .get("forced")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+        });
+    }
+
+    // FFprobe's HLS demuxer does not expose external WebVTT renditions
+    // consistently across FFmpeg builds. Extract any rendition it did not
+    // report directly from its already materialized local playlist.
+    for (index, playlist) in external_hls_playlists.iter().enumerate() {
+        if tracks.len() >= MAX_CONVERTED_SUBTITLE_TRACKS
+            || used_external_hls_playlists.contains(&index)
+        {
+            continue;
+        }
+        let asset_name = format!("{conversion_id}-subtitle-external-{index}.vtt");
+        let output_path = conversion_dir.join(&asset_name);
+        let succeeded = tokio::process::Command::new(ffmpeg)
+            .args([
+                "-hide_banner",
+                "-nostdin",
+                "-loglevel",
+                "error",
+                "-y",
+                "-protocol_whitelist",
+                "file,pipe,crypto,data",
+                "-i",
+            ])
+            .arg(&playlist.path)
+            .args(["-map", "0:s:0", "-c:s", "webvtt", "-f", "webvtt"])
+            .arg(&output_path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output();
+        let succeeded = tokio::time::timeout(Duration::from_secs(90), succeeded)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .is_some_and(|output| output.status.success());
+        let succeeded = if succeeded {
+            match tokio::fs::read_to_string(&output_path).await {
+                Ok(contents) => match normalize_hls_webvtt(&contents) {
+                    Some(normalized) => tokio::fs::write(&output_path, normalized)
+                        .await
+                        .is_ok(),
+                    None => false,
+                },
+                Err(_) => false,
+            }
+        } else {
+            false
+        };
+        let length = if succeeded {
+            tokio::fs::metadata(&output_path)
+                .await
+                .ok()
+                .filter(|metadata| {
+                    metadata.is_file()
+                        && metadata.len() > 0
+                        && metadata.len() <= MAX_CONVERTED_SUBTITLE_BYTES
+                })
+                .map(|metadata| metadata.len())
+        } else {
+            None
+        };
+        if length.is_none() {
+            let _ = tokio::fs::remove_file(&output_path).await;
+            continue;
+        }
+        let Ok(url) = local_media_asset_url(media_session_url, &asset_name) else {
+            let _ = tokio::fs::remove_file(&output_path).await;
+            continue;
+        };
+        let language = playlist
+            .language
+            .as_deref()
+            .filter(|language| {
+                !language.is_empty()
+                    && language.len() <= 35
+                    && language
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            })
+            .unwrap_or("und")
+            .to_owned();
+        let label = playlist
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|label| !label.is_empty() && label.len() <= 256)
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                if language == "und" {
+                    format!("Subtitle {}", tracks.len() + 1)
+                } else {
+                    format!("{language} subtitles")
+                }
+            });
+        tracks.push(ConvertedSubtitleTrack {
+            url,
+            lang: language,
+            label,
+            forced: playlist.forced,
         });
     }
     tracks
@@ -7387,6 +7494,7 @@ struct HlsAudioRendition {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HlsSubtitleRendition {
     uri: String,
+    name: Option<String>,
     language: Option<String>,
     is_default: bool,
     autoselect: bool,
@@ -7446,6 +7554,7 @@ fn select_hls_conversion_variant_for_mobile(
             subtitle_renditions.push((
                 attribute("GROUP-ID").ok_or(())?.to_string(),
                 attribute("URI").map(str::to_string),
+                attribute("NAME").map(str::to_string),
                 attribute("LANGUAGE").map(str::to_string),
                 attribute("DEFAULT").is_some_and(|value| value.eq_ignore_ascii_case("YES")),
                 attribute("AUTOSELECT").is_some_and(|value| value.eq_ignore_ascii_case("YES")),
@@ -7546,12 +7655,13 @@ fn select_hls_conversion_variant_for_mobile(
                     let subtitle_renditions = if let Some(group) = subtitle_group {
                         subtitle_renditions
                             .iter()
-                            .filter(|(candidate_group, uri, _, _, _, _)| {
+                            .filter(|(candidate_group, uri, _, _, _, _, _)| {
                                 candidate_group == &group && uri.is_some()
                             })
-                            .filter_map(|(_, uri, language, is_default, autoselect, forced)| {
+                            .filter_map(|(_, uri, name, language, is_default, autoselect, forced)| {
                                 uri.clone().map(|uri| HlsSubtitleRendition {
                                     uri,
+                                    name: name.clone(),
                                     language: language.clone(),
                                     is_default: *is_default,
                                     autoselect: *autoselect,
@@ -9551,20 +9661,29 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(selected_audio_tracks.len(), 1);
         assert_eq!(selected_audio_tracks[0]["codec_name"], "aac");
-        assert!(source_info["streams"].as_array().unwrap().iter().any(|stream| {
-            stream["codec_type"] == "subtitle" && stream["codec_name"] == "webvtt"
-        }), "FFprobe should discover the source HLS subtitle rendition");
+        // Some FFmpeg builds do not expose external HLS WebVTT renditions in
+        // FFprobe output. The worker must still return them from the local
+        // subtitle playlists below.
         let conversion_id = uuid::Uuid::new_v4().simple().to_string();
         let session_url = format!(
             "/v1/media/{conversion_id}?signature=fixture&expires=9999999999"
         );
+        let source_info_without_external_subtitles = serde_json::json!({
+            "streams": source_info["streams"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|stream| stream["codec_type"] != "subtitle")
+                .cloned()
+                .collect::<Vec<_>>(),
+        });
         let tracks = extract_text_subtitle_tracks(
             &ffmpeg,
             &input,
             &dir,
             &conversion_id,
             &session_url,
-            &source_info,
+            &source_info_without_external_subtitles,
         )
         .await;
 
@@ -11088,10 +11207,14 @@ mod tests {
             LocalHlsSubtitlePlaylist {
                 path: PathBuf::from("subtitle-fr.m3u8"),
                 language: Some("fr".to_string()),
+                label: Some("French".to_string()),
+                forced: false,
             },
             LocalHlsSubtitlePlaylist {
                 path: PathBuf::from("subtitle-en.m3u8"),
                 language: Some("en".to_string()),
+                label: Some("English".to_string()),
+                forced: false,
             },
         ];
         let mut used = HashSet::new();
