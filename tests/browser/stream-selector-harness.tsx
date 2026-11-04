@@ -16,10 +16,17 @@ const addon: InstalledAddon = {
   url: `${location.origin}/fixture-addon/manifest.json`,
   enabled: true,
 }
-syncAddonsFromStore([addon])
-useAppStore.setState({ addons: [addon], autoPlayFirstStream: false })
-
 const isSeries = new URLSearchParams(location.search).has('series')
+const autoPlay = new URLSearchParams(location.search).has('auto')
+const multiProvider = new URLSearchParams(location.search).has('multi')
+const secondAddon: InstalledAddon = {
+  ...addon,
+  manifest: { ...addon.manifest, id: 'org.aurales.browser-test-two', name: 'Aurales Browser Test Addon Two' },
+  url: `${location.origin}/fixture-addon-two/manifest.json`,
+}
+const addons = multiProvider ? [addon, secondAddon] : [addon]
+syncAddonsFromStore(addons)
+useAppStore.setState({ addons, autoPlayFirstStream: autoPlay })
 
 function Harness() {
   const [episode, setEpisode] = React.useState({ season: 1, episode: 1 })
@@ -30,7 +37,7 @@ function Harness() {
     mediaType={isSeries ? 'series' : 'movie'}
     mediaId="tt0000001"
     title="Aurales Stream Selector Fixture"
-    forceManualSelection={!isSeries || episode.episode === 1}
+    forceManualSelection={!autoPlay && (!isSeries || episode.episode === 1)}
     seasonEpisode={isSeries ? episode : undefined}
     nextEpisodeHint={isSeries ? { season: 1, episode: episode.episode + 1 } : undefined}
     onNextEpisode={isSeries ? (season, next) => {

@@ -39,6 +39,13 @@ export function classifyPlaybackFailure(error?: unknown): PlaybackFailureReason 
   return 'UNKNOWN'
 }
 
+/** Whether automatic recovery should replace this source without another tap. */
+export function shouldAutomaticallyRecoverSource(error: unknown, reason = classifyPlaybackFailure(error)): boolean {
+  if (['HTTP_4XX', 'SOURCE_EXPIRED', 'SOURCE_UNAVAILABLE', 'UNSUPPORTED_FORMAT', 'DECODER_FAILURE'].includes(reason)) return true
+  const text = String(error instanceof Error ? error.message : error || '').toLowerCase()
+  return /media_host_not_allowed|source_host_not_allowed|media worker rejected source host|media worker could not fetch this source|media worker could not be reached to check conversion support|could not identify a supported video|automatic conversion attempts failed|browser reports that it cannot play|could not be played by the browser video engine|hls stream could not be played/.test(text)
+}
+
 export function isRetryableFailure(reason: PlaybackFailureReason, failures = 0): boolean {
   if (failures >= 2) return false
   return ['NETWORK_TIMEOUT', 'CONNECTION_REFUSED', 'HTTP_5XX', 'ADDON_TIMEOUT', 'SOURCE_EXPIRED', 'UNKNOWN'].includes(reason)

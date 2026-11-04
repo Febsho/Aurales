@@ -37,9 +37,9 @@ import { audioLanguageOrder, selectPreferredLanguageTrack, selectStartupSubtitle
 import { subtitleToVtt } from '../services/player/subtitleFormats'
 import { getPlatformCapabilities, isDashUrl, isHlsUrl, togglePictureInPicture } from '../platform/capabilities'
 import { getHttpText } from '../platform/httpText'
-import { AUTOPLAY_GESTURE_MESSAGE, browserPlaybackFailureMessage, browserRejectsKnownMedia, isAutoplayGestureError, isMediaSessionExpired, isPlaybackInterruptedError, nextPlaybackConversionAfterDecodeFailure } from '../services/player/browserPlayback'
+import { AUTOPLAY_GESTURE_MESSAGE, browserMediaCapabilitiesConversionMode, browserPlaybackFailureMessage, browserRejectsKnownMedia, isAutoplayGestureError, isMediaSessionExpired, isPlaybackInterruptedError, nextPlaybackConversionAfterDecodeFailure, playbackHeadersForSubtitle } from '../services/player/browserPlayback'
 import { cancelMediaConversion, createMediaSession, getSupportedMediaConversionOutputFormat, getMediaConversionOutputFormat, getMediaConversionStatus, getMediaWorkerCapabilities, getMediaWorkerConfig, MediaWorkerHttpError, startMediaConversion, type MediaConversionMode, type MediaConversionOutputFormat, type PlaybackRequestHeaders, type MediaConversionStatus } from '../services/mediaWorker'
-import { buildExternalPlayerUrl, getPreferredExternalPlayer, setPreferredExternalPlayer, type ExternalPlayer } from '../services/player/externalPlayers'
+import { buildExternalPlayerUrl, getAutoOpenExternalPlayer, getPreferredExternalPlayer, setPreferredExternalPlayer, type ExternalPlayer } from '../services/player/externalPlayers'
 import { createExternalPlaybackReturnUrl } from '../services/player/externalPlaybackReturn'
 
 // Mobile Safari/Chromium can leave a rejected source in a silent loading state
@@ -60,7 +60,7 @@ interface InAppPlayerProps {
     mediaSourceId?: string
     audioTracks?: Record<string, unknown>[]
   }
-  sourceMediaInfo?: { container?: string; videoCodec?: string; audioCodec?: string }
+  sourceMediaInfo?: { container?: string; videoCodec?: string; audioCodec?: string; resolution?: string; bitrate?: number; frameRate?: number }
   playbackItem?: PlaybackItem
   startTime?: number
   poster?: string
@@ -104,6 +104,22 @@ interface HlsTrackController {
 const MAX_SUBTITLE_BYTES = 10 * 1024 * 1024
 const NO_SUBTITLES: SubtitleResult[] = []
 const NO_PLAYBACK_REQUEST_HEADERS: PlaybackRequestHeaders = {}
+const MOBILE_NON_NATIVE_CONTAINERS = new Set(['mkv', 'matroska', 'avi', 'flv', 'wmv', 'ts', 'm2ts', 'mpegts', 'mpg', 'mpeg'])
+
+function mobileSourceNeedsH264(video: HTMLVideoElement, sourceUrl: string, mediaInfo: { container?: string; videoCodec?: string; audioCodec?: string }): boolean {
+  const container = mediaInfo.container?.split(/[;,]/, 1)[0]
+    .toLowerCase().replace(/^\./, '').replace(/^video\//, '').replace(/^x-/, '').replace(/[^a-z0-9]/g, '').trim()
+  let extension = ''
+  try {
+    const base = typeof location !== 'undefined' ? location.href : 'https://aurales.invalid'
+    extension = new URL(sourceUrl, base).pathname.split('.').pop()?.toLowerCase() || ''
+  } catch {
+    // Fall through to codec-based browser detection for malformed source URLs.
+  }
+  return MOBILE_NON_NATIVE_CONTAINERS.has(container || '')
+    || MOBILE_NON_NATIVE_CONTAINERS.has(extension)
+    || browserRejectsKnownMedia(video, sourceUrl, mediaInfo)
+}
 
 function isWorkerMediaSessionUrl(value: string): boolean {
   const config = getMediaWorkerConfig()
@@ -117,6 +133,10 @@ function isWorkerMediaSessionUrl(value: string): boolean {
   } catch {
     return false
   }
+}
+
+function sourceHostname(value: string): string {
+  try { return new URL(value, window.location.href).hostname } catch { return '' }
 }
 
 async function resolvePmdbPlaybackEpisode(item: PlaybackItem): Promise<{ tmdbId?: number; season?: number; episode?: number }> {
@@ -146,12 +166,13 @@ async function fetchSubtitleText(url: string, signal?: AbortSignal, headers?: Pl
   })
 }
 
-async function loadSubtitleText(url: string, signal?: AbortSignal, headers?: PlaybackRequestHeaders): Promise<string> {
+async function loadSubtitleText(url: string, mediaUrl: string, signal?: AbortSignal, headers: PlaybackRequestHeaders = {}): Promise<string> {
+  const subtitleHeaders = playbackHeadersForSubtitle(url, mediaUrl, headers)
   try {
-    return await fetchSubtitleText(url, signal, headers)
+    return await fetchSubtitleText(url, signal, subtitleHeaders)
   } catch (directError) {
     if (!getMediaWorkerConfig()) throw directError
-    const session = await createMediaSession(url, signal, headers)
+    const session = await createMediaSession(url, signal, subtitleHeaders)
     return fetchSubtitleText(session.url, signal)
   }
 }
@@ -251,6 +272,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   const renewedMediaProxyUrlRef = useRef<string | null>(null)
   const conversionModesTriedRef = useRef<MediaConversionMode[]>([])
   const conversionFatalErrorRef = useRef<string | null>(null)
+  const conversionSourceAccessBlockedRef = useRef(false)
   const conversionSequenceRunRef = useRef<number | null>(null)
   const conversionControllerRef = useRef<AbortController | null>(null)
   const workerConversionActiveRef = useRef(false)
@@ -264,7 +286,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   const conversionOptionsCheckedRef = useRef(false)
   const conversionOutputFormatRef = useRef<MediaConversionOutputFormat | null>(null)
   const workerConversionTimeoutMsRef = useRef(2 * 60 * 60 * 1000)
-  const requestWorkerConversionRef = useRef<((video: HTMLVideoElement, canPlayHls?: boolean) => boolean) | null>(null)
+  const requestWorkerConversionRef = useRef<((video: HTMLVideoElement, canPlayHls?: boolean, preferredMode?: Exclude<MediaConversionMode, 'auto'>) => boolean) | null>(null)
   const retryWorkerConversionRef = useRef<((video: HTMLVideoElement) => boolean) | null>(null)
   const retryWorkerDecodeFallbackRef = useRef<((video: HTMLVideoElement) => boolean) | null>(null)
   const [paused, setPaused] = useState(true)
@@ -278,19 +300,29 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [externalPlayerMenuOpen, setExternalPlayerMenuOpen] = useState(false)
   const [preferredExternalPlayer, setPreferredExternalPlayerState] = useState<ExternalPlayer | null>(() => getPreferredExternalPlayer())
+  const [externalAutoPlaybackReady, setExternalAutoPlaybackReady] = useState(false)
+  const autoExternalLaunchRef = useRef<string | null>(null)
+  const autoExternalCapabilityCheckRef = useRef<string | null>(null)
+  const autoExternalCapabilityAcceptedRef = useRef<string | null>(null)
+  const autoExternalConversionRequestedRef = useRef<string | null>(null)
+  const autoExternalCurrentUrlRef = useRef(url)
+  autoExternalCurrentUrlRef.current = url
   const isAndroidDevice = /Android/i.test(navigator.userAgent)
   const externalPlayerName = (player: ExternalPlayer) => ({ infuse: 'Infuse', aether: 'Aether', nextplayer: 'Next Player', mxplayer: 'MX Player', justplayer: 'Just Player', vlc: 'VLC' })[player]
   const [nextEpisode, setNextEpisode] = useState<NextEpInfo | null>(null)
   const [selectedSubtitle, setSelectedSubtitle] = useState('off')
+  const userSelectedSubtitleRef = useRef(false)
   const [audioTracks, setAudioTracks] = useState<AudioTrackInfo[]>([])
   const [selectedAudio, setSelectedAudio] = useState('0')
   const userSelectedAudioRef = useRef(false)
+  const workerSourceAudioTracksRef = useRef<AudioTrackInfo[]>([])
+  const workerSelectedAudioSourceIndexRef = useRef<number | null>(null)
   const [audioMenuOpen, setAudioMenuOpen] = useState(false)
   const [subtitleMenuOpen, setSubtitleMenuOpen] = useState(false)
   const [preparedSubtitles, setPreparedSubtitles] = useState<PreparedSubtitle[]>([])
   const [conversionModes, setConversionModes] = useState<MediaConversionMode[]>([])
   const conversionModesRef = useRef<MediaConversionMode[]>([])
-  const convertWithWorkerRef = useRef<(mode: MediaConversionMode) => Promise<boolean>>(async () => false)
+  const convertWithWorkerRef = useRef<(mode: MediaConversionMode, audioTrackIndex?: number) => Promise<boolean>>(async () => false)
   const updateConversionModes = useCallback((modes: MediaConversionMode[]) => {
     conversionModesRef.current = modes
     setConversionModes(modes)
@@ -303,8 +335,12 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   const sourceContainer = sourceMediaInfo?.container
   const sourceVideoCodec = sourceMediaInfo?.videoCodec
   const sourceAudioCodec = sourceMediaInfo?.audioCodec
+  const sourceResolution = sourceMediaInfo?.resolution
+  const sourceBitrate = sourceMediaInfo?.bitrate
+  const sourceFrameRate = sourceMediaInfo?.frameRate
   const playbackSourceUrl = workerPlaybackUrl || (needsHeaderProxy ? headerSessionUrl : url)
   const openExternalPlayer = (player: ExternalPlayer) => {
+    autoExternalLaunchRef.current = url
     let targetUrl = playbackSourceUrl || url
     if (targetUrl.startsWith('/')) {
       const workerConfig = getMediaWorkerConfig()
@@ -367,9 +403,78 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     window.location.href = deepLink
   }
   useEffect(() => {
+    let cancelled = false
+    if (!preferredExternalPlayer || !getAutoOpenExternalPlayer() || !playbackSourceUrl) return
+    if (autoExternalLaunchRef.current === url) return
+    if (autoExternalConversionRequestedRef.current === url && !workerPlaybackUrl) return
+
+    const canCheckMobileCompatibility = !workerPlaybackUrl
+      && getMediaConversionOutputFormat() === 'mp4'
+      && Boolean(getMediaWorkerConfig())
+      && !isHlsUrl(url)
+      && !isDashUrl(url)
+      && Boolean(sourceVideoCodec && sourceResolution)
+      && typeof navigator !== 'undefined'
+      && 'mediaCapabilities' in navigator
+
+    if (canCheckMobileCompatibility && autoExternalCapabilityCheckRef.current !== url) {
+      autoExternalCapabilityCheckRef.current = url
+      const video = videoRef.current
+      if (video && mobileSourceNeedsH264(video, url, {
+        container: sourceContainer,
+        videoCodec: sourceVideoCodec,
+        audioCodec: sourceAudioCodec,
+      })) {
+        autoExternalConversionRequestedRef.current = url
+        requestWorkerConversionRef.current?.(video, getPlatformCapabilities(video).nativeHls, 'h264Aac')
+        return
+      }
+
+      void browserMediaCapabilitiesConversionMode(navigator.mediaCapabilities, {
+        container: sourceContainer,
+        videoCodec: sourceVideoCodec,
+        audioCodec: sourceAudioCodec,
+        resolution: sourceResolution,
+        bitrate: sourceBitrate,
+        frameRate: sourceFrameRate,
+      }).then((preferredMode) => {
+        if (cancelled || autoExternalLaunchRef.current === url) return
+        if (preferredMode) {
+          autoExternalConversionRequestedRef.current = url
+          const currentVideo = videoRef.current
+          if (currentVideo) requestWorkerConversionRef.current?.(currentVideo, getPlatformCapabilities(currentVideo).nativeHls, preferredMode)
+          return
+        }
+        autoExternalCapabilityAcceptedRef.current = url
+        if (externalAutoPlaybackReady) {
+          autoExternalLaunchRef.current = url
+          openExternalPlayer(preferredExternalPlayer)
+        }
+      }).catch(() => {
+        // If the browser cannot answer its capability query, wait for its
+        // media pipeline to become playable before handing off the source.
+        if (cancelled || autoExternalLaunchRef.current === url) return
+        autoExternalCapabilityAcceptedRef.current = url
+        if (externalAutoPlaybackReady) {
+          autoExternalLaunchRef.current = url
+          openExternalPlayer(preferredExternalPlayer)
+        }
+      })
+      return () => { if (autoExternalCurrentUrlRef.current !== url) cancelled = true }
+    }
+
+    if (canCheckMobileCompatibility && autoExternalCapabilityCheckRef.current === url
+      && autoExternalCapabilityAcceptedRef.current !== url && !workerPlaybackUrl) return
+
+    if (!workerPlaybackUrl && getMediaWorkerConfig() && !externalAutoPlaybackReady) return
+
+    autoExternalLaunchRef.current = url
+    openExternalPlayer(preferredExternalPlayer)
+    return () => { if (autoExternalCurrentUrlRef.current !== url) cancelled = true }
+  }, [url, playbackSourceUrl, workerPlaybackUrl, preferredExternalPlayer, sourceContainer, sourceVideoCodec, sourceAudioCodec, sourceResolution, sourceBitrate, sourceFrameRate, externalAutoPlaybackReady])
+  useEffect(() => {
     let disposed = false
     const controller = new AbortController()
-    setHeaderSessionUrl(null)
     if (!needsHeaderProxy) return
     setLoading(true)
     setPlayerNotice('Opening a private, session-bound stream connection for this add-on source…')
@@ -388,12 +493,14 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     })
     return () => { disposed = true; controller.abort() }
   }, [url, needsHeaderProxy, playbackRequestHeaders])
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (mobileStallRecoveryTimerRef.current) clearTimeout(mobileStallRecoveryTimerRef.current)
     mobileStallRecoveryTimerRef.current = null
     mobileStallRecoveryInFlightRef.current = false
     workerPlaybackDescriptionRef.current = null
+    setHeaderSessionUrl(null)
     setWorkerPlaybackUrl(null)
+    setExternalAutoPlaybackReady(false)
     workerConversionActiveRef.current = false
     workerNetworkRetryAttemptedRef.current = false
     workerPlaybackResumeRef.current = false
@@ -407,12 +514,17 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     setConversionBusy(false)
     conversionModesTriedRef.current = []
     conversionFatalErrorRef.current = null
+    conversionSourceAccessBlockedRef.current = false
     conversionSequenceRunRef.current = null
     conversionOptionsCheckedRef.current = false
     conversionOutputFormatRef.current = null
     workerConversionTimeoutMsRef.current = 2 * 60 * 60 * 1000
     userSelectedAudioRef.current = false
+    userSelectedSubtitleRef.current = false
+    workerSourceAudioTracksRef.current = []
+    workerSelectedAudioSourceIndexRef.current = null
     setSelectedAudio('0')
+    setSelectedSubtitle('off')
     setPreparedSubtitles((current) => current.filter((track) => !track.id.startsWith('worker:')))
     conversionControllerRef.current?.abort()
     conversionControllerRef.current = null
@@ -427,6 +539,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   // and autoplay policies. Direct non-HLS URLs remain on the native video path.
   useEffect(() => {
     const video = videoRef.current
+    let disposed = false
     setHlsSubtitleTracks([])
     setError('')
     if (!video) return
@@ -438,9 +551,32 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       && getMediaConversionOutputFormat() === 'mp4'
       && getMediaWorkerConfig()
       && (sourceContainer || sourceVideoCodec || sourceAudioCodec)
-      && browserRejectsKnownMedia(video, sourceUrl, { container: sourceContainer, videoCodec: sourceVideoCodec, audioCodec: sourceAudioCodec })
-      && requestWorkerConversionRef.current?.(video, browserCapabilities.nativeHls)) {
+      && mobileSourceNeedsH264(video, sourceUrl, { container: sourceContainer, videoCodec: sourceVideoCodec, audioCodec: sourceAudioCodec })
+      && requestWorkerConversionRef.current?.(video, browserCapabilities.nativeHls, 'h264Aac')) {
       return
+    }
+    if (!workerPlaybackUrl
+      && browserCapabilities.platform === 'web'
+      && getMediaConversionOutputFormat() === 'mp4'
+      && getMediaWorkerConfig()
+      && !isHlsUrl(sourceUrl)
+      && !isDashUrl(sourceUrl)
+      && sourceVideoCodec
+      && sourceResolution
+      && typeof navigator !== 'undefined'
+      && 'mediaCapabilities' in navigator) {
+      void browserMediaCapabilitiesConversionMode(navigator.mediaCapabilities, {
+        container: sourceContainer,
+        videoCodec: sourceVideoCodec,
+        audioCodec: sourceAudioCodec,
+        resolution: sourceResolution,
+        bitrate: sourceBitrate,
+        frameRate: sourceFrameRate,
+      }).then((preferredMode) => {
+        if (preferredMode && !disposed && videoRef.current === video && !workerPlaybackUrl) {
+          requestWorkerConversionRef.current?.(video, browserCapabilities.nativeHls, preferredMode)
+        }
+      })
     }
     if (video.dataset.auralesSourceUrl !== url) {
       video.dataset.auralesSourceUrl = url
@@ -462,9 +598,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       setPlayerNotice(sourceUrl === url
         ? 'Direct Play. Codec compatibility depends on this browser, device, and source.'
         : 'Direct Play through a private media-worker session. Codec compatibility depends on this browser and device.')
-      return
+      return () => { disposed = true }
     }
-    let disposed = false
     let hls: { destroy: () => void } | undefined
     let networkRecoveryAttempted = false
     let mediaRecoveryAttempted = false
@@ -483,7 +618,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     if (capabilities.nativeHls && !useHlsJsForNativeHls) {
       video.src = sourceUrl
       setPlayerNotice(workerPlaybackDescriptionRef.current || 'Using native HLS playback. Available audio and subtitle tracks depend on this browser and stream.')
-      return () => { video.removeAttribute('src'); video.load() }
+      return () => { disposed = true; video.removeAttribute('src'); video.load() }
     }
     if (!capabilities.mediaSource) {
       if (!requestWorkerConversionRef.current?.(video, capabilities.nativeHls)) {
@@ -532,16 +667,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         video.load()
         return true
       }
-      instance.on(Hls.Events.MANIFEST_PARSED, () => {
+      const syncHlsAudioTracks = () => {
         const tracks = instance.audioTracks
-        const { preferredAudio = ['en', 'ja'], animeAudioMode } = useAppStore.getState()
-        const languageOrder = audioLanguageOrder(preferredAudio, Boolean(playbackItem?.isAnime), animeAudioMode)
-        const preferred = selectPreferredLanguageTrack(
-          tracks.map((track, index) => ({ lang: track.lang, index })),
-          languageOrder,
-          getLanguageCodeFromTrack,
-        )?.index
-        if (!userSelectedAudioRef.current && preferred != null) instance.audioTrack = preferred
         const current = instance.audioTrack >= 0 ? instance.audioTrack : 0
         setAudioTracks(tracks.map((track, index) => ({
           id: String(index),
@@ -550,9 +677,18 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           index,
           enabled: index === current,
         })))
-        setSelectedAudio(String(current >= 0 ? current : 0))
+        setSelectedAudio(String(current))
+      }
+      const syncHlsSubtitleTracks = () => {
         const subtitleTracks = instance.subtitleTracks
-        const audioLanguage = tracks[instance.audioTrack]?.lang
+        const tracks = subtitleTracks.map((track, index) => ({
+          index,
+          label: track.name || getLanguageNameFromTrack(track.lang) || `Subtitle ${index + 1}`,
+          language: track.lang,
+        }))
+        setHlsSubtitleTracks(tracks)
+        if (userSelectedSubtitleRef.current) return
+        const audioLanguage = instance.audioTracks[instance.audioTrack]?.lang
         const preferredSubtitle = selectStartupSubtitle({
           tracks: subtitleTracks.map((track, index) => ({
             id: `hls:${index}`,
@@ -567,11 +703,6 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           preferSdh: useAppStore.getState().preferSdhSubtitles,
           normalize: getLanguageCodeFromTrack,
         })
-        setHlsSubtitleTracks(subtitleTracks.map((track, index) => ({
-          index,
-          label: track.name || getLanguageNameFromTrack(track.lang) || `Subtitle ${index + 1}`,
-          language: track.lang,
-        })))
         if (preferredSubtitle.kind === 'track') {
           instance.subtitleTrack = preferredSubtitle.track.index
           setSelectedSubtitle(`hls:${preferredSubtitle.track.index}`)
@@ -579,8 +710,24 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           instance.subtitleTrack = -1
           setSelectedSubtitle('off')
         }
+      }
+      instance.on(Hls.Events.MANIFEST_PARSED, () => {
+        const tracks = instance.audioTracks
+        const { preferredAudio = ['en', 'ja'], animeAudioMode } = useAppStore.getState()
+        const languageOrder = audioLanguageOrder(preferredAudio, Boolean(playbackItem?.isAnime), animeAudioMode)
+        const preferred = selectPreferredLanguageTrack(
+          tracks.map((track, index) => ({ lang: track.lang, index })),
+          languageOrder,
+          getLanguageCodeFromTrack,
+        )?.index
+        if (!userSelectedAudioRef.current && preferred != null) instance.audioTrack = preferred
+        syncHlsAudioTracks()
+        syncHlsSubtitleTracks()
         setPlayerNotice(workerPlaybackDescriptionRef.current || 'Available HLS audio and subtitle tracks depend on the stream and browser. External subtitles remain available when supplied by the source.')
       })
+      instance.on(Hls.Events.AUDIO_TRACKS_UPDATED, syncHlsAudioTracks)
+      instance.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, syncHlsSubtitleTracks)
+      instance.on(Hls.Events.SUBTITLE_TRACKS_CLEARED, () => setHlsSubtitleTracks([]))
       instance.on(Hls.Events.ERROR, (_event, data) => {
         if (!data.fatal) return
         const controller = instance as unknown as HlsTrackController
@@ -644,7 +791,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
             return
           }
           if (getMediaWorkerConfig()) {
-            requestWorkerConversionRef.current?.(video)
+            requestWorkerConversionRef.current?.(video, undefined, 'h264Aac')
             return
           }
           setError('The browser could not decode this HLS audio/video format. Try another stream.')
@@ -697,7 +844,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       video.removeAttribute('src')
       video.load()
     }
-  }, [url, playbackSourceUrl, workerPlaybackUrl, needsHeaderProxy, playbackRequestHeaders, playbackItem?.isAnime, sourceContainer, sourceVideoCodec, sourceAudioCodec])
+  }, [url, playbackSourceUrl, workerPlaybackUrl, needsHeaderProxy, playbackRequestHeaders, playbackItem?.isAnime, sourceContainer, sourceVideoCodec, sourceAudioCodec, sourceResolution, sourceBitrate, sourceFrameRate])
   const SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const
   const [playbackSpeed, setPlaybackSpeed] = useState(1)
   const [showSpeedMenu, setShowSpeedMenu] = useState(false)
@@ -860,7 +1007,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     conversionControllerRef.current?.abort()
     conversionControllerRef.current = null
     try {
-      const text = await loadSubtitleText(track.url, undefined, playbackRequestHeaders)
+      const text = await loadSubtitleText(track.url, url, undefined, playbackRequestHeaders)
       if (!isCurrentRun()) return
 
       const translatedText = await requestSubtitleTranslation(
@@ -916,6 +1063,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     void reportJellyfinPlayback({
       connectionId: playbackItem.serverConnectionId,
       itemId: playbackItem.serverItemId,
+      season: playbackItem.serverSeason,
+      episode: playbackItem.serverEpisode,
       mediaSourceId: playbackItem.serverMediaSourceId,
       playSessionId: playbackItem.serverPlaySessionId,
       positionTicks: Math.max(0, Math.round(time * 10_000_000)),
@@ -1051,6 +1200,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         if (!isCurrentRun() || playbackStartedRef.current || !video.paused || isPlaybackInterruptedError(error)) return
         if (isAutoplayGestureError(error)) {
           autoplayBlockedRef.current = true
+          setExternalAutoPlaybackReady(true)
           setLoading(false)
           setPaused(true)
           setPlayerNotice(AUTOPLAY_GESTURE_MESSAGE)
@@ -1118,7 +1268,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       }
 
       try {
-        const text = await loadSubtitleText(track.url, controller.signal, playbackRequestHeaders)
+        const text = await loadSubtitleText(track.url, url, controller.signal, playbackRequestHeaders)
         if (cancelled) {
           prepared[index] = fallback
           continue
@@ -1153,6 +1303,47 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   useEffect(() => {
     let cancelled = false
     let selectionTimer: ReturnType<typeof setTimeout> | undefined
+    // Playback state changes (for example, selecting another audio track)
+    // also rerun this effect. Keep the user's subtitle choice for the rest of
+    // this stream instead of snapping back to the language preference. A new
+    // worker audio copy replaces its <track> elements, so reapply that choice
+    // to the replacement elements as well.
+    if (userSelectedSubtitleRef.current) {
+      const video = videoRef.current
+      const hlsTracks = hlsTracksRef.current
+      if (selectedSubtitle === 'off') {
+        if (hlsTracks) hlsTracks.subtitleTrack = -1
+        if (video) Array.from(video.textTracks).forEach((track) => { track.mode = 'disabled' })
+        return
+      }
+      if (selectedSubtitle.startsWith('hls:')) {
+        if (hlsTracks) hlsTracks.subtitleTrack = Number(selectedSubtitle.slice(4))
+        return
+      }
+      const externalIndex = selectedSubtitle.startsWith('external:')
+        ? Number(selectedSubtitle.slice(9))
+        : null
+      const nativeIndex = selectedSubtitle.startsWith('native:')
+        ? Number(selectedSubtitle.slice(7))
+        : null
+      if (externalIndex === null && nativeIndex === null) return
+      selectionTimer = setTimeout(() => {
+        if (cancelled || !videoRef.current) return
+        if (hlsTracks) hlsTracks.subtitleTrack = -1
+        const externalElements = Array.from(videoRef.current.querySelectorAll<HTMLTrackElement>('track[data-player-subtitle-id]'))
+        externalElements.forEach((element, index) => {
+          element.track.mode = externalIndex === index ? 'showing' : 'disabled'
+        })
+        Array.from(videoRef.current.textTracks).forEach((track, index) => {
+          if (externalElements.some((element) => element.track === track)) return
+          track.mode = nativeIndex === index ? 'showing' : 'disabled'
+        })
+      }, 100)
+      return () => {
+        cancelled = true
+        if (selectionTimer) clearTimeout(selectionTimer)
+      }
+    }
     const { preferredSubtitles: preferredSubs = ['en'], subtitleMode, preferSdhSubtitles } = useAppStore.getState()
     if (preparedSubtitles.length === 0) return
     const selectedAudioTrack = audioTracks.find((track) => String(track.index) === selectedAudio)
@@ -1189,7 +1380,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       cancelled = true
       if (selectionTimer) clearTimeout(selectionTimer)
     }
-  }, [audioTracks, preparedSubtitles, selectedAudio])
+  }, [audioTracks, preparedSubtitles, selectedAudio, selectedSubtitle])
 
   // ── Watch Together sync ───────────────────────────────────────────────────
   const wtIgnoreNextEvent = useRef(false)
@@ -1278,6 +1469,13 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   }
 
   const refreshAudioTracks = useCallback(() => {
+    const workerTracks = workerSourceAudioTracksRef.current
+    if (workerConversionActiveRef.current && workerTracks.length > 0) {
+      const selectedIndex = workerTracks.findIndex((track) => track.sourceIndex === workerSelectedAudioSourceIndexRef.current)
+      setAudioTracks(workerTracks.map((track, index) => ({ ...track, enabled: index === selectedIndex })))
+      setSelectedAudio(String(Math.max(0, selectedIndex)))
+      return
+    }
     const hlsTracks = hlsTracksRef.current
     if (hlsTracks?.audioTracks.length) {
       const next = hlsTracks.audioTracks.map((track, index) => ({
@@ -1435,6 +1633,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         if (playbackRun !== playbackRunRef.current || playbackStartedRef.current || !video.paused || isPlaybackInterruptedError(error)) return
         if (isAutoplayGestureError(error)) {
           autoplayBlockedRef.current = true
+          setExternalAutoPlaybackReady(true)
           setPaused(true)
           setPlayerNotice(AUTOPLAY_GESTURE_MESSAGE)
           return
@@ -1608,6 +1807,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   }
 
   const changeSubtitle = (id: string) => {
+    userSelectedSubtitleRef.current = true
     setSelectedSubtitle(id)
     const video = videoRef.current
     const hlsTracks = hlsTracksRef.current
@@ -1621,6 +1821,10 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     })
     Array.from(video.textTracks).forEach((track, index) => {
       if (externalElements.some((element) => element.track === track)) return
+      // HLS.js owns its generated text tracks and reacts to their mode
+      // changes. Disabling every non-native track here cancels an HLS
+      // subtitle selection immediately after the user picks it.
+      if (hlsTracks && id.startsWith('hls:')) return
       track.mode = id.startsWith('native:') && Number(id.slice(7)) === index ? 'showing' : 'disabled'
     })
     showControlsTemporarily()
@@ -1628,6 +1832,24 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
 
   const changeAudio = (index: string) => {
     userSelectedAudioRef.current = true
+    const video = videoRef.current as (HTMLVideoElement & { audioTracks?: Array<{ enabled: boolean }> }) | null
+    const selectedTrack = audioTracks.find((track) => String(track.index) === index)
+    if (workerConversionActiveRef.current && selectedTrack?.sourceIndex !== undefined) {
+      if (selectedTrack.sourceIndex === workerSelectedAudioSourceIndexRef.current) {
+        showControlsTemporarily()
+        return
+      }
+      const workerMode = lastWorkerConversionModeRef.current || 'h264Aac'
+      mediaProxyResumeRef.current = video && Number.isFinite(video.currentTime) ? video.currentTime : 0
+      conversionModesTriedRef.current = []
+      conversionFatalErrorRef.current = null
+      setLoading(true)
+      setError('')
+      setPlayerNotice(`Preparing ${selectedTrack.label} audio on the media worker…`)
+      void convertWithWorkerFallback(workerMode, selectedTrack.sourceIndex)
+      showControlsTemporarily()
+      return
+    }
     if (hlsTracksRef.current) {
       hlsTracksRef.current.audioTrack = Number(index)
       setSelectedAudio(index)
@@ -1635,10 +1857,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       showControlsTemporarily()
       return
     }
-    const video = videoRef.current as (HTMLVideoElement & { audioTracks?: Array<{ enabled: boolean }> }) | null
     const tracks = video?.audioTracks
     if (!tracks?.length) {
-      const selectedTrack = audioTracks.find((track) => String(track.index) === index)
       if (serverTrackInfo?.provider === 'jellyfin' && selectedTrack?.sourceIndex !== undefined && video) {
         try {
           const source = new URL(url)
@@ -1675,6 +1895,12 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     showControlsTemporarily()
   }
 
+  const requestWorkerTrackDiscovery = () => {
+    if (!getMediaWorkerConfig() || conversionBusy || workerConversionActiveRef.current) return
+    const video = videoRef.current
+    if (video) requestWorkerConversionRef.current?.(video)
+  }
+
   const openPictureInPicture = async () => {
     const video = videoRef.current
     if (!video || !getPlatformCapabilities(video).pictureInPicture) return
@@ -1695,7 +1921,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
     }
   }
 
-  const convertWithWorker = async (mode: MediaConversionMode): Promise<boolean> => {
+  const convertWithWorker = async (mode: MediaConversionMode, audioTrackIndex?: number): Promise<boolean> => {
     if (conversionModesTriedRef.current.includes(mode)) return false
     conversionModesTriedRef.current = [...conversionModesTriedRef.current, mode]
     const controller = new AbortController()
@@ -1727,7 +1953,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       let startRetries = 0
       while (true) {
         try {
-          jobId = await startMediaConversion(url, mode, controller.signal, playbackRequestHeaders, outputFormat, mobileCompatibility, preferredAudioLanguages)
+          jobId = await startMediaConversion(url, mode, controller.signal, playbackRequestHeaders, outputFormat, mobileCompatibility, preferredAudioLanguages, audioTrackIndex)
           break
         } catch (error) {
           if (!(error instanceof MediaWorkerHttpError && error.status === 429 && error.errorCode === 'conversion_worker_busy') || startRetries >= 2) {
@@ -1811,14 +2037,21 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
             source_not_found: 'The source returned HTTP 404. Refresh the stream URL or choose another source.',
             source_gone: 'The source URL has expired or is no longer available (HTTP 410). Refresh the stream or choose another source.',
             source_rate_limited: 'The source is rate limiting the media worker (HTTP 429). Wait before retrying or choose another stream.',
+            source_host_not_allowed: 'The media worker reached a playlist or segment on a hostname outside AURALES_MEDIA_ALLOWED_HOSTS. Add that exact hostname to the worker allowlist and retry.',
             unsupported_input: 'The media worker could not identify a supported video or playlist in this source.',
             no_compatible_output: 'FFmpeg could not create a compatible copy with its available codecs and output formats.',
             conversion_timed_out: 'The media worker conversion exceeded its time limit. Aurales will try a smaller mobile profile if one is available.',
             conversion_internal_error: 'The media worker encountered an internal error while preparing this source. Check its logs.',
           }
-          const message = failureMessages[status.error] || `The media worker could not convert this stream (${status.error}).`
-          if (['source_unavailable', 'source_unauthorized', 'source_forbidden', 'source_not_found', 'source_gone', 'source_rate_limited', 'unsupported_input'].includes(status.error)) {
+          const sourceHost = ['source_unavailable', 'source_unauthorized', 'source_forbidden', 'source_not_found', 'source_gone', 'source_rate_limited', 'source_host_not_allowed'].includes(status.error)
+            ? status.sourceHost || sourceHostname(url)
+            : ''
+          const message = `${failureMessages[status.error] || `The media worker could not convert this stream (${status.error}).`}${sourceHost ? ` Source host: ${sourceHost}.` : ''}`
+          if (['source_unavailable', 'source_unauthorized', 'source_forbidden', 'source_not_found', 'source_gone', 'source_rate_limited', 'source_host_not_allowed', 'unsupported_input'].includes(status.error)) {
             conversionFatalErrorRef.current = message
+          }
+          if (['source_unavailable', 'source_unauthorized', 'source_forbidden', 'source_not_found', 'source_gone', 'source_rate_limited', 'source_host_not_allowed'].includes(status.error)) {
+            conversionSourceAccessBlockedRef.current = true
           }
           throw new Error(message)
         }
@@ -1864,6 +2097,30 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         ? `Playing a finite snapshot of the current live stream as ${outputFormat.toUpperCase()}; playback will not continue updating.${audioTrackNotice}${inputCodecs ? ` Source detected as ${status.sourceInfo?.container}: ${inputCodecs}.` : ''}`
         : `Playing worker-prepared ${outputFormat.toUpperCase()} stream (${conversionProfile}).${audioTrackNotice}${inputCodecs ? ` Source detected as ${status.sourceInfo?.container}: ${inputCodecs}.` : ''}`
       workerPlaybackDescriptionRef.current = description
+      const workerSourceAudioTracks = (status.sourceInfo?.streams || []).flatMap((stream, index, streams) => {
+        if (stream.codec_type !== 'audio') return []
+        const sourceIndex = streams.slice(0, index).filter((candidate) => candidate.codec_type === 'audio').length
+        const language = stream.tags?.language || undefined
+        return [{
+          id: `worker-audio:${sourceIndex}`,
+          label: stream.tags?.title || stream.tags?.handler_name || stream.tags?.comment || getLanguageNameFromTrack(language) || `Audio ${sourceIndex + 1}`,
+          language,
+          index: sourceIndex,
+          sourceIndex,
+          enabled: false,
+        }]
+      })
+      workerSourceAudioTracksRef.current = workerSourceAudioTracks
+      const selectedSourceAudioIndex = audioTrackIndex
+        ?? workerSourceAudioTracks.find((track) => preferredAudioLanguages.some((language) => getLanguageCodeFromTrack(track.language) === getLanguageCodeFromTrack(language)))?.sourceIndex
+        ?? workerSourceAudioTracks[0]?.sourceIndex
+        ?? null
+      workerSelectedAudioSourceIndexRef.current = selectedSourceAudioIndex
+      if (workerSourceAudioTracks.length > 0) {
+        const selectedIndex = workerSourceAudioTracks.findIndex((track) => track.sourceIndex === selectedSourceAudioIndex)
+        setAudioTracks(workerSourceAudioTracks.map((track, index) => ({ ...track, enabled: index === selectedIndex })))
+        setSelectedAudio(String(Math.max(0, selectedIndex)))
+      }
       setPlayerNotice(description)
       if (status.subtitles.length > 0) {
         setPreparedSubtitles((current) => [
@@ -1883,8 +2140,14 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       }
     } catch (error) {
       if (controller.signal.aborted) return false
-      const message = error instanceof Error ? error.message : 'The media worker conversion failed.'
+      const rejectedSourceHost = error instanceof MediaWorkerHttpError && error.errorCode === 'media_host_not_allowed'
+        ? (() => { try { return new URL(url).hostname } catch { return '' } })()
+        : ''
+      const message = rejectedSourceHost
+        ? `The media worker rejected source host ${rejectedSourceHost}. Add its exact hostname to AURALES_MEDIA_ALLOWED_HOSTS and make sure it resolves to a public IP, then retry playback.`
+        : error instanceof Error ? error.message : 'The media worker conversion failed.'
       setConversionMessage(message)
+      if (rejectedSourceHost) conversionSourceAccessBlockedRef.current = true
       if (error instanceof MediaWorkerHttpError
         && [400, 401, 403, 413].includes(error.status)) {
         conversionFatalErrorRef.current = message
@@ -1904,13 +2167,13 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   }
   convertWithWorkerRef.current = convertWithWorker
 
-  const convertWithWorkerFallback = async (mode: Exclude<MediaConversionMode, 'auto'>): Promise<boolean> => {
+  const convertWithWorkerFallback = async (mode: Exclude<MediaConversionMode, 'auto'>, audioTrackIndex?: number): Promise<boolean> => {
     const playbackRun = playbackRunRef.current
     const hasMode = (candidate: Exclude<MediaConversionMode, 'auto'>) =>
       conversionModesRef.current.includes(candidate) && !conversionModesTriedRef.current.includes(candidate)
     let candidate: Exclude<MediaConversionMode, 'auto'> | null = mode
     while (candidate) {
-      if (await convertWithWorkerRef.current(candidate)) return true
+      if (await convertWithWorkerRef.current(candidate, audioTrackIndex)) return true
       if (playbackRun !== playbackRunRef.current) return false
       if (conversionFatalErrorRef.current) {
         setLoading(false)
@@ -1963,7 +2226,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
   }
   retryWorkerDecodeFallbackRef.current = retryWorkerDecodeFallback
 
-  const requestWorkerConversion = (video: HTMLVideoElement, canPlayHls?: boolean) => {
+  const requestWorkerConversion = (video: HTMLVideoElement, canPlayHls?: boolean, preferredMode?: Exclude<MediaConversionMode, 'auto'>) => {
     if (!getMediaWorkerConfig()) return false
     const playbackRun = playbackRunRef.current
     const isCurrentRun = () => playbackRun === playbackRunRef.current
@@ -1996,8 +2259,16 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       setPlayerNotice(refreshingLiveSnapshot
         ? 'Preparing a fresh live snapshot…'
         : 'Preparing a browser-compatible copy. The original source is not modified.')
+      const h264ModeOrder = preferredMode === 'h264AacLow'
+        ? ['h264AacLow', 'h264AacCompat', 'h264Aac'] as const
+        : preferredMode === 'h264AacCompat'
+          ? ['h264AacCompat', 'h264AacLow', 'h264Aac'] as const
+          : ['h264Aac', 'h264AacLow', 'h264AacCompat'] as const
+      const orderedModes = preferredMode && h264ModeOrder.some((mode) => modes.includes(mode))
+        ? h264ModeOrder.filter((mode) => modes.includes(mode))
+        : modes
       void (async () => {
-        for (const mode of modes) {
+        for (const mode of orderedModes) {
           if (!isCurrentRun()) return
           if (conversionModesTriedRef.current.includes(mode)) continue
           if (await convertWithWorker(mode)) {
@@ -2005,9 +2276,8 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
             return
           }
           if (conversionFatalErrorRef.current) break
-          // The worker's automatic ladder already tried remux, AAC-only, and
-          // standard H.264. One lower mobile profile remains useful if the
-          // standard encode itself could not be produced.
+          // When the browser has already rejected the video decoder, copy-only
+          // profiles cannot fix playback; move through smaller H.264 modes.
           if (mode === 'auto') {
             if (modes.includes('h264AacLow') && !conversionModesTriedRef.current.includes('h264AacLow')) {
               if (await convertWithWorkerFallback('h264AacLow')) {
@@ -2155,7 +2425,10 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
             || !getMediaWorkerConfig()
             || mobileStallRecoveryInFlightRef.current
             || workerLiveSnapshotActiveRef.current) return
-          if (mobileStallRecoveryTimerRef.current) clearTimeout(mobileStallRecoveryTimerRef.current)
+          // Repeated `waiting` events during one stall must not keep moving
+          // the recovery deadline forward. `playing` clears the timer after
+          // playback resumes, and the callback rechecks readyState/progress.
+          if (mobileStallRecoveryTimerRef.current) return
           const stalledAt = video.currentTime
           const playbackRun = playbackRunRef.current
           mobileStallRecoveryTimerRef.current = window.setTimeout(() => {
@@ -2206,6 +2479,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
         onCanPlay={() => {
           bufferingRef.current = false
           setLoading(false)
+          setExternalAutoPlaybackReady(true)
         }}
         onPlaying={() => {
           if (mobileStallRecoveryTimerRef.current) clearTimeout(mobileStallRecoveryTimerRef.current)
@@ -2214,6 +2488,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
           bufferingRef.current = false
           setLoading(false)
           setPaused(false)
+          setExternalAutoPlaybackReady(true)
           // A recovered HLS or media-worker fallback can reach `playing`
           // after an earlier source error. Clear that transient error only
           // once the browser confirms that playback resumed.
@@ -2252,6 +2527,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
               if (isPlaybackInterruptedError(playError)) return
               if (isAutoplayGestureError(playError)) {
                 autoplayBlockedRef.current = true
+                setExternalAutoPlaybackReady(true)
                 setLoading(false)
                 setPaused(true)
                 setPlayerNotice(AUTOPLAY_GESTURE_MESSAGE)
@@ -2348,7 +2624,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
             return
           }
           if (video && getPlatformCapabilities(video).platform === 'web' && unsupportedMedia && getMediaWorkerConfig()) {
-            requestWorkerConversionRef.current?.(video)
+            requestWorkerConversionRef.current?.(video, undefined, 'h264Aac')
             return
           }
           if (video && getPlatformCapabilities(video).platform === 'web' && unsupportedMedia && !getMediaWorkerConfig()) {
@@ -2422,13 +2698,29 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
       </div>
 
       {error && (
-        <div role="alert" className="absolute left-1/2 top-24 z-20 max-h-[calc(100dvh-8rem)] w-[min(92vw,44rem)] -translate-x-1/2 overflow-y-auto overscroll-contain rounded-2xl border border-red-500/20 bg-black/85 px-5 py-4 text-sm text-red-200 shadow-xl backdrop-blur-xl">
-          {error}
+        <div role="alert" className="inapp-player-error-panel pointer-events-auto absolute left-1/2 top-24 z-[80] max-h-[calc(100dvh-8rem)] w-[min(92vw,44rem)] -translate-x-1/2 touch-pan-y overflow-y-auto overscroll-contain rounded-2xl border border-red-500/20 bg-black/90 px-5 py-4 text-sm text-red-200 shadow-xl backdrop-blur-xl">
+          <p className="inapp-player-error-message">{error}</p>
           {liveSnapshotEnded && <button type="button" onClick={refreshLiveSnapshot} disabled={conversionBusy} className="mt-3 block min-h-11 rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-50">Refresh live snapshot</button>}
-          {conversionModes.length > 0 && (
-            <div className="mt-3 border-t border-white/10 pt-3">
-              <p className="mb-2 text-xs text-white/65">The worker downloads the source and prepares a browser-compatible MP4 or HLS copy. This uses worker disk space; source access headers are sent to the worker and are not embedded in playback URLs.</p>
-              <div className="flex flex-wrap gap-2">
+          {(conversionModes.length > 0 || getMediaWorkerConfig()) && (
+            <div className="inapp-player-error-actions mt-3 border-t border-white/10 pt-3">
+              <button
+                type="button"
+                disabled={conversionBusy}
+                onClick={() => {
+                  const video = videoRef.current
+                  if (!video) return
+                  conversionModesTriedRef.current = []
+                  conversionFatalErrorRef.current = null
+                  conversionSourceAccessBlockedRef.current = false
+                  conversionSequenceRunRef.current = null
+                  setError('')
+                  requestWorkerConversionRef.current?.(video)
+                }}
+                className="mb-2 min-h-11 w-full rounded-xl border border-white/20 bg-white px-4 py-2 text-left text-sm font-semibold text-black hover:bg-white/90 disabled:opacity-50"
+              >
+                Retry automatic conversion
+              </button>
+              {conversionModes.length > 0 && !conversionSourceAccessBlockedRef.current && <div className="flex flex-wrap gap-2">
                 {conversionModes.filter((mode) => !conversionModesTriedRef.current.includes(mode)).map((mode) => (
                   <button
                     key={mode}
@@ -2440,8 +2732,13 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
                     {mode === 'auto' ? 'Try automatic conversion' : mode === 'remux' ? 'Try stream-copy remux' : mode === 'audioAac' ? 'Convert audio to AAC' : mode === 'h264AacLow' ? 'Try smaller 720p/30 H.264' : mode === 'h264AacCompat' ? 'Try 480p/30 H.264' : 'Convert video to H.264'}
                   </button>
                 ))}
-              </div>
-              {conversionMessage && <p role="status" className="mt-2 text-xs text-white/65">{conversionMessage}</p>}
+              </div>}
+              {conversionMessage && conversionMessage !== error && <p role="status" className="mt-2 text-xs text-white/65">{conversionMessage}</p>}
+              <p className="mb-2 mt-2 text-xs leading-relaxed text-white/60">{conversionSourceAccessBlockedRef.current
+                ? 'The media worker cannot access this source yet. Changing the conversion profile will not fix access. Check the worker allowlist or the provider’s source access, then retry.'
+                : conversionModes.length > 0
+                ? 'Aurales prepares a compatible copy on your media worker. If the source rejects the worker request, refresh the stream or check the worker’s allowed hostnames.'
+                : 'Aurales could not check the media worker yet. Retry to reconnect and start automatic conversion when the worker is available.'}</p>
             </div>
           )}
         </div>
@@ -2497,15 +2794,20 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
                 <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5v15l11-7.5L5 4.5Zm13 .5h2v14h-2V5Z" /></svg>
               </button>
             )}
-            <button onClick={handlePickAnother} className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-sm">Pick another</button>
-            <div className="relative">
+            <button onClick={handlePickAnother} aria-label="Pick another stream" title="Pick another stream" className="inapp-player-pick-another px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-sm">
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" strokeLinecap="round"/><path d="m17 16 3 2-3 2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              <span className="inapp-player-compact-label">Pick another</span>
+            </button>
+            <div className="inapp-player-external-player relative">
               <div className="flex overflow-hidden rounded-full bg-white/10">
                 <button
                   type="button"
                   onClick={() => preferredExternalPlayer ? openExternalPlayer(preferredExternalPlayer) : setExternalPlayerMenuOpen((open) => !open)}
+                  aria-label={preferredExternalPlayer ? `Open in ${externalPlayerName(preferredExternalPlayer)}` : 'Open with an external player'}
                   className="min-h-11 px-4 py-2 text-sm hover:bg-white/10"
                 >
-                  {preferredExternalPlayer ? `Open in ${externalPlayerName(preferredExternalPlayer)}` : 'Open with…'}
+                  <svg className="mx-auto hidden h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9" strokeLinecap="round" strokeLinejoin="round"/><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5" strokeLinecap="round"/></svg>
+                  <span className="inapp-player-compact-label">{preferredExternalPlayer ? `Open in ${externalPlayerName(preferredExternalPlayer)}` : 'Open with…'}</span>
                 </button>
                 <button type="button" aria-label="Choose another player" aria-haspopup="menu" aria-expanded={externalPlayerMenuOpen} onClick={() => setExternalPlayerMenuOpen((open) => !open)} className="min-h-11 border-l border-white/10 px-3 text-sm hover:bg-white/10">▾</button>
               </div>
@@ -2600,10 +2902,23 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
                       <span className="grid h-4 w-4 shrink-0 place-items-center">{selectedAudio === String(track.index) ? <span className="h-1.5 w-1.5 rounded-full bg-white" /> : null}</span>
                       <span className="truncate">{track.label}</span>
                     </button>
-                  )) : <p className="px-3 py-2.5 text-sm text-white/45">No audio tracks detected in this browser for this source.</p>}
+                  )) : <>
+                    <p className="px-3 py-2.5 text-sm text-white/45">No audio tracks detected in this browser for this source.</p>
+                    {getMediaWorkerConfig() && <button type="button" role="menuitem" disabled={conversionBusy} onClick={() => {
+                      setAudioMenuOpen(false)
+                      const video = videoRef.current
+                      if (video) requestWorkerConversionRef.current?.(video)
+                    }} className="block w-full rounded-xl px-3 py-2.5 text-left text-sm text-white/85 transition hover:bg-white/10 disabled:opacity-50">Load audio tracks with media worker</button>}
+                  </>}
                 </div>
               )}
-              <button type="button" onClick={() => { setAudioMenuOpen((open) => !open); setSubtitleMenuOpen(false); setShowSpeedMenu(false) }} aria-label="Audio tracks" aria-haspopup="menu" aria-expanded={audioMenuOpen} title={`Audio · ${audioTracks.find((track) => String(track.index) === selectedAudio)?.label || 'Default audio'}`} className={`grid h-10 w-10 place-items-center rounded-full text-white/75 transition hover:bg-white/10 hover:text-white ${audioMenuOpen ? 'bg-white/15 text-white' : ''}`}>
+              <button type="button" onClick={() => {
+                const opening = !audioMenuOpen
+                setAudioMenuOpen(opening)
+                setSubtitleMenuOpen(false)
+                setShowSpeedMenu(false)
+                if (opening && audioTracks.length === 0) requestWorkerTrackDiscovery()
+              }} aria-label="Audio tracks" aria-haspopup="menu" aria-expanded={audioMenuOpen} title={`Audio · ${audioTracks.find((track) => String(track.index) === selectedAudio)?.label || 'Default audio'}`} className={`grid h-10 w-10 place-items-center rounded-full text-white/75 transition hover:bg-white/10 hover:text-white ${audioMenuOpen ? 'bg-white/15 text-white' : ''}`}>
                 <svg className="h-[19px] w-[19px]" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h4l5 4V6l-5 4H4Z" strokeLinejoin="round"/><path d="M16 9a5 5 0 0 1 0 6M18.5 6.5a8.5 8.5 0 0 1 0 11" strokeLinecap="round"/></svg>
               </button>
             </div>
@@ -2617,10 +2932,23 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
                       <span className="truncate">{track.label}</span>
                     </button>
                   ))}
-                  {subtitleOptions.length === 0 && <p className="px-3 pb-2 text-xs text-white/40">No subtitle tracks received from this source yet.</p>}
+                  {subtitleOptions.length === 0 && <>
+                    <p className="px-3 pb-2 text-xs text-white/40">No subtitle tracks received from this source yet.</p>
+                    {getMediaWorkerConfig() && <button type="button" role="menuitem" disabled={conversionBusy} onClick={() => {
+                      setSubtitleMenuOpen(false)
+                      const video = videoRef.current
+                      if (video) requestWorkerConversionRef.current?.(video)
+                    }} className="block w-full rounded-xl px-3 py-2.5 text-left text-sm text-white/85 transition hover:bg-white/10 disabled:opacity-50">Load subtitle tracks with media worker</button>}
+                  </>}
                 </div>
               )}
-              <button type="button" onClick={() => { setSubtitleMenuOpen((open) => !open); setAudioMenuOpen(false); setShowSpeedMenu(false) }} aria-label="Subtitle tracks" aria-haspopup="menu" aria-expanded={subtitleMenuOpen} title={`Subtitles · ${selectedSubtitle === 'off' ? 'Off' : subtitleOptions.find((track) => track.id === selectedSubtitle)?.label || 'On'}`} className={`grid h-10 w-10 place-items-center rounded-full text-white/75 transition hover:bg-white/10 hover:text-white ${subtitleMenuOpen ? 'bg-white/15 text-white' : ''}`}>
+              <button type="button" onClick={() => {
+                const opening = !subtitleMenuOpen
+                setSubtitleMenuOpen(opening)
+                setAudioMenuOpen(false)
+                setShowSpeedMenu(false)
+                if (opening && subtitleOptions.length === 0) requestWorkerTrackDiscovery()
+              }} aria-label="Subtitle tracks" aria-haspopup="menu" aria-expanded={subtitleMenuOpen} title={`Subtitles · ${selectedSubtitle === 'off' ? 'Off' : subtitleOptions.find((track) => track.id === selectedSubtitle)?.label || 'On'}`} className={`grid h-10 w-10 place-items-center rounded-full text-white/75 transition hover:bg-white/10 hover:text-white ${subtitleMenuOpen ? 'bg-white/15 text-white' : ''}`}>
                 <svg className="h-[19px] w-[19px]" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2.5"/><path d="M6 10h5M13 10h5M6 14h3M11 14h7" strokeLinecap="round"/></svg>
               </button>
             </div>

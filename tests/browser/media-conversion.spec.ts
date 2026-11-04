@@ -2,12 +2,173 @@ import { expect, test } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
-test('decode failures automatically try worker conversion and load a signed seekable result', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name.includes('webkit'), 'WebKit does not reliably expose a synthetic decoder failure.')
+test('mobile converts a signed HEVC Main 10 source as soon as the browser rejects its codec profile', async ({ page }, testInfo) => {
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'Codec-profile auto conversion is checked on mobile browser projects.')
+  const jobId = 'abababababababababababababababab'
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+    Object.defineProperty(HTMLMediaElement.prototype, 'canPlayType', {
+      configurable: true,
+      value: (type: string) => type.includes('hvc1.2.4.L120.B0') ? '' : 'maybe',
+    })
+  })
+  await page.route('**/v1/capabilities', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ mediaRemux: true, mediaMp4: true, audioTranscode: true, videoTranscode: true, mobileSafeVideoTranscode: true }),
+  }))
+  let conversionRequest: Record<string, unknown> | null = null
+  await page.route('**/v1/media/conversions', async (route) => {
+    conversionRequest = JSON.parse(route.request().postData() || '{}') as Record<string, unknown>
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({ jobId, status: 'processing' }),
+    })
+  })
+  await page.route(`**/v1/media/conversions/${jobId}`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ jobId, status: 'failed', error: 'source_unavailable', sourceHost: 'cdn-redirect.example' }),
+  }))
+
+  const source = '/tests/browser/fixtures/signed-stream?token=redacted'
+    + '&container=mp4&videoCodec=' + encodeURIComponent('HEVC (Main 10)')
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent(source)}`)
+  const appReferer = await page.evaluate(() => `${location.origin}/`)
+  await expect.poll(() => conversionRequest).not.toBeNull()
+  expect(conversionRequest).toMatchObject({ mode: 'h264Aac', outputFormat: 'mp4', mobileCompatibility: true })
+  expect(conversionRequest).toMatchObject({ headers: { referer: appReferer } })
+  await expect(page.getByRole('alert')).toContainText('Source host: cdn-redirect.example.')
+  await expect(page.getByRole('alert')).not.toContainText('redacted')
+})
+
+test('mobile converts when Media Capabilities predicts a known profile will not play smoothly', async ({ page }, testInfo) => {
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'Media Capabilities fallback is checked on mobile browsers.')
+  const jobId = 'acacacacacacacacacacacacacacacac'
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+    Object.defineProperty(HTMLMediaElement.prototype, 'canPlayType', {
+      configurable: true,
+      value: () => 'maybe',
+    })
+    Object.defineProperty(navigator, 'mediaCapabilities', {
+      configurable: true,
+      value: {
+        decodingInfo: async () => ({ supported: true, smooth: false, powerEfficient: false }),
+      },
+    })
+  })
+  await page.route('**/v1/capabilities', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ mediaRemux: true, mediaMp4: true, audioTranscode: true, videoTranscode: true, mobileSafeVideoTranscode: true }),
+  }))
+  let conversionRequest: Record<string, unknown> | null = null
+  await page.route('**/v1/media/conversions', (route) => {
+    conversionRequest = JSON.parse(route.request().postData() || '{}')
+    return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId, status: 'processing' }) })
+  })
+  await page.route(`**/v1/media/conversions/${jobId}`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ jobId, status: 'failed', error: 'source_forbidden' }),
+  }))
+
+  const query = new URLSearchParams({
+    source: '/tests/browser/fixtures/signed-stream?token=redacted',
+    container: 'mp4',
+    videoCodec: 'HEVC (Main 10)',
+    audioCodec: 'AAC',
+    resolution: '1920x1080',
+  })
+  await page.goto(`/tests/browser/player-harness.html?${query}`)
+  await expect.poll(() => conversionRequest).toMatchObject({ mode: 'h264AacLow', outputFormat: 'mp4', mobileCompatibility: true })
+})
+
+test('mobile explains when the worker blocks a source host before conversion starts', async ({ page }, testInfo) => {
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'Worker source-host diagnostics are checked on mobile browsers.')
+  await page.setViewportSize({ width: 393, height: 852 })
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+    Object.defineProperty(HTMLMediaElement.prototype, 'canPlayType', {
+      configurable: true,
+      value: (type: string) => type.includes('hvc1.2.4.L120.B0') ? '' : 'maybe',
+    })
+  })
+  await page.route('**/v1/capabilities', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ mediaRemux: true, mediaMp4: true, audioTranscode: true, videoTranscode: true, mobileSafeVideoTranscode: true }),
+  }))
+  const conversionModes: string[] = []
+  await page.route('**/v1/media/conversions', (route) => {
+    conversionModes.push(String(JSON.parse(route.request().postData() || '{}').mode))
+    return route.fulfill({
+      status: 403,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'media_host_not_allowed' }),
+    })
+  })
+
+  const query = new URLSearchParams({
+    source: 'https://signed.cdn.example/stream?token=redacted',
+    container: 'mp4',
+    videoCodec: 'HEVC (Main 10)',
+  })
+  await page.goto(`/tests/browser/player-harness.html?${query}`)
+  await expect(page.getByRole('alert')).toContainText('AURALES_MEDIA_ALLOWED_HOSTS')
+  await expect(page.getByRole('alert')).toContainText('signed.cdn.example')
+  await expect(page.locator('.inapp-player-error-message')).toHaveCount(1)
+  await expect(page.locator('.inapp-player-controls')).toBeVisible()
+  const [errorPanel, playerControls] = await Promise.all([
+    page.getByRole('alert').boundingBox(),
+    page.locator('.inapp-player-controls').boundingBox(),
+  ])
+  expect(errorPanel).not.toBeNull()
+  expect(playerControls).not.toBeNull()
+  expect(errorPanel!.y + errorPanel!.height).toBeLessThan(playerControls!.y)
+  await expect(page.getByRole('button', { name: 'Retry automatic conversion' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Convert audio to AAC' })).toHaveCount(0)
+  await expect(page.getByRole('alert')).toContainText('Changing the conversion profile will not fix access')
+  await expect.poll(() => conversionModes).toEqual(['h264Aac'])
+})
+
+test('mobile startup silence starts worker conversion without waiting for a media error', async ({ page }, testInfo) => {
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'Silent startup recovery is checked on mobile browsers.')
+  await page.clock.install()
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+    HTMLMediaElement.prototype.play = () => Promise.resolve()
+  })
+  await page.route('**/startup-stall.mp4', () => new Promise<void>(() => {}))
+  await page.route('**/v1/capabilities', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ mediaRemux: true, mediaMp4: true, audioTranscode: true, videoTranscode: true, mobileSafeVideoTranscode: true }),
+  }))
+  let conversionRequest: Record<string, unknown> | null = null
+  await page.route('**/v1/media/conversions', (route) => {
+    conversionRequest = JSON.parse(route.request().postData() || '{}')
+    return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId: 'abababababababababababababababab', status: 'processing' }) })
+  })
+  await page.route('**/v1/media/conversions/abababababababababababababababab', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ jobId: 'abababababababababababababababab', status: 'failed', error: 'source_forbidden' }),
+  }))
+
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/startup-stall.mp4')}`)
+  await expect(page.locator('video')).toBeAttached()
+  await page.clock.fastForward(10_001)
+  await expect.poll(() => conversionRequest).toMatchObject({ mode: 'auto', outputFormat: 'mp4', mobileCompatibility: true })
+})
+
+test('mobile decode failures automatically convert to a signed, seekable MP4', async ({ page }, testInfo) => {
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'The MP4 output assertion is specific to mobile browser compatibility mode.')
   const jobId = '0123456789abcdef0123456789abcdef'
-  const mediaId = 'abcdef0123456789abcdef0123456789'
-  const sessionUrl = `/v1/media/${mediaId}?expires=1893456000&signature=test-signature&format=hls`
-  const hlsSegment = await readFile(resolve(process.cwd(), 'tests/browser/fixtures/hls-segment-000.m2ts'))
+  const mediaId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  const mobileFixture = await readFile(resolve(process.cwd(), 'tests/browser/fixtures/mobile-h264-compat.mp4'))
   await page.addInitScript(() => {
     localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
   })
@@ -18,7 +179,6 @@ test('decode failures automatically try worker conversion and load a signed seek
   }))
   let requestedMode = ''
   let requestedOutputFormat = ''
-  let workerManifestRequested = ''
   await page.route('**/v1/media/conversions', async (route) => {
     const body = JSON.parse(route.request().postData() || '{}')
     requestedMode = body.mode
@@ -28,17 +188,9 @@ test('decode failures automatically try worker conversion and load a signed seek
   await page.route(`**/v1/media/conversions/${jobId}`, (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
-    body: JSON.stringify({ jobId, status: 'ready', mode: 'remux', bytes: 1024, url: requestedOutputFormat === 'mp4'
-      ? '/v1/media/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?expires=1893456000&signature=mp4-test'
-      : sessionUrl }),
+    body: JSON.stringify({ jobId, status: 'ready', mode: 'h264AacCompat', bytes: mobileFixture.length, url: `/v1/media/${mediaId}?expires=1893456000&signature=mp4-test` }),
   }))
-  await page.route(`**/v1/media/${mediaId}?*`, (route) => {
-    workerManifestRequested = route.request().url()
-    const segmentUrl = `/v1/media/${mediaId}/segment.ts?expires=1893456000&signature=test-signature`
-    const manifest = `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:12\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:12.000000,\n${segmentUrl}\n#EXT-X-ENDLIST\n`
-    return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: manifest })
-  })
-  await page.route(`**/v1/media/${mediaId}/segment.ts?*`, (route) => route.fulfill({ status: 200, contentType: 'video/mp2t', body: hlsSegment }))
+  await page.route(`**/v1/media/${mediaId}?*`, (route) => route.fulfill({ status: 200, contentType: 'video/mp4', body: mobileFixture }))
   await page.route('**/v1/media/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?*', async (route) => {
     const fixtureUrl = new URL('/tests/browser/fixtures/mobile-h264-compat.mp4', route.request().url()).toString()
     const fixture = await route.fetch({ url: fixtureUrl })
@@ -52,20 +204,317 @@ test('decode failures automatically try worker conversion and load a signed seek
     Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 3 }) })
     element.dispatchEvent(new Event('error'))
   })
-  await expect.poll(() => requestedMode).toBe('auto')
-  const isAndroidBrowser = testInfo.project.name === 'android-chromium'
-  expect(requestedOutputFormat).toBe(isAndroidBrowser ? 'mp4' : 'hls')
-  if (isAndroidBrowser) {
-    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain('/v1/media/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?')
-  } else {
-    await expect.poll(() => workerManifestRequested).toContain(`/v1/media/${mediaId}?`)
-    expect(workerManifestRequested).toContain('format=hls')
+  await expect.poll(() => requestedMode).toBe('h264Aac')
+  expect(requestedOutputFormat).toBe('mp4')
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${mediaId}?`)
+  await expect(page.locator('body')).toHaveAttribute('data-playback-started', 'true', { timeout: 15_000 })
+  expect(requestedMode).toBe('h264Aac')
+})
+
+test('mobile worker conversion can be retried from the failure panel', async ({ page }, testInfo) => {
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'The mobile failure-panel retry is checked on mobile browsers.')
+  const firstJobId = '10101010101010101010101010101010'
+  const secondJobId = '20202020202020202020202020202020'
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+  })
+  await page.route('**/v1/capabilities', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ mediaDirectProxy: true, mediaRemux: true, mediaMp4: true, audioTranscode: true, videoTranscode: true }),
+  }))
+  let conversionStarts = 0
+  await page.route('**/v1/media/conversions', async (route) => {
+    conversionStarts += 1
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({ jobId: conversionStarts === 1 ? firstJobId : secondJobId, status: 'processing' }),
+    })
+  })
+  await page.route('**/v1/media/conversions/**', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ jobId: route.request().url().split('/').at(-1), status: 'failed', error: 'source_forbidden' }),
+  }))
+
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/vp8-opus.webm')}`)
+  const video = page.locator('video')
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc.endsWith('/vp8-opus.webm'))).toBe(true)
+  await video.evaluate((element: HTMLVideoElement) => {
+    Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 3 }) })
+    element.dispatchEvent(new Event('error'))
+  })
+  await expect.poll(() => conversionStarts).toBe(1)
+  const retry = page.getByRole('button', { name: 'Retry automatic conversion' })
+  await expect(retry).toBeVisible()
+  await retry.click()
+  await expect.poll(() => conversionStarts).toBe(2)
+  await expect(retry).toBeVisible()
+})
+
+test('mobile failure panel can reconnect and convert after the worker capability check fails', async ({ page }, testInfo) => {
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'This recovery action is verified in mobile browsers.')
+  const jobId = '21212121212121212121212121212121'
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+  })
+  let capabilityChecks = 0
+  await page.route('**/v1/capabilities', (route) => {
+    capabilityChecks += 1
+    if (capabilityChecks <= 3) {
+      return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'worker_unavailable' }) })
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ mediaDirectProxy: true, mediaRemux: true, mediaMp4: true, audioTranscode: true, videoTranscode: true }),
+    })
+  })
+  let conversionStarts = 0
+  await page.route('**/v1/media/conversions', async (route) => {
+    conversionStarts += 1
+    await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId, status: 'processing' }) })
+  })
+  await page.route(`**/v1/media/conversions/${jobId}`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ jobId, status: 'failed', error: 'source_forbidden' }),
+  }))
+
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/vp8-opus.webm')}`)
+  const video = page.locator('video')
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc.endsWith('/vp8-opus.webm'))).toBe(true)
+  await video.evaluate((element: HTMLVideoElement) => {
+    Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 3 }) })
+    element.dispatchEvent(new Event('error'))
+  })
+  const retry = page.getByRole('button', { name: 'Retry automatic conversion' })
+  await expect(retry).toBeVisible()
+  await expect(page.getByText('Aurales could not check the media worker yet.')).toBeVisible()
+  await retry.click()
+  await expect.poll(() => capabilityChecks).toBe(4)
+  await expect.poll(() => conversionStarts).toBe(1)
+})
+
+test('mobile retry action remains tappable in the landscape error panel after conversion fails', async ({ page }, testInfo) => {
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'Landscape error-panel interaction is checked on iOS and Android.')
+  const jobIds = [
+    '31313131313131313131313131313131',
+    '32323232323232323232323232323232',
+  ]
+  await page.setViewportSize({ width: 852, height: 393 })
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+    Object.defineProperty(HTMLMediaElement.prototype, 'canPlayType', {
+      configurable: true,
+      value: (type: string) => type.includes('vp8.0') ? '' : 'maybe',
+    })
+  })
+  await page.route('**/v1/capabilities', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ mediaDirectProxy: true, mediaRemux: true, mediaMp4: true, audioTranscode: true, videoTranscode: true, mobileSafeVideoTranscode: true }),
+  }))
+  let conversionStarts = 0
+  const requestedModes: string[] = []
+  await page.route('**/v1/media/conversions', async (route) => {
+    conversionStarts += 1
+    requestedModes.push(String(JSON.parse(route.request().postData() || '{}').mode))
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({ jobId: jobIds[Math.min(conversionStarts - 1, jobIds.length - 1)], status: 'processing' }),
+    })
+  })
+  await page.route('**/v1/media/conversions/**', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ jobId: route.request().url().split('/').at(-1), status: 'failed', error: 'source_forbidden' }),
+  }))
+
+  await page.route('https://cdn.example/vp8-opus.webm', (route) => route.fulfill({ status: 403, body: 'source denied' }))
+  const sourceUrl = 'https://cdn.example/vp8-opus.webm'
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent(sourceUrl)}`)
+  const video = page.locator('video')
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement, source) => element.currentSrc === source, sourceUrl)).toBe(true)
+  await video.evaluate((element: HTMLVideoElement) => {
+    Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 3 }) })
+    element.dispatchEvent(new Event('error'))
+  })
+  await expect.poll(() => conversionStarts).toBe(1)
+  const panel = page.getByRole('alert')
+  const retry = page.getByRole('button', { name: 'Retry automatic conversion' })
+  await expect(panel).toBeVisible()
+  await expect(retry).toBeVisible()
+  const panelBox = await panel.boundingBox()
+  const retryBox = await retry.boundingBox()
+  expect(panelBox).not.toBeNull()
+  expect(retryBox).not.toBeNull()
+  expect(retryBox!.x).toBeGreaterThanOrEqual(panelBox!.x)
+  expect(retryBox!.x + retryBox!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width)
+  await retry.tap()
+  await expect.poll(() => conversionStarts).toBe(2)
+  expect(requestedModes).toEqual(['h264Aac', 'auto'])
+})
+
+test('mobile retry action remains tappable in the portrait error panel after conversion fails', async ({ page }, testInfo) => {
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'Portrait error-panel interaction is checked on iOS and Android.')
+  await page.setViewportSize({ width: 393, height: 852 })
+  const jobIds = [
+    '41414141414141414141414141414141',
+    '42424242424242424242424242424242',
+  ]
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+  })
+  await page.route('**/v1/capabilities', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ mediaDirectProxy: true, mediaRemux: true, mediaMp4: true, audioTranscode: true, videoTranscode: true }),
+  }))
+  let conversionStarts = 0
+  await page.route('**/v1/media/conversions', (route) => {
+    const jobId = jobIds[Math.min(conversionStarts++, jobIds.length - 1)]
+    return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId, status: 'processing' }) })
+  })
+  await page.route('**/v1/media/conversions/**', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ jobId: route.request().url().split('/').at(-1), status: 'failed', error: 'source_forbidden' }),
+  }))
+
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/vp8-opus.webm')}`)
+  const video = page.locator('video')
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc.endsWith('/vp8-opus.webm'))).toBe(true)
+  await video.evaluate((element: HTMLVideoElement) => {
+    Object.defineProperty(element, 'error', { configurable: true, get: () => ({ code: 3 }) })
+    element.dispatchEvent(new Event('error'))
+  })
+  await expect.poll(() => conversionStarts).toBe(1)
+  const panel = page.getByRole('alert')
+  const retry = page.getByRole('button', { name: 'Retry automatic conversion' })
+  await expect(panel).toBeVisible()
+  const panelBox = await panel.boundingBox()
+  const retryBox = await retry.boundingBox()
+  const viewport = page.viewportSize()!
+  expect(panelBox).not.toBeNull()
+  expect(retryBox).not.toBeNull()
+  expect(panelBox!.x).toBeGreaterThanOrEqual(0)
+  expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(viewport.width)
+  expect(panelBox!.y).toBeGreaterThanOrEqual(0)
+  expect(panelBox!.y + panelBox!.height).toBeLessThanOrEqual(viewport.height)
+  expect(retryBox!.x).toBeGreaterThanOrEqual(panelBox!.x)
+  expect(retryBox!.x + retryBox!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width)
+  await retry.tap()
+  await expect.poll(() => conversionStarts).toBe(2)
+})
+
+test('mobile switches converted MP4 audio by preparing the selected source track', async ({ page }, testInfo) => {
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'Mobile browser audio switching is verified on iOS and Android.')
+  const jobIds = [
+    '30303030303030303030303030303030',
+    '40404040404040404040404040404040',
+    '41414141414141414141414141414141',
+  ]
+  const outputIds = [
+    '50505050505050505050505050505050',
+    '60606060606060606060606060606060',
+    '61616161616161616161616161616161',
+  ]
+  const fixture = await readFile(resolve(process.cwd(), 'tests/browser/fixtures/mobile-h264-compat.mp4'))
+  await page.addInitScript(() => {
+    localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
+  })
+  await page.route('**/v1/capabilities', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ mediaDirectProxy: true, mediaRemux: true, mediaMp4: true, audioTranscode: true, videoTranscode: true }),
+  }))
+  const conversionRequests: Array<Record<string, unknown>> = []
+  let releaseFallbackConversion = false
+  await page.route('**/v1/media/conversions', async (route) => {
+    conversionRequests.push(JSON.parse(route.request().postData() || '{}'))
+    const index = conversionRequests.length - 1
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({ jobId: jobIds[index], status: 'processing' }),
+    })
+  })
+  for (const index of [0, 1, 2]) {
+    await page.route(`**/v1/media/conversions/${jobIds[index]}`, (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(index === 1
+        ? { jobId: jobIds[index], status: 'failed', error: 'no_compatible_output' }
+        : index === 2 && !releaseFallbackConversion
+        ? { jobId: jobIds[index], status: 'processing' }
+        : {
+          jobId: jobIds[index],
+          status: 'ready',
+          mode: index === 2 ? 'audioAac' : 'remux',
+          bytes: fixture.length,
+          url: `/v1/media/${outputIds[index]}?expires=1893456000&signature=audio-${index}`,
+          subtitles: [
+            { url: `/v1/media/${outputIds[index]}/${outputIds[index]}-subtitle-2.vtt?expires=1893456000&signature=subtitle-${index}`, lang: 'eng', label: 'English', forced: false },
+            { url: `/v1/media/${outputIds[index]}/${outputIds[index]}-subtitle-3.vtt?expires=1893456000&signature=subtitle-${index}`, lang: 'fra', label: 'French', forced: false },
+          ],
+          sourceInfo: {
+            container: 'matroska,webm',
+            streams: [
+              { codec_type: 'video', codec_name: 'h264' },
+              { codec_type: 'audio', codec_name: 'aac', tags: { language: 'eng', title: 'English' } },
+              { codec_type: 'audio', codec_name: 'aac', tags: { language: 'fra', title: 'French' } },
+            ],
+          },
+        }),
+    }))
+    await page.route(`**/v1/media/${outputIds[index]}?*`, (route) => route.fulfill({
+      status: 200,
+      contentType: 'video/mp4',
+      body: fixture,
+    }))
+    await page.route(`**/v1/media/${outputIds[index]}/${outputIds[index]}-subtitle-*.vtt*`, (route) => route.fulfill({
+      status: 200,
+      contentType: 'text/vtt; charset=utf-8',
+      body: 'WEBVTT\n\n00:00:00.100 --> 00:00:00.900\nSubtitle fixture\n',
+    }))
   }
-  expect(requestedMode).toBe('auto')
+
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/vp8-opus.webm')}`)
+  const video = page.locator('video')
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc.endsWith('/vp8-opus.webm'))).toBe(true)
+  await page.getByRole('button', { name: 'Subtitle tracks' }).click()
+  await expect.poll(() => conversionRequests.length).toBe(1)
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement, outputId: string) => element.currentSrc.includes(outputId), outputIds[0])).toBe(true)
+  await page.getByRole('menuitemradio', { name: 'French' }).click()
+  await page.getByRole('button', { name: 'Audio tracks' }).click()
+  const frenchTrack = page.getByRole('menuitemradio', { name: 'French' })
+  await expect(frenchTrack).toBeVisible()
+  await frenchTrack.click()
+  await expect.poll(() => conversionRequests.length).toBe(2)
+  expect(conversionRequests[1]).toMatchObject({ mode: 'remux', audioTrackIndex: 1 })
+  await expect.poll(() => conversionRequests.length).toBe(3)
+  expect(conversionRequests[2]).toMatchObject({ mode: 'audioAac', audioTrackIndex: 1 })
+  await page.getByRole('button', { name: 'Audio tracks' }).click()
+  await expect(page.getByRole('menuitemradio', { name: 'English' })).toHaveAttribute('aria-checked', 'true')
+  await expect(page.getByRole('menuitemradio', { name: 'French' })).toHaveAttribute('aria-checked', 'false')
+  await page.getByRole('button', { name: 'Audio tracks' }).click()
+  releaseFallbackConversion = true
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement, outputId: string) => element.currentSrc.includes(outputId), outputIds[2])).toBe(true)
+  await page.getByRole('button', { name: 'Audio tracks' }).click()
+  await expect(page.getByRole('menuitemradio', { name: 'French' })).toHaveAttribute('aria-checked', 'true')
+  await page.getByRole('button', { name: 'Audio tracks' }).click()
+  await page.getByRole('button', { name: 'Subtitle tracks' }).click()
+  const selectedFrenchSubtitle = page.getByRole('menuitemradio', { name: 'French' })
+  await expect(selectedFrenchSubtitle).toHaveAttribute('aria-checked', 'true')
+  await expect.poll(() => video.evaluate((element) => Array.from(element.querySelectorAll<HTMLTrackElement>('track')).some((track) => track.track.mode === 'showing'))).toBe(true)
+  await expect.poll(() => video.evaluate((element) => Array.from(element.textTracks).some((track) => track.cues?.[0]?.text === 'Subtitle fixture'))).toBe(true)
 })
 
 test('mobile HLS decoder failures are converted to a native MP4 by the worker', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== 'android-chromium', 'This verifies the mobile MP4 handoff in Chromium Android.')
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'This verifies the mobile HLS-to-MP4 handoff in iOS WebKit and Chromium Android.')
   const sourcePath = '/mobile-conversion-source.m3u8'
   const sourceUrl = new URL(sourcePath, String(testInfo.project.use.baseURL)).toString()
   const sourceMediaId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
@@ -113,7 +562,7 @@ test('mobile HLS decoder failures are converted to a native MP4 by the worker', 
     element.dispatchEvent(new Event('error'))
   })
   await expect.poll(() => conversionRequest).not.toBeNull()
-  expect(conversionRequest).toMatchObject({ url: sourceUrl, mode: 'auto', outputFormat: 'mp4' })
+  expect(conversionRequest).toMatchObject({ url: sourceUrl, mode: 'h264Aac', outputFormat: 'mp4' })
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputMediaId}?`)
   await expect(page.locator('body')).toHaveAttribute('data-playback-started', 'true', { timeout: 15_000 })
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.duration), { timeout: 15_000 }).toBeGreaterThan(2.9)
@@ -155,13 +604,14 @@ test('mobile header-protected streams convert when the worker proxy session cann
 
   const query = new URLSearchParams({ source: sourceUrl, headers: JSON.stringify(requestHeaders) })
   await page.goto(`/tests/browser/player-harness.html?${query}`)
+  const browserUserAgent = await page.evaluate(() => navigator.userAgent)
   const video = page.locator('video')
   await expect.poll(() => conversionRequest).toMatchObject({
     url: sourceUrl,
     mode: 'auto',
     outputFormat: 'mp4',
     mobileCompatibility: true,
-    headers: requestHeaders,
+    headers: { ...requestHeaders, 'user-agent': browserUserAgent },
   })
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputMediaId}?`)
   await expect(page.locator('body')).toHaveAttribute('data-playback-started', 'true', { timeout: 15_000 })
@@ -236,7 +686,7 @@ test('mobile playback stalls retry through the worker proxy without an error eve
   await expect.poll(() => conversionRequest).toMatchObject({ url: sourcePath, mode: 'h264AacLow', outputFormat: 'mp4', mobileCompatibility: true })
 })
 
-test('unsupported media tries remux, AAC audio copy, then H.264/AAC automatically', async ({ page }, testInfo) => {
+test('mobile decoder errors go directly to H.264/AAC conversion', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name.includes('webkit'), 'WebKit does not reliably expose a synthetic unsupported-format error.')
   await page.addInitScript(() => {
     localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
@@ -278,13 +728,13 @@ test('unsupported media tries remux, AAC audio copy, then H.264/AAC automaticall
     element.dispatchEvent(new Event('error'))
   })
   await expect.poll(() => modes.length).toBe(1)
-  expect(modes).toEqual(['auto'])
+  expect(modes).toEqual(['h264Aac'])
   await expect.poll(() => workerManifests.length).toBeGreaterThan(0)
   expect(workerManifests[0]).toContain('format=hls')
 })
 
 test('mobile decoder failures escalate through lower H.264 profiles', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== 'android-chromium', 'This verifies the mobile H.264 fallback ladder in Chromium Android.')
+  test.skip(!['ios-webkit', 'android-chromium'].includes(testInfo.project.name), 'This verifies the mobile H.264 fallback ladder in iOS WebKit and Chromium Android.')
   await page.addInitScript(() => {
     localStorage.setItem('aurales_media_worker_secret_v1', JSON.stringify({ baseUrl: location.origin, apiKey: 'x'.repeat(32) }))
   })
@@ -295,12 +745,12 @@ test('mobile decoder failures escalate through lower H.264 profiles', async ({ p
   }))
   const modes: string[] = []
   const jobIds: Record<string, string> = {
-    auto: '33333333333333333333333333333333',
+    h264Aac: '33333333333333333333333333333333',
     h264AacLow: '44444444444444444444444444444444',
     h264AacCompat: '55555555555555555555555555555555',
   }
   const outputIds: Record<string, string> = {
-    auto: '66666666666666666666666666666666',
+    h264Aac: '66666666666666666666666666666666',
     h264AacLow: '77777777777777777777777777777777',
     h264AacCompat: '88888888888888888888888888888888',
   }
@@ -315,7 +765,7 @@ test('mobile decoder failures escalate through lower H.264 profiles', async ({ p
     await page.route(`**/v1/media/conversions/${jobId}`, (route) => route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ jobId, status: 'ready', mode: mode === 'auto' ? 'h264Aac' : mode, bytes: 1024, url: `/v1/media/${outputIds[mode]}?expires=1893456000&signature=${mode}` }),
+      body: JSON.stringify({ jobId, status: 'ready', mode, bytes: 1024, url: `/v1/media/${outputIds[mode]}?expires=1893456000&signature=${mode}` }),
     }))
     await page.route(`**/v1/media/${outputIds[mode]}?*`, async (route) => {
       const fixture = await route.fetch({ url: new URL('/tests/browser/fixtures/mobile-h264-compat.mp4', route.request().url()).toString() })
@@ -332,15 +782,15 @@ test('mobile decoder failures escalate through lower H.264 profiles', async ({ p
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc.endsWith('/vp8-opus.webm'))).toBe(true)
   await triggerDecoderFailure()
   await expect.poll(() => modes.length).toBe(1)
-  expect(modes).toEqual(['auto'])
-  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputIds.auto}?`)
+  expect(modes).toEqual(['h264Aac'])
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputIds.h264Aac}?`)
   await triggerDecoderFailure()
   await expect.poll(() => modes.length).toBe(2)
-  expect(modes).toEqual(['auto', 'h264AacLow'])
+  expect(modes).toEqual(['h264Aac', 'h264AacLow'])
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentSrc)).toContain(`/v1/media/${outputIds.h264AacLow}?`)
   await triggerDecoderFailure()
   await expect.poll(() => modes.length).toBe(3)
-  expect(modes).toEqual(['auto', 'h264AacLow', 'h264AacCompat'])
+  expect(modes).toEqual(['h264Aac', 'h264AacLow', 'h264AacCompat'])
 })
 
 test('mobile DASH sources go straight to a worker MP4 and play', async ({ page }, testInfo) => {

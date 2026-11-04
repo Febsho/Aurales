@@ -3673,6 +3673,7 @@ html[data-interface-theme="cinematic"] .fixed-hero-home .cw-card[data-fixed-focu
   opacity: 0;
   transition: opacity 350ms cubic-bezier(.2, .8, .2, 1);
 }
+.profile-switch-transition:not(.is-visible) { pointer-events: none; }
 .profile-switch-transition.is-visible { opacity: 1; }
 .profile-switch-transition__veil {
   position: absolute;
@@ -4823,7 +4824,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   }
 
   [data-home-shelves] .home-row-skeleton-track {
-    gap: .5rem;
+    gap: .5rem !important;
     padding-inline: .65rem;
     padding-bottom: .75rem;
   }
@@ -5331,6 +5332,25 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     transform: none !important;
     overflow-wrap: anywhere;
   }
+  html[data-runtime-platform="web"] .inapp-player-error-actions {
+    display: flex;
+    flex-direction: column;
+    gap: .45rem;
+    padding-top: .65rem;
+  }
+  html[data-runtime-platform="web"] .inapp-player-error-actions > button,
+  html[data-runtime-platform="web"] .inapp-player-error-actions > div > button {
+    width: 100%;
+    min-height: 2.75rem;
+    text-align: left;
+    line-height: 1.25rem;
+  }
+  html[data-runtime-platform="web"] .inapp-player-error-actions > div {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: .4rem;
+  }
+  html[data-runtime-platform="web"] .inapp-player-error-actions > p { margin-bottom: 0; }
 }
 
 /* Mobile web playback keeps the same quiet, touch friendly controls as the
@@ -5359,6 +5379,23 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   }
   html[data-runtime-platform="web"] .inapp-player-header h2 { font-size: .95rem; line-height: 1.2; }
   html[data-runtime-platform="web"] .inapp-player-header p { margin-top: .2rem; font-size: .58rem; }
+
+  html[data-runtime-platform="web"] .inapp-player-error-actions {
+    position: sticky;
+    z-index: 2;
+    bottom: -.85rem;
+    margin: .75rem -.85rem -.85rem;
+    padding: .7rem .85rem max(.85rem, env(safe-area-inset-bottom));
+    border-top: 1px solid rgba(255, 255, 255, .12);
+    background: linear-gradient(180deg, rgba(8, 9, 11, .94), #08090b 1rem);
+  }
+  html[data-runtime-platform="web"] .inapp-player-error-actions button {
+    position: relative;
+    z-index: 3;
+    min-height: 2.75rem;
+    pointer-events: auto;
+    touch-action: manipulation;
+  }
 
   html[data-runtime-platform="web"] .inapp-player-controls {
     z-index: 20;
@@ -5440,6 +5477,39 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   }
 }
 
+@media (max-width: 420px) {
+  html[data-runtime-platform="web"] .inapp-player-pick-another {
+    display: grid;
+    flex: 0 0 2.75rem;
+    place-items: center;
+    width: 2.75rem;
+    height: 2.75rem;
+    min-width: 2.75rem;
+    padding: 0 !important;
+  }
+  html[data-runtime-platform="web"] .inapp-player-pick-another .inapp-player-compact-label,
+  html[data-runtime-platform="web"] .inapp-player-external-player .inapp-player-compact-label {
+    display: none;
+  }
+  html[data-runtime-platform="web"] .inapp-player-external-player,
+  html[data-runtime-platform="web"] .inapp-player-external-player > div {
+    flex: 0 0 auto;
+  }
+  html[data-runtime-platform="web"] .inapp-player-external-player > div > button:first-child,
+  html[data-runtime-platform="web"] .inapp-player-external-player > div > button:last-child {
+    display: grid;
+    flex: 0 0 2.75rem;
+    place-items: center;
+    width: 2.75rem;
+    height: 2.75rem;
+    min-width: 2.75rem;
+    padding: 0 !important;
+  }
+  html[data-runtime-platform="web"] .inapp-player-external-player > div > button:first-child svg {
+    display: block;
+  }
+}
+
 /* Keep the player upright on phones. Safari's browser chrome stays in portrait
    even when CSS rotates a full-screen page, which makes controls and errors
    appear sideways and difficult to reach. */
@@ -5466,12 +5536,14 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"].full-player-active .inapp-player-options {
     display: flex;
     flex: 0 1 auto;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     justify-content: center;
     width: auto;
+    max-width: 100%;
   }
   html[data-runtime-platform="web"].full-player-active .inapp-player-options {
     gap: .45rem;
+    row-gap: .25rem;
   }
   html[data-runtime-platform="web"].full-player-active .inapp-player-options select {
     max-width: 100%;
@@ -5491,11 +5563,16 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   }
   html[data-runtime-platform="web"].full-player-active [role="alert"] {
     top: max(5.75rem, calc(env(safe-area-inset-top) + 4.75rem));
-    max-height: calc(100dvh - 11rem);
+    max-height: min(58dvh, calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 8rem));
     width: min(94vw, 34rem);
-    padding: 1rem;
+    padding: .9rem;
     font-size: .875rem;
     line-height: 1.35rem;
+    box-sizing: border-box;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    z-index: 80;
+    pointer-events: auto;
   }
   html[data-runtime-platform="web"].full-player-active [role="alert"] button {
     width: 100%;
@@ -5532,11 +5609,52 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   }
   html[data-runtime-platform="web"] [role="alert"] > div { display: grid; }
   html[data-runtime-platform="web"] [role="alert"] button { min-height: 2.75rem; }
+  html[data-runtime-platform="web"] .inapp-player-error-actions {
+    position: sticky;
+    z-index: 2;
+    bottom: -.85rem;
+    margin: .75rem -.85rem -.85rem;
+    padding: .7rem .85rem max(.85rem, env(safe-area-inset-bottom));
+    border-top: 1px solid rgba(255, 255, 255, .12);
+    background: linear-gradient(180deg, rgba(8, 9, 11, .94), #08090b 1rem);
+  }
+  html[data-runtime-platform="web"] .inapp-player-error-actions button {
+    position: relative;
+    z-index: 3;
+    min-height: 2.75rem;
+    pointer-events: auto;
+    touch-action: manipulation;
+  }
 }
 
 /* Shared touch layout: keep the desktop art direction, but remove its fixed
    card and hero dimensions where a narrow viewport cannot display them well. */
+.poster-bottom-stack {
+  position: absolute;
+  z-index: 30;
+  right: .5rem;
+  bottom: .45rem;
+  left: .5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .22rem;
+  pointer-events: none;
+}
+.poster-bottom-stack__logo,
+.poster-bottom-stack__footer { display: flex; width: 100%; justify-content: center; }
+.poster-bottom-stack__progress { display: flex; width: 100%; justify-content: center; }
+
 @media (max-width: 700px) {
+  /* Keep poster captions directly on the shared artwork fade. */
+  html[data-runtime-platform="web"] .app-theme-shell[data-mobile-web] .poster-footer-caption {
+    padding: .12rem .2rem;
+  }
+
+  html[data-runtime-platform="web"] .app-theme-shell[data-mobile-web] .poster-footer-caption > * {
+    text-shadow: 0 1px 3px rgba(0, 0, 0, .95), 0 0 8px rgba(0, 0, 0, .65);
+  }
+
   html[data-runtime-platform="web"] .app-theme-shell[data-mobile-web] {
     height: 100vh;
     height: 100dvh;
@@ -5630,6 +5748,11 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     box-shadow: 0 1.1rem 2.8rem rgba(0,0,0,.32);
     cursor: pointer;
   }
+  /* Keep pagination at the hero edge and start the first poster shelf directly
+     below it. The reserved line used to push every Home poster down. */
+  html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-shelves] {
+    margin-top: .5rem !important;
+  }
   html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] > .mobile-home-hero > div:not(.hero-content-overlay):not(.hero-carousel-arrow) {
     overflow: hidden;
     border-radius: inherit;
@@ -5677,7 +5800,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   html[data-runtime-platform="web"] [data-home-presentation="dynamic"] [data-home-hero] .mobile-home-hero .hero-dots {
     position: absolute;
     right: auto;
-    bottom: -1.65rem;
+    bottom: -.5rem;
     left: 50%;
     justify-content: center;
     margin: 0;
@@ -6295,7 +6418,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
 .discover-page__heading p { margin-top: .4rem !important; font-size: .88rem; line-height: 1.4; }
 .discover-page__heading > span { padding: .5rem .75rem; font-size: .7rem; }
 .discover-page__heading .discover-spotlight-heading { margin: 1rem 0 .55rem; }
-.discover-page__controls { display: flex; align-items: center; gap: .75rem; margin: .9rem var(--discover-gutter) .75rem; }
+.discover-page__controls { display: flex; align-items: center; justify-content: flex-start; gap: .75rem; margin: .9rem 0 .75rem; }
 .discover-page__tabs { width: fit-content; max-width: 100%; flex: 0 1 auto; margin: 0 !important; }
 .discover-page__tabs button { min-height: 2.7rem; padding-inline: 1.15rem; }
 .discover-page__modes { display: flex; flex: 0 0 auto; align-items: center; gap: .55rem; margin: 0 !important; padding: 0 !important; }
@@ -6322,6 +6445,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   z-index: 1;
   display: grid;
   grid-template-columns: clamp(10rem, 18vw, 14rem) minmax(0, 1fr);
+  column-gap: clamp(1.25rem, 3vw, 2.5rem);
   align-items: center;
   min-height: clamp(19rem, 25vw, 23rem);
   margin: 0 var(--discover-gutter) 1.35rem;
@@ -6921,7 +7045,7 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
   .discover-binge__feature {
     min-height: 21rem;
     grid-template-columns: minmax(0, 23.5rem) max-content;
-    justify-content: start;
+    justify-content: center;
     gap: clamp(1rem, 2vw, 1.4rem);
   }
   .discover-binge__copy {
@@ -6936,4 +7060,39 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     justify-self: start;
   }
   .discover-binge__main-poster, .discover-binge__alternatives { justify-self: start; }
+}
+
+/* Keep worker recovery actions reachable on phones in landscape, where the
+   player controls and browser safe areas leave very little vertical room. */
+@media (pointer: coarse) and (max-height: 600px) {
+  html[data-runtime-platform="web"].full-player-active .inapp-player-error-panel {
+    top: max(3.25rem, calc(env(safe-area-inset-top) + 2.5rem));
+    bottom: max(7rem, calc(env(safe-area-inset-bottom) + 6rem));
+    max-height: none;
+    width: min(92vw, 42rem);
+    display: flex;
+    flex-direction: column;
+    gap: .35rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    pointer-events: auto;
+    z-index: 80;
+  }
+
+  html[data-runtime-platform="web"].full-player-active .inapp-player-error-actions {
+    position: sticky;
+    z-index: 2;
+    bottom: -.9rem;
+    flex: 0 0 auto;
+    margin-top: auto;
+    background: linear-gradient(180deg, rgba(8, 9, 11, .94), #08090b 1rem);
+  }
+
+  html[data-runtime-platform="web"].full-player-active .inapp-player-error-actions button {
+    min-height: 2.9rem;
+    touch-action: manipulation;
+    pointer-events: auto;
+  }
 }

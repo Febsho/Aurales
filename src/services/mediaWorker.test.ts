@@ -13,6 +13,9 @@ describe('optional Aurales media worker adapter', () => {
 
   it('chooses mobile-native MP4 when available and falls back to the available worker muxer', () => {
     expect(getMediaConversionOutputFormat('Mozilla/5.0 (Linux; Android 14; Pixel 7) Mobile')).toBe('mp4')
+    const desktopSiteTabletAgent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
+    expect(getMediaConversionOutputFormat(desktopSiteTabletAgent, true)).toBe('mp4')
+    expect(getMediaConversionOutputFormat(desktopSiteTabletAgent, false)).toBe('hls')
     expect(getSupportedMediaConversionOutputFormat({ mediaRemux: true, mediaMp4: true, mediaHls: true }, 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)')).toBe('mp4')
     expect(getSupportedMediaConversionOutputFormat({ mediaRemux: true, mediaMp4: false, mediaHls: true }, 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)')).toBe('hls')
     expect(getSupportedMediaConversionOutputFormat({ mediaRemux: true, mediaMp4: true, mediaHls: false }, 'Mozilla/5.0 (X11; Linux x86_64) Chrome/120')).toBe('mp4')
@@ -39,7 +42,7 @@ describe('optional Aurales media worker adapter', () => {
     saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'x'.repeat(32) })
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ url: '/v1/media/0123456789abcdef0123456789abcdef?expires=123&signature=opaque', expiresAt: 123 }), { status: 200 }))
     await expect(createMediaSession('https://cdn.example/video.mp4?token=private')).resolves.toEqual({ url: 'https://worker.example/v1/media/0123456789abcdef0123456789abcdef?expires=123&signature=opaque', expiresAt: 123 })
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({ url: 'https://cdn.example/video.mp4?token=private', headers: {} })
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({ url: 'https://cdn.example/video.mp4?token=private', headers: { 'user-agent': navigator.userAgent } })
     expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toMatchObject({ Authorization: `Bearer ${'x'.repeat(32)}` })
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ url: 'https://attacker.example/v1/media/0123456789abcdef0123456789abcdef?expires=123&signature=x', expiresAt: 123 }), { status: 200 }))
     await expect(createMediaSession('https://cdn.example/video.mp4')).rejects.toThrow('unsafe playback session URL')
@@ -49,7 +52,7 @@ describe('optional Aurales media worker adapter', () => {
     saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'x'.repeat(32) })
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ url: '/v1/media/0123456789abcdef0123456789abcdef?expires=123&signature=opaque', expiresAt: 123 }), { status: 200 }))
     await expect(createMediaSession('https://cdn.example/video.m3u8?sig=x')).resolves.toMatchObject({ expiresAt: 123 })
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({ url: 'https://cdn.example/video.m3u8?sig=x', headers: {} })
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({ url: 'https://cdn.example/video.m3u8?sig=x', headers: { 'user-agent': navigator.userAgent } })
   })
 
   it('starts an authenticated conversion job without returning the source URL', async () => {
@@ -60,14 +63,14 @@ describe('optional Aurales media worker adapter', () => {
     const [endpoint, options] = vi.mocked(fetch).mock.calls[0]
     expect(endpoint).toBe('https://worker.example/v1/media/conversions')
     expect(options?.headers).toMatchObject({ Authorization: `Bearer ${'x'.repeat(32)}` })
-    expect(JSON.parse(String(options?.body))).toEqual({ url: 'https://cdn.example/video.mkv?token=private', mode: 'audioAac', outputFormat: 'hls', headers: {} })
+    expect(JSON.parse(String(options?.body))).toEqual({ url: 'https://cdn.example/video.mkv?token=private', mode: 'audioAac', outputFormat: 'hls', headers: { 'user-agent': navigator.userAgent } })
   })
 
   it('requests the server-owned playback fallback strategy', async () => {
     saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'x'.repeat(32) })
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ jobId: '0123456789abcdef0123456789abcdef', status: 'processing' }), { status: 202 }))
     await startMediaConversion('https://cdn.example/movie.mkv?sig=private', 'auto')
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({ url: 'https://cdn.example/movie.mkv?sig=private', mode: 'auto', outputFormat: 'mp4', headers: {} })
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({ url: 'https://cdn.example/movie.mkv?sig=private', mode: 'auto', outputFormat: 'mp4', headers: { 'user-agent': navigator.userAgent } })
   })
 
   it('sends ordered audio language preferences only for mobile-compatible conversion', async () => {
@@ -95,6 +98,26 @@ describe('optional Aurales media worker adapter', () => {
     expect(session.url).not.toContain('provider-secret')
   })
 
+  it('keeps a provider-supplied User-Agent instead of replacing it with the browser identity', async () => {
+    saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'x'.repeat(32) })
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ url: '/v1/media/0123456789abcdef0123456789abcdef?expires=123&signature=opaque', expiresAt: 123 }), { status: 200 }))
+    await createMediaSession('https://cdn.example/video.mp4', undefined, { 'user-agent': 'ProviderPlayer/4.2' })
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toMatchObject({ headers: { 'user-agent': 'ProviderPlayer/4.2' } })
+  })
+
+  it('adds the app origin as a default Referer for worker source requests', async () => {
+    saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'x'.repeat(32) })
+    const originalWindow = globalThis.window
+    vi.stubGlobal('window', { location: { origin: 'https://aurales.example' } })
+    try {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ url: '/v1/media/0123456789abcdef0123456789abcdef?expires=123&signature=opaque', expiresAt: 123 }), { status: 200 }))
+      await createMediaSession('https://cdn.example/video.mp4', undefined, { 'user-agent': 'ProviderPlayer/4.2' })
+      expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toMatchObject({ headers: { 'user-agent': 'ProviderPlayer/4.2', referer: 'https://aurales.example/' } })
+    } finally {
+      vi.stubGlobal('window', originalWindow)
+    }
+  })
+
   it('rejects unsafe provider request headers before sending them to the worker', async () => {
     saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'x'.repeat(32) })
     await expect(createMediaSession('https://cdn.example/video.mp4', undefined, { 'x-forwarded-host': '127.0.0.1' })).rejects.toThrow('unsupported playback request header')
@@ -113,6 +136,7 @@ describe('optional Aurales media worker adapter', () => {
       mode: 'audioAac',
       bytes: 4096,
       url: '/v1/media/abcdef0123456789abcdef0123456789?expires=123&signature=opaque',
+      subtitles: [{ url: '/v1/media/abcdef0123456789abcdef0123456789/0123456789abcdef0123456789abcdef-subtitle-2.vtt?expires=123&signature=opaque', lang: 'eng', label: 'English', forced: false }],
       sourceInfo: { container: 'matroska,webm', streams: [{ codec_type: 'video', codec_name: 'h264' }, { codec_type: 'audio', codec_name: 'opus' }] },
     }), { status: 200 }))
     await expect(getMediaConversionStatus(jobId)).resolves.toMatchObject({
@@ -121,6 +145,7 @@ describe('optional Aurales media worker adapter', () => {
       mode: 'audioAac',
       bytes: 4096,
       url: 'https://worker.example/v1/media/abcdef0123456789abcdef0123456789?expires=123&signature=opaque',
+      subtitles: [{ url: 'https://worker.example/v1/media/abcdef0123456789abcdef0123456789/0123456789abcdef0123456789abcdef-subtitle-2.vtt?expires=123&signature=opaque', lang: 'eng', label: 'English', forced: false }],
       sourceInfo: { container: 'matroska,webm', streams: [{ codec_type: 'video', codec_name: 'h264' }, { codec_type: 'audio', codec_name: 'opus' }] },
     })
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({
@@ -131,6 +156,40 @@ describe('optional Aurales media worker adapter', () => {
       url: 'https://attacker.example/v1/media/abcdef0123456789abcdef0123456789?expires=123&signature=x',
     }), { status: 200 }))
     await expect(getMediaConversionStatus(jobId)).rejects.toThrow('unsafe playback session URL')
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({
+      jobId,
+      status: 'ready',
+      mode: 'remux',
+      bytes: 10,
+      url: '/v1/media/abcdef0123456789abcdef0123456789?expires=123&signature=opaque',
+      subtitles: [{ url: 'https://attacker.example/v1/media/abcdef0123456789abcdef0123456789/0123456789abcdef0123456789abcdef-subtitle-2.vtt?expires=123&signature=opaque', lang: 'eng', label: 'English', forced: false }],
+    }), { status: 200 }))
+    await expect(getMediaConversionStatus(jobId)).rejects.toThrow('unsafe subtitle URL')
+  })
+
+  it('returns only a hostname from a failed worker conversion for safe upstream diagnostics', async () => {
+    saveMediaWorkerConfig({ baseUrl: 'https://worker.example', apiKey: 'x'.repeat(32) })
+    const jobId = 'abcdef0123456789abcdef0123456789'
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({
+      jobId,
+      status: 'failed',
+      error: 'source_forbidden',
+      sourceHost: 'cdn-redirect.example',
+    }), { status: 200 }))
+    await expect(getMediaConversionStatus(jobId)).resolves.toEqual({
+      jobId,
+      status: 'failed',
+      error: 'source_forbidden',
+      sourceHost: 'cdn-redirect.example',
+    })
+
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({
+      jobId,
+      status: 'failed',
+      error: 'source_forbidden',
+      sourceHost: 'cdn.example/path?token=secret',
+    }), { status: 200 }))
+    await expect(getMediaConversionStatus(jobId)).rejects.toThrow('invalid upstream source hostname')
   })
 
   it('cancels the worker conversion with the authenticated job endpoint', async () => {

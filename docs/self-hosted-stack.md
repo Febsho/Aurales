@@ -14,9 +14,10 @@ The private API key is not embedded in `dist-web` or sent to browsers.
 - A DNS `A`/`AAAA` record for the hostname pointing to that server.
 - Inbound TCP ports 80 and 443 available so Caddy can issue and renew HTTPS
   certificates.
-- Exact media CDN hostnames for `AURALES_MEDIA_ALLOWED_HOSTS`. Leave this empty
-  to disable media proxying and conversion. Wildcards are rejected by the
-  worker by design.
+- Exact media CDN hostnames for `AURALES_MEDIA_ALLOWED_HOSTS`, including every
+  HLS/DASH manifest, segment, external audio/subtitle, and redirect host. Leave
+  this empty to disable media proxying and conversion. Wildcards are rejected
+  by the worker by design.
 
 ## Start the complete stack
 

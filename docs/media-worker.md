@@ -56,8 +56,11 @@ For Stremio-compatible add-ons, `behaviorHints.proxyHeaders.request` is sent to
 the worker only in the authenticated session/conversion request body. The
 worker validates and retains these headers only in the in-memory session or
 active job, applies them to the original source origin, and strips them after a
-cross-origin redirect. The public playback URL contains only an opaque signed
-session identifier and expiry, never provider headers.
+cross-origin redirect. If the add-on omits them, Aurales supplies the current
+browser User-Agent and app-origin Referer for worker requests, matching the
+context used by direct mobile browser requests. Explicit add-on values take
+precedence. The public playback URL contains only an opaque signed session
+identifier and expiry, never provider headers.
 
 Worker conversions return a single-file MPEG-TS HLS VOD playlist. The manifest
 and segment endpoint share the same expiring signed session; segment requests
@@ -74,9 +77,9 @@ OS, browser, hardware, and DRM. Successful remux only proves FFmpeg can package
 the streams; it does not guarantee a browser decoder can play them.
 When an HLS decoder error occurs, the worker can also convert finite VOD
 playlists. Desktop conversion follows the highest-bandwidth variant. Mobile
-compatibility conversion prefers variants within the encoder's 1080p bounds,
-and favors variants at or below 60 fps when resolution is otherwise equal. If
-none fit the resolution bounds, it selects the smallest known resolution. If
+compatibility conversion first favors variants at or below 60 fps, then prefers
+resolutions within the encoder's 1080p bounds and selects the highest resolution
+within those bounds. If none fit, it selects the smallest known resolution. If
 variants omit resolution metadata, it favors rates up to 60 fps, then the
 highest bandwidth. It downloads allowlisted segments and init maps, materializes
 explicit and implicit byte-range segments
@@ -103,11 +106,12 @@ Static MPEG-DASH MPDs with a single-file `SegmentBase`, finite `SegmentList`
 entries, or bounded `SegmentTemplate` timelines are materialized, including multiple periods. Dynamic MPDs are supported as finite snapshots when their segment references are bounded. On mobile, an MPD with `availabilityStartTime` can also snapshot open-ended `SegmentTemplate` timelines across periods: the worker estimates the live edge from the manifest publication time (or its clock), applies the suggested presentation delay, and retains the advertised time-shift buffer (five minutes when omitted):
 When that window contains more than 4,096 references, the snapshot keeps the
 newest references within the worker's bounded manifest limit.
-mobile compatibility conversion prefers video representations within the
-encoder's 1080p bounds and favors rates up to 60 fps when resolution is
-otherwise equal. If none fit, it selects the smallest known resolution;
-representations without resolution metadata favor rates up to 60 fps, then
-highest bandwidth. Desktop keeps the highest-bandwidth representation. The worker
+mobile compatibility conversion first favors video representations at or
+below 60 fps, then prefers resolutions within the encoder's 1080p bounds and
+selects the highest resolution within those bounds. If none fit, it selects the
+smallest known resolution; representations without resolution metadata favor
+rates up to 60 fps, then highest bandwidth. Desktop keeps the highest-bandwidth
+representation. The worker
 downloads the selected video and up to eight language-labeled audio
 representations through the same HTTPS allowlist, validates ranged segments,
 then exposes them to FFmpeg as local HLS VOD playlists with discontinuities and
@@ -204,8 +208,11 @@ sudo install -o root -g root -m 0644 \
 
 Create `/etc/aurales-media-worker.env` as root with mode `0600`. Use unique
 random values for both keys, and list the exact HTTPS frontend origin and exact
-media hostnames. Keep `AURALES_MEDIA_ALLOWED_HOSTS` empty unless proxy playback
-is required. To enable conversion, install a trusted FFmpeg build and set
+media hostnames. For HLS/DASH, include every hostname used by the root manifest,
+variant manifests, segments, external audio/subtitle renditions, and redirects;
+the worker does not infer or allow sibling CDN hosts. Keep
+`AURALES_MEDIA_ALLOWED_HOSTS` empty unless proxy playback is required. To enable
+conversion, install a trusted FFmpeg build and set
 `AURALES_FFMPEG_PATH=/usr/bin/ffmpeg`; otherwise omit it. Example file:
 
 ```dotenv
@@ -280,7 +287,7 @@ Set these variables for the service:
 | `AURALES_MEDIA_SESSION_KEY` | When proxy or access code is enabled | Separate private signing key, at least 32 bytes. Required with `AURALES_MEDIA_ALLOWED_HOSTS` or `AURALES_MEDIA_ACCESS_CODE`; never reuse the API key. |
 | `AURALES_MEDIA_ACCESS_CODE` | Optional | Shared access code for an integrated public web deployment, at least 16 bytes. It exchanges for a 30-day same-origin HttpOnly cookie. The API key remains server-side. Use HTTPS and share the code only with authorized users. |
 | `AURALES_MEDIA_WEB_ORIGINS` | Yes | Comma-separated exact HTTPS origins, such as `https://aurales.example`. `http://localhost` is accepted for local development. Wildcards, paths, credentials, and non-local HTTP origins are rejected. |
-| `AURALES_MEDIA_ALLOWED_HOSTS` | For media proxy | Comma-separated exact DNS hostnames permitted as upstream media sources, such as `cdn.example.net,video.example.org`. Wildcards, ports, IP addresses, HTTP URLs, and unlisted hosts are rejected. Leave empty to disable proxy sessions. |
+| `AURALES_MEDIA_ALLOWED_HOSTS` | For media proxy | Comma-separated exact DNS hostnames permitted as upstream media sources, such as `cdn.example.net,video.example.org`. For HLS/DASH, list each host used by manifests, segments, external audio/subtitle tracks, and redirects. Wildcards, ports, IP addresses, HTTP URLs, and unlisted hosts are rejected. Leave empty to disable proxy sessions. |
 | `AURALES_MEDIA_BIND` | No | Listen address; defaults to `127.0.0.1:8188`. |
 | `AURALES_MEDIA_EXTERNAL_TLS` | Only for public binds | Set to `1` only when binding a non-loopback address behind a TLS-terminating reverse proxy. |
 | `AURALES_FFMPEG_PATH` | Optional | Explicit FFmpeg executable path. Unset disables conversions. FFprobe must be installed beside FFmpeg or on `PATH`; startup checks both tools and discovers AAC, `libx264`, hardware encoders, and the HLS/MPEG-TS muxers needed for browser conversion. MP4 muxing is needed only for explicit MP4 conversion requests. |
@@ -339,6 +346,10 @@ authenticated `POST /v1/media/conversions`, authenticated
 `GET /v1/media/conversions/{jobId}`, and signed `GET`/`HEAD /v1/media/{id}`.
 The capabilities response includes `conversionTimeoutSeconds` so the browser
 can keep polling for the configured FFmpeg runtime.
+Failed conversion status responses include `sourceHost` when an upstream HTTP
+response or child-host allowlist check identifies the failing hostname. This
+field contains only the normalized hostname; URLs, paths, query strings, and
+provider headers are never returned in it.
 Conversion requests from mobile browsers set `mobileCompatibility: true`; this
 also applies the mobile H.264 limits when the worker must fall back to HLS.
 The MDBList relay accepts only GET/POST/PUT/DELETE calls to the fixed

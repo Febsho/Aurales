@@ -46,6 +46,14 @@ FROM debian:bookworm-slim AS worker-runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
+    && ffprobe -version >/dev/null \
+    && ffmpeg -hide_banner -encoders 2>&1 | awk '$2 == "libx264" { h264=1 } $2 == "aac" { aac=1 } END { exit !(h264 && aac) }' \
+    && ffmpeg -hide_banner -muxers 2>&1 | awk '$2 == "mp4" { mp4=1 } $2 == "hls" { hls=1 } END { exit !(mp4 && hls) }' \
+    && ffmpeg -hide_banner -loglevel error -y -f lavfi -i 'testsrc2=size=640x360:rate=30:duration=1' -f lavfi -i 'sine=frequency=1000:sample_rate=48000:duration=1' -vf format=yuv420p -c:v libx264 -profile:v baseline -level:v 3.0 -c:a aac -profile:a aac_low -ar 48000 -ac 2 -avoid_negative_ts make_zero -movflags +faststart -shortest -f mp4 /tmp/aurales-mobile-profile-check.mp4 \
+    && ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,profile,level,pix_fmt -of default=noprint_wrappers=1 /tmp/aurales-mobile-profile-check.mp4 | awk -F= '$1 == "codec_name" && $2 == "h264" { h264=1 } $1 == "profile" && $2 == "Constrained Baseline" { baseline=1 } $1 == "level" && $2 == "30" { level=1 } $1 == "pix_fmt" && $2 == "yuv420p" { pixel_format=1 } END { exit !(h264 && baseline && level && pixel_format) }' \
+    && ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,profile -of csv=p=0 /tmp/aurales-mobile-profile-check.mp4 | awk -F, '$1 == "aac" && $2 == "LC" { aac=1 } END { exit !aac }' \
+    && ffmpeg -hide_banner -loglevel error -i /tmp/aurales-mobile-profile-check.mp4 -f null - \
+    && rm -f /tmp/aurales-mobile-profile-check.mp4 \
     && ffmpeg -hide_banner -filters 2>&1 | awk '$2 == "zscale" { zscale=1 } $2 == "tonemap" { tonemap=1 } END { exit !(zscale && tonemap) }' \
     && ffmpeg -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=32x32:rate=1:duration=0.5' -vf 'setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084,zscale=transfer=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=transfer=bt709:primaries=bt709:matrix=bt709:range=tv,scale=32:32,format=yuv420p' -frames:v 1 -f null - \
     && useradd --system --home-dir /var/lib/aurales --create-home --shell /usr/sbin/nologin aurales

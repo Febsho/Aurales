@@ -24,7 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
@@ -42,6 +42,8 @@ const MAX_HLS_MANIFEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_HLS_REFERENCES: usize = 4_096;
 const MAX_HLS_NESTING_DEPTH: u8 = 8;
 const MAX_MEDIA_REDIRECTS: usize = 3;
+const MAX_UPSTREAM_RETRIES: usize = 2;
+const MEDIA_HOST_NOT_ALLOWED_FAILURE: u16 = 600;
 const MAX_CONVERSION_JOBS: usize = 8;
 const DEFAULT_MAX_CONVERSION_GIB: u64 = 8;
 const MAX_CONFIGURED_CONVERSION_GIB: u64 = 64;
@@ -137,7 +139,33 @@ enum ConversionStatus {
         live_snapshot: bool,
         audio_tracks_reduced: bool,
     },
-    Failed(ConversionFailure),
+    Failed {
+        failure: ConversionFailure,
+        source_host: Option<String>,
+    },
+}
+
+#[derive(Default)]
+struct UpstreamFailureInfo {
+    status: AtomicU16,
+    host: StdMutex<Option<String>>,
+}
+
+impl UpstreamFailureInfo {
+    fn status(&self) -> u16 {
+        self.status.load(Ordering::Relaxed)
+    }
+
+    fn host(&self) -> Option<String> {
+        self.host.lock().ok().and_then(|host| host.clone())
+    }
+
+    fn record(&self, status: u16, url: &url::Url) {
+        self.status.store(status, Ordering::Relaxed);
+        if let (Some(host), Ok(mut recorded_host)) = (url.host_str(), self.host.lock()) {
+            *recorded_host = Some(host.to_owned());
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -148,6 +176,7 @@ enum ConversionFailure {
     SourceNotFound,
     SourceGone,
     SourceRateLimited,
+    SourceHostNotAllowed,
     UnsupportedInput,
     NoCompatibleOutput,
     TimedOut,
@@ -163,6 +192,7 @@ impl ConversionFailure {
             Self::SourceNotFound => "source_not_found",
             Self::SourceGone => "source_gone",
             Self::SourceRateLimited => "source_rate_limited",
+            Self::SourceHostNotAllowed => "source_host_not_allowed",
             Self::UnsupportedInput => "unsupported_input",
             Self::NoCompatibleOutput => "no_compatible_output",
             Self::TimedOut => "conversion_timed_out",
@@ -178,8 +208,48 @@ fn source_fetch_failure(status: u16) -> ConversionFailure {
         404 => ConversionFailure::SourceNotFound,
         410 => ConversionFailure::SourceGone,
         429 => ConversionFailure::SourceRateLimited,
+        MEDIA_HOST_NOT_ALLOWED_FAILURE => ConversionFailure::SourceHostNotAllowed,
         _ => ConversionFailure::SourceUnavailable,
     }
+}
+
+fn log_rejected_media_host(url: &url::Url, reason: &str) {
+    if let Some(host) = url.host_str() {
+        eprintln!("media-worker: rejected host '{host}' ({reason})");
+    }
+}
+
+fn log_upstream_status(url: &url::Url, status: StatusCode, context: &str) {
+    if let Some(host) = url.host_str() {
+        eprintln!(
+            "media-worker: upstream host '{host}' returned HTTP {} during {context}",
+            status.as_u16()
+        );
+    }
+}
+
+fn record_disallowed_media_host(url: &url::Url, upstream_failure: Option<&UpstreamFailureInfo>) {
+    log_rejected_media_host(url, "conversion host is not allowlisted");
+    if let Some(upstream_failure) = upstream_failure {
+        // HTTP status codes end at 599, so 600 is reserved for this internal
+        // conversion failure and never sent as an upstream status.
+        upstream_failure.record(MEDIA_HOST_NOT_ALLOWED_FAILURE, url);
+    }
+}
+
+fn record_failed_upstream_status(
+    response_status: StatusCode,
+    url: &url::Url,
+    upstream_failure: Option<&UpstreamFailureInfo>,
+) -> bool {
+    if response_status.is_success() || response_status.is_redirection() {
+        return false;
+    }
+    log_upstream_status(url, response_status, "conversion");
+    if let Some(upstream_failure) = upstream_failure {
+        upstream_failure.record(response_status.as_u16(), url);
+    }
+    true
 }
 
 impl From<()> for ConversionFailure {
@@ -373,6 +443,8 @@ struct CreateMediaConversionRequest {
     #[serde(default)]
     preferred_audio_languages: Vec<String>,
     #[serde(default)]
+    audio_track_index: Option<usize>,
+    #[serde(default)]
     headers: HashMap<String, String>,
 }
 
@@ -404,6 +476,7 @@ struct MediaConversionStatusResponse {
     live_snapshot: Option<bool>,
     audio_tracks_reduced: Option<bool>,
     error: Option<&'static str>,
+    source_host: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -1023,9 +1096,18 @@ async fn create_media_session(
         )
             .into_response();
     };
-    if validate_media_url(&url, &state.allowed_media_hosts).is_err()
-        || resolve_public_address(&url).await.is_err()
-    {
+    if validate_media_url(&url, &state.allowed_media_hosts).is_err() {
+        log_rejected_media_host(&url, "proxy session host is not allowlisted");
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "media_host_not_allowed",
+            }),
+        )
+            .into_response();
+    }
+    if resolve_public_address(&url).await.is_err() {
+        log_rejected_media_host(&url, "proxy session resolved to a non-public address");
         return (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
@@ -1162,9 +1244,18 @@ async fn create_media_conversion(
         )
             .into_response();
     };
-    if validate_media_url(&url, &state.allowed_media_hosts).is_err()
-        || resolve_public_address(&url).await.is_err()
-    {
+    if validate_media_url(&url, &state.allowed_media_hosts).is_err() {
+        log_rejected_media_host(&url, "conversion host is not allowlisted");
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "media_host_not_allowed",
+            }),
+        )
+            .into_response();
+    }
+    if resolve_public_address(&url).await.is_err() {
+        log_rejected_media_host(&url, "conversion resolved to a non-public address");
         return (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
@@ -1182,7 +1273,8 @@ async fn create_media_conversion(
         )
             .into_response();
     };
-    if request.preferred_audio_languages.len() > 16
+    if request.audio_track_index.is_some_and(|index| index > 31)
+        || request.preferred_audio_languages.len() > 16
         || request.preferred_audio_languages.iter().any(|language| {
             language.is_empty()
                 || language.len() > 16
@@ -1238,6 +1330,7 @@ async fn create_media_conversion(
         request.output_format,
         request.mobile_compatibility,
         request.preferred_audio_languages,
+        request.audio_track_index,
         request_headers,
         ffmpeg,
         permit,
@@ -1282,6 +1375,7 @@ async fn media_conversion_status(
             live_snapshot: None,
             audio_tracks_reduced: None,
             error: None,
+            source_host: None,
         },
         ConversionStatus::Cancelled => MediaConversionStatusResponse {
             job_id: id,
@@ -1294,6 +1388,7 @@ async fn media_conversion_status(
             live_snapshot: None,
             audio_tracks_reduced: None,
             error: None,
+            source_host: None,
         },
         ConversionStatus::Ready {
             bytes,
@@ -1315,8 +1410,9 @@ async fn media_conversion_status(
             live_snapshot: Some(*live_snapshot),
             audio_tracks_reduced: Some(*audio_tracks_reduced),
             error: None,
+            source_host: None,
         },
-        ConversionStatus::Failed(failure) => MediaConversionStatusResponse {
+        ConversionStatus::Failed { failure, source_host } => MediaConversionStatusResponse {
             job_id: id,
             status: "failed",
             mode: None,
@@ -1327,6 +1423,7 @@ async fn media_conversion_status(
             live_snapshot: None,
             audio_tracks_reduced: None,
             error: Some(failure.code()),
+            source_host: source_host.clone(),
         },
     };
     Json(response).into_response()
@@ -1389,11 +1486,15 @@ async fn run_media_conversion(
     output_format: ConversionOutputFormat,
     mobile_compatibility: bool,
     preferred_audio_languages: Vec<String>,
+    requested_audio_track_index: Option<usize>,
     request_headers: HashMap<String, String>,
     ffmpeg: Arc<PathBuf>,
     _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
-    let probed_content_type = if is_hls_playlist(&url, None) || is_dash_manifest(&url, None) {
+    let probed_content_type = if is_hls_playlist(&url, None)
+        || is_dash_manifest(&url, None)
+        || has_known_media_file_extension(&url)
+    {
         None
     } else {
         probe_media_content_type(&state, &url, &request_headers).await
@@ -1408,7 +1509,7 @@ async fn run_media_conversion(
         format!("{id}.input")
     });
     let output_path = conversion_output_path(state.conversion_dir.as_ref(), &id, output_format);
-    let upstream_status = AtomicU16::new(0);
+    let upstream_failure = UpstreamFailureInfo::default();
     let result = tokio::time::timeout(
         Duration::from_secs(max_conversion_runtime_seconds()),
         async {
@@ -1420,10 +1521,10 @@ async fn run_media_conversion(
                     &input_path,
                     &state.conversion_dir.join(format!("{id}.input-assets")),
                     mobile_compatibility,
-                    &upstream_status,
+                    &upstream_failure,
                 )
                 .await
-                .map_err(|_| source_fetch_failure(upstream_status.load(Ordering::Relaxed)))?
+                .map_err(|_| source_fetch_failure(upstream_failure.status()))?
             } else if dash_input {
                 download_dash_conversion_input(
                     &state,
@@ -1432,17 +1533,17 @@ async fn run_media_conversion(
                     &input_path,
                     &state.conversion_dir.join(format!("{id}.input-assets")),
                     mobile_compatibility,
-                    &upstream_status,
+                    &upstream_failure,
                 )
                 .await
-                .map_err(|_| source_fetch_failure(upstream_status.load(Ordering::Relaxed)))?
+                .map_err(|_| source_fetch_failure(upstream_failure.status()))?
             } else {
                 download_allowlisted_media(
                     &state,
                     &url,
                     &request_headers,
                     &input_path,
-                    &upstream_status,
+                    &upstream_failure,
                 )
                 .await?;
                 false
@@ -1463,7 +1564,12 @@ async fn run_media_conversion(
                         .count()
                 })
                 .unwrap_or(0);
-            let preferred_audio_track_indices = if mobile_compatibility {
+            if requested_audio_track_index.is_some_and(|index| index >= source_audio_track_count) {
+                return Err(ConversionFailure::UnsupportedInput);
+            }
+            let preferred_audio_track_indices = if let Some(index) = requested_audio_track_index {
+                vec![index]
+            } else if mobile_compatibility {
                 ordered_audio_track_indices(&source_info, &preferred_audio_languages)
             } else {
                 Vec::new()
@@ -1616,45 +1722,42 @@ async fn run_media_conversion(
             }
             Err(failure) => {
                 cleanup_conversion_files(state.conversion_dir.as_ref(), &id).await;
-                ConversionStatus::Failed(failure)
+                let source_host = match failure {
+                    ConversionFailure::SourceUnavailable
+                    | ConversionFailure::SourceUnauthorized
+                    | ConversionFailure::SourceForbidden
+                    | ConversionFailure::SourceNotFound
+                    | ConversionFailure::SourceGone
+                    | ConversionFailure::SourceRateLimited
+                    | ConversionFailure::SourceHostNotAllowed => upstream_failure.host(),
+                    _ => None,
+                };
+                ConversionStatus::Failed { failure, source_host }
             }
         };
     }
 }
 
 /// Detect extensionless HLS/DASH endpoints before deciding whether to download
-/// a file or recursively materialize a manifest. Try HEAD first, then inspect
-/// only the first 4 KiB of a Range GET for servers that reject HEAD or return a
-/// generic content type.
+/// a file or recursively materialize a manifest. A bounded Range GET gives us
+/// the content type and a manifest prefix in one request. Fall back to HEAD
+/// only when that GET probe cannot be completed.
 async fn probe_media_content_type(
     state: &AppState,
     initial_url: &url::Url,
     request_headers: &HashMap<String, String>,
 ) -> Option<String> {
-    if let Some((content_type, _)) =
-        probe_media_response(state, initial_url, request_headers, reqwest::Method::HEAD).await
+    if let Some((content_type, prefix)) =
+        probe_media_response(state, initial_url, request_headers, reqwest::Method::GET).await
     {
-        if is_hls_playlist(initial_url, Some(&content_type))
-            || is_dash_manifest(initial_url, Some(&content_type))
-        {
-            return Some(content_type);
-        }
-        let (range_content_type, prefix) =
-            probe_media_response(state, initial_url, request_headers, reqwest::Method::GET).await?;
-        if let Some(detected) = sniff_media_playlist_content_type(&prefix) {
-            return Some(detected.to_string());
-        }
-        return Some(if range_content_type.is_empty() {
-            content_type
-        } else {
-            range_content_type
-        });
+        return sniff_media_playlist_content_type(&prefix)
+            .map(str::to_owned)
+            .or_else(|| (!content_type.is_empty()).then_some(content_type));
     }
-    let (content_type, prefix) =
-        probe_media_response(state, initial_url, request_headers, reqwest::Method::GET).await?;
-    sniff_media_playlist_content_type(&prefix)
-        .map(str::to_owned)
-        .or_else(|| (!content_type.is_empty()).then_some(content_type))
+
+    let (content_type, _) =
+        probe_media_response(state, initial_url, request_headers, reqwest::Method::HEAD).await?;
+    (!content_type.is_empty()).then_some(content_type)
 }
 
 fn sniff_media_playlist_content_type(prefix: &[u8]) -> Option<&'static str> {
@@ -2275,7 +2378,7 @@ async fn probe_local_media(ffmpeg: &FsPath, input_path: &FsPath) -> Result<Value
                 "-protocol_whitelist",
                 "file,pipe,crypto,data",
                 "-show_entries",
-                "format=format_name:stream=index,codec_type,codec_name,profile,width,height,sample_rate,channels,avg_frame_rate,r_frame_rate,color_transfer,color_primaries,color_space:stream_tags=language,title:stream_disposition=forced,attached_pic",
+                "format=format_name:stream=index,codec_type,codec_name,profile,width,height,sample_rate,channels,avg_frame_rate,r_frame_rate,color_transfer,color_primaries,color_space:stream_tags=language,title,handler_name,comment:stream_disposition=forced,attached_pic",
                 "-of",
                 "json",
             ])
@@ -2325,7 +2428,7 @@ async fn probe_local_media(ffmpeg: &FsPath, input_path: &FsPath) -> Result<Value
                 }
             }
             if let Some(tags) = stream.get("tags").and_then(Value::as_object) {
-                let subtitle_tags = ["language", "title"]
+                let subtitle_tags = ["language", "title", "handler_name", "comment"]
                     .into_iter()
                     .filter_map(|key| {
                         tags.get(key)
@@ -2382,6 +2485,141 @@ fn is_text_subtitle_codec(codec: &str) -> bool {
     )
 }
 
+fn webvtt_timestamp_millis(value: &str) -> Option<i64> {
+    let value = value.trim().replace(',', ".");
+    let parts = value.split(':').collect::<Vec<_>>();
+    if !(parts.len() == 2 || parts.len() == 3) {
+        return None;
+    }
+    let (hours, minutes, seconds) = if parts.len() == 3 {
+        (parts[0].parse::<i64>().ok()?, parts[1], parts[2])
+    } else {
+        (0, parts[0], parts[1])
+    };
+    let minutes = minutes.parse::<i64>().ok()?;
+    let (seconds, millis) = seconds.split_once('.')?;
+    let seconds = seconds.parse::<i64>().ok()?;
+    let millis = match millis.len() {
+        1 => millis.parse::<i64>().ok()?.checked_mul(100)?,
+        2 => millis.parse::<i64>().ok()?.checked_mul(10)?,
+        3 => millis.parse::<i64>().ok()?,
+        _ => return None,
+    };
+    if hours < 0 || minutes > 59 || seconds > 59 {
+        return None;
+    }
+    hours
+        .checked_mul(3_600_000)?
+        .checked_add(minutes.checked_mul(60_000)?)?
+        .checked_add(seconds.checked_mul(1_000)?)?
+        .checked_add(millis)
+}
+
+fn format_webvtt_timestamp(milliseconds: i64) -> String {
+    let milliseconds = milliseconds.max(0);
+    let hours = milliseconds / 3_600_000;
+    let minutes = (milliseconds / 60_000) % 60;
+    let seconds = (milliseconds / 1_000) % 60;
+    let millis = milliseconds % 1_000;
+    format!("{hours:02}:{minutes:02}:{seconds:02}.{millis:03}")
+}
+
+/// FFmpeg writes each HLS WebVTT segment as a new `WEBVTT` section and keeps
+/// its segment-local timestamp map. A browser `<track>` expects one WebVTT
+/// header and cue times on the final stream timeline, so merge those sections.
+fn normalize_hls_webvtt(input: &str) -> Option<String> {
+    let normalized = input.trim_start_matches('\u{feff}').replace("\r\n", "\n").replace('\r', "\n");
+    let lines = normalized.lines().collect::<Vec<_>>();
+    let mut sections = Vec::<Vec<&str>>::new();
+    let mut current = None::<Vec<&str>>;
+    for line in lines {
+        if line.trim() == "WEBVTT" {
+            if let Some(section) = current.take() {
+                sections.push(section);
+            }
+            current = Some(Vec::new());
+        } else if let Some(section) = current.as_mut() {
+            section.push(line);
+        }
+    }
+    if let Some(section) = current {
+        sections.push(section);
+    }
+    let mut cues = Vec::<String>::new();
+    for section in sections {
+        let header_end = section.iter().position(|line| line.trim().is_empty()).unwrap_or(0);
+        let timestamp_offset = section[..header_end]
+            .iter()
+            .find_map(|line| {
+                let value = line.trim().strip_prefix("X-TIMESTAMP-MAP=")?;
+                let mut local = None;
+                let mut mpegts = None;
+                for part in value.split(',') {
+                    let (key, value) = part.split_once(':')?;
+                    match key {
+                        "LOCAL" => local = webvtt_timestamp_millis(value),
+                        "MPEGTS" => mpegts = value.parse::<i64>().ok(),
+                        _ => {}
+                    }
+                }
+                Some(mpegts?.div_euclid(90) - local?)
+            })
+            .unwrap_or(0);
+        let body = if header_end < section.len() {
+            &section[header_end + 1..]
+        } else {
+            &[]
+        };
+        let mut block = Vec::<&str>::new();
+        for line in body.iter().copied().chain(std::iter::once("")) {
+            if line.trim().is_empty() {
+                if !block.is_empty() {
+                    if let Some(timing_index) = block.iter().position(|line| line.contains("-->")) {
+                        let timing = block[timing_index];
+                        if let Some((start, end)) = timing.split_once("-->") {
+                            let start = webvtt_timestamp_millis(start.trim());
+                            let end_parts = end.trim().split_whitespace().collect::<Vec<_>>();
+                            let end = end_parts.first().and_then(|value| webvtt_timestamp_millis(value));
+                            if let (Some(start), Some(end)) = (start, end) {
+                                let shifted_start = start.saturating_add(timestamp_offset);
+                                let shifted_end = end.saturating_add(timestamp_offset);
+                                if shifted_end > 0 {
+                                    let settings = end_parts.get(1..).unwrap_or(&[]).join(" ");
+                                    block[timing_index] = "";
+                                    let prefix = block[..timing_index]
+                                        .iter()
+                                        .filter(|line| !line.trim().is_empty())
+                                        .copied()
+                                        .collect::<Vec<_>>();
+                                    let mut cue = prefix.join("\n");
+                                    if !cue.is_empty() {
+                                        cue.push('\n');
+                                    }
+                                    cue.push_str(&format!(
+                                        "{} --> {}{}",
+                                        format_webvtt_timestamp(shifted_start),
+                                        format_webvtt_timestamp(shifted_end),
+                                        if settings.is_empty() { String::new() } else { format!(" {settings}") },
+                                    ));
+                                    for text in block.iter().skip(timing_index + 1) {
+                                        cue.push('\n');
+                                        cue.push_str(text);
+                                    }
+                                    cues.push(cue);
+                                }
+                            }
+                        }
+                    }
+                    block.clear();
+                }
+            } else {
+                block.push(line);
+            }
+        }
+    }
+    (!cues.is_empty()).then(|| format!("WEBVTT\n\n{}\n", cues.join("\n\n")))
+}
+
 fn local_media_asset_url(session_url: &str, asset_name: &str) -> Result<String, ()> {
     if asset_name.is_empty()
         || asset_name.contains('/')
@@ -2397,6 +2635,81 @@ fn local_media_asset_url(session_url: &str, asset_name: &str) -> Result<String, 
     Ok(format!("{path}/{asset_name}?{query}"))
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LocalHlsSubtitlePlaylist {
+    path: PathBuf,
+    language: Option<String>,
+}
+
+fn match_local_hls_subtitle_playlist(
+    playlists: &[LocalHlsSubtitlePlaylist],
+    used: &mut HashSet<usize>,
+    language: Option<&str>,
+) -> Option<usize> {
+    let matched = language
+        .filter(|language| !language.is_empty() && *language != "und")
+        .and_then(|language| {
+            playlists.iter().enumerate().find_map(|(index, playlist)| {
+                (!used.contains(&index)
+                    && playlist
+                        .language
+                        .as_deref()
+                        .is_some_and(|candidate| hls_languages_match(candidate, language)))
+                .then_some(index)
+            })
+        });
+    matched.or_else(|| (0..playlists.len()).find(|index| !used.contains(index)))
+        .inspect(|index| {
+            used.insert(*index);
+        })
+}
+
+fn hls_languages_match(left: &str, right: &str) -> bool {
+    if left.eq_ignore_ascii_case(right) {
+        return true;
+    }
+    let left_primary = left.split(['-', '_']).next().unwrap_or_default();
+    let right_primary = right.split(['-', '_']).next().unwrap_or_default();
+    left_primary.eq_ignore_ascii_case(right_primary)
+        && (!left.contains(['-', '_']) || !right.contains(['-', '_']))
+}
+
+async fn local_hls_subtitle_playlist_paths(input_path: &FsPath) -> Vec<LocalHlsSubtitlePlaylist> {
+    if !input_path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("m3u8"))
+    {
+        return Vec::new();
+    }
+    let Ok(manifest) = tokio::fs::read_to_string(input_path).await else {
+        return Vec::new();
+    };
+    let Ok(Some(selection)) = select_hls_conversion_variant(&manifest) else {
+        return Vec::new();
+    };
+    let Some(parent) = input_path.parent() else {
+        return Vec::new();
+    };
+    selection
+        .subtitle_renditions
+        .into_iter()
+        .filter_map(|rendition| {
+            let relative = FsPath::new(&rendition.uri);
+            if relative.is_absolute()
+                || relative.components().any(|component| {
+                    !matches!(component, std::path::Component::Normal(_))
+                })
+            {
+                return None;
+            }
+            Some(LocalHlsSubtitlePlaylist {
+                path: parent.join(relative),
+                language: rendition.language,
+            })
+        })
+        .collect()
+}
+
 async fn extract_text_subtitle_tracks(
     ffmpeg: &FsPath,
     input_path: &FsPath,
@@ -2408,6 +2721,8 @@ async fn extract_text_subtitle_tracks(
     let Some(streams) = source_info.get("streams").and_then(Value::as_array) else {
         return Vec::new();
     };
+    let external_hls_playlists = local_hls_subtitle_playlist_paths(input_path).await;
+    let mut used_external_hls_playlists = HashSet::new();
     let mut tracks = Vec::new();
     for stream in streams {
         if tracks.len() >= MAX_CONVERTED_SUBTITLE_TRACKS
@@ -2422,6 +2737,27 @@ async fn extract_text_subtitle_tracks(
         let Some(stream_index) = stream.get("index").and_then(Value::as_u64) else {
             continue;
         };
+        let codec = stream.get("codec_name").and_then(Value::as_str).unwrap_or("");
+        let external_hls_playlist = if codec.eq_ignore_ascii_case("webvtt") {
+            let language = stream
+                .get("tags")
+                .and_then(|tags| tags.get("language"))
+                .and_then(Value::as_str);
+            match_local_hls_subtitle_playlist(
+                &external_hls_playlists,
+                &mut used_external_hls_playlists,
+                language,
+            )
+            .and_then(|index| external_hls_playlists.get(index))
+        } else {
+            None
+        };
+        let extraction_input = external_hls_playlist.map_or(input_path, |playlist| playlist.path.as_path());
+        let stream_map = if external_hls_playlist.is_some() {
+            "0:s:0".to_owned()
+        } else {
+            format!("0:{stream_index}")
+        };
         let asset_name = format!("{conversion_id}-subtitle-{stream_index}.vtt");
         let output_path = conversion_dir.join(&asset_name);
         let command = tokio::process::Command::new(ffmpeg)
@@ -2435,9 +2771,9 @@ async fn extract_text_subtitle_tracks(
                 "file,pipe,crypto,data",
                 "-i",
             ])
-            .arg(input_path)
+            .arg(extraction_input)
             .arg("-map")
-            .arg(format!("0:{stream_index}"))
+            .arg(stream_map)
             .args(["-c:s", "webvtt", "-f", "webvtt"])
             .arg(&output_path)
             .stdout(std::process::Stdio::null())
@@ -2449,6 +2785,19 @@ async fn extract_text_subtitle_tracks(
             .ok()
             .and_then(Result::ok)
             .is_some_and(|output| output.status.success());
+        let succeeded = if succeeded && external_hls_playlist.is_some() {
+            match tokio::fs::read_to_string(&output_path).await {
+                Ok(contents) => match normalize_hls_webvtt(&contents) {
+                    Some(normalized) => tokio::fs::write(&output_path, normalized)
+                        .await
+                        .is_ok(),
+                    None => false,
+                },
+                Err(_) => false,
+            }
+        } else {
+            succeeded
+        };
         let length = if succeeded {
             tokio::fs::metadata(&output_path)
                 .await
@@ -2481,6 +2830,10 @@ async fn extract_text_subtitle_tracks(
             .to_owned();
         let title = tags
             .and_then(|tags| tags.get("title"))
+            .or_else(|| tags.and_then(|tags| tags.get("handler_name")))
+            // FFprobe exposes an HLS EXT-X-MEDIA NAME as `comment` for
+            // external WebVTT renditions.
+            .or_else(|| tags.and_then(|tags| tags.get("comment")))
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|title| !title.is_empty() && title.len() <= 256);
@@ -2764,7 +3117,7 @@ async fn download_allowlisted_media(
     initial_url: &url::Url,
     request_headers: &HashMap<String, String>,
     path: &PathBuf,
-    upstream_status: &AtomicU16,
+    upstream_failure: &UpstreamFailureInfo,
 ) -> Result<(), ConversionFailure> {
     let credential_origin = initial_url.origin();
     let downloaded = download_allowlisted_resource_with_range(
@@ -2776,14 +3129,14 @@ async fn download_allowlisted_media(
         max_conversion_bytes(),
         false,
         None,
-        Some(upstream_status),
+        Some(upstream_failure),
     )
     .await;
     let (_, content_type, _) = match downloaded {
         Ok(result) => result,
         Err(()) => {
             return Err(source_fetch_failure(
-                upstream_status.load(Ordering::Relaxed),
+                upstream_failure.status(),
             ));
         }
     };
@@ -2801,7 +3154,7 @@ async fn download_allowlisted_resource(
     path: &PathBuf,
     max_bytes: u64,
     allow_text: bool,
-    upstream_status: Option<&AtomicU16>,
+    upstream_failure: Option<&UpstreamFailureInfo>,
 ) -> Result<(url::Url, String, u64), ()> {
     download_allowlisted_resource_with_range(
         state,
@@ -2812,7 +3165,7 @@ async fn download_allowlisted_resource(
         max_bytes,
         allow_text,
         None,
-        upstream_status,
+        upstream_failure,
     )
     .await
 }
@@ -2826,11 +3179,12 @@ async fn download_allowlisted_resource_with_range(
     max_bytes: u64,
     allow_text: bool,
     byte_range: Option<(u64, u64)>,
-    upstream_status: Option<&AtomicU16>,
+    upstream_failure: Option<&UpstreamFailureInfo>,
 ) -> Result<(url::Url, String, u64), ()> {
     let mut url = initial_url.clone();
     for redirect in 0..=MAX_MEDIA_REDIRECTS {
         if validate_media_url(&url, &state.allowed_media_hosts).is_err() {
+            record_disallowed_media_host(&url, upstream_failure);
             return Err(());
         }
         let address = resolve_public_address(&url).await?;
@@ -2844,92 +3198,127 @@ async fn download_allowlisted_resource_with_range(
             )
             .build()
             .map_err(|_| ())?;
-        let mut upstream_request = apply_playback_request_headers(
-            client.get(url.clone()),
-            request_headers,
-            &url.origin() == credential_origin,
-        );
-        if let Some((start, end)) = byte_range {
-            upstream_request = upstream_request.header(RANGE, format!("bytes={start}-{end}"));
-        }
-        let response = tokio::time::timeout(
-            Duration::from_secs(30),
-            upstream_request
-                .header(reqwest::header::ACCEPT_ENCODING, "identity")
-                .send(),
-        )
-        .await
-        .map_err(|_| ())?
-        .map_err(|_| ())?;
-        if response.status().is_redirection() {
-            if redirect == MAX_MEDIA_REDIRECTS {
+        let mut retries = 0;
+        'retry: loop {
+            let response = loop {
+                let mut upstream_request = apply_playback_request_headers(
+                    client.get(url.clone()),
+                    request_headers,
+                    &url.origin() == credential_origin,
+                );
+                if let Some((start, end)) = byte_range {
+                    upstream_request =
+                        upstream_request.header(RANGE, format!("bytes={start}-{end}"));
+                }
+                let result = tokio::time::timeout(
+                    Duration::from_secs(30),
+                    upstream_request
+                        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+                        .send(),
+                )
+                .await;
+                match result {
+                    Ok(Ok(response))
+                        if response.status().is_server_error()
+                            && retries < MAX_UPSTREAM_RETRIES =>
+                    {
+                        retries += 1;
+                        drop(response);
+                        tokio::time::sleep(Duration::from_millis(250 * retries as u64)).await;
+                    }
+                    Ok(Ok(response)) => break response,
+                    Ok(Err(_)) | Err(_) if retries < MAX_UPSTREAM_RETRIES => {
+                        retries += 1;
+                        tokio::time::sleep(Duration::from_millis(250 * retries as u64)).await;
+                    }
+                    Ok(Err(_)) | Err(_) => return Err(()),
+                }
+            };
+            if record_failed_upstream_status(response.status(), &url, upstream_failure) {
                 return Err(());
             }
-            let location = response
+            if response.status().is_redirection() {
+                if redirect == MAX_MEDIA_REDIRECTS {
+                    return Err(());
+                }
+                let location = response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or(())?;
+                url = url.join(location).map_err(|_| ())?;
+                break 'retry;
+            }
+            if let Some((start, end)) = byte_range {
+                let content_range = response
+                    .headers()
+                    .get(CONTENT_RANGE)
+                    .and_then(|value| value.to_str().ok());
+                if !valid_hls_range_response(response.status(), content_range, start, end) {
+                    return Err(());
+                }
+            }
+            let content_type = response
                 .headers()
-                .get(reqwest::header::LOCATION)
+                .get(CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
-                .ok_or(())?;
-            url = url.join(location).map_err(|_| ())?;
-            continue;
-        }
-        if let Some((start, end)) = byte_range {
-            let content_range = response
-                .headers()
-                .get(CONTENT_RANGE)
-                .and_then(|value| value.to_str().ok());
-            if !valid_hls_range_response(response.status(), content_range, start, end) {
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if !allow_text
+                && (content_type.starts_with("text/") || content_type.contains("mpegurl"))
+            {
                 return Err(());
             }
-        }
-        if !response.status().is_success() {
-            if let Some(status) = upstream_status {
-                status.store(response.status().as_u16(), Ordering::Relaxed);
+            if response
+                .content_length()
+                .is_some_and(|length| length > max_bytes)
+            {
+                return Err(());
             }
-            return Err(());
-        }
-        let content_type = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if !allow_text && (content_type.starts_with("text/") || content_type.contains("mpegurl")) {
-            return Err(());
-        }
-        if response
-            .content_length()
-            .is_some_and(|length| length > max_bytes)
-        {
-            return Err(());
-        }
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .await
-            .map_err(|_| ())?;
-        let mut body = response.bytes_stream();
-        let mut total = 0u64;
-        loop {
-            match tokio::time::timeout(Duration::from_secs(45), body.next()).await {
-                Ok(Some(Ok(chunk))) => {
-                    total = total.saturating_add(chunk.len() as u64);
-                    if total > max_bytes {
+            let mut file = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .await
+                .map_err(|_| ())?;
+            let mut body = response.bytes_stream();
+            let mut total = 0u64;
+            let body_result = loop {
+                match tokio::time::timeout(Duration::from_secs(45), body.next()).await {
+                    Ok(Some(Ok(chunk))) => {
+                        total = total.saturating_add(chunk.len() as u64);
+                        if total > max_bytes {
+                            return Err(());
+                        }
+                        if file.write_all(&chunk).await.is_err() {
+                            break Err(());
+                        }
+                    }
+                    Ok(Some(Err(_))) | Err(_) => break Err(()),
+                    Ok(None) => break Ok(total),
+                }
+            };
+            match body_result {
+                Ok(total) => {
+                    file.flush().await.map_err(|_| ())?;
+                    return if total > 0 {
+                        Ok((url, content_type, total))
+                    } else {
+                        Err(())
+                    };
+                }
+                Err(()) => {
+                    drop(body);
+                    drop(file);
+                    let _ = tokio::fs::remove_file(path).await;
+                    if retries >= MAX_UPSTREAM_RETRIES {
                         return Err(());
                     }
-                    file.write_all(&chunk).await.map_err(|_| ())?;
+                    retries += 1;
+                    tokio::time::sleep(Duration::from_millis(250 * retries as u64)).await;
                 }
-                Ok(Some(Err(_))) | Err(_) => return Err(()),
-                Ok(None) => break,
             }
         }
-        file.flush().await.map_err(|_| ())?;
-        return if total > 0 {
-            Ok((url, content_type, total))
-        } else {
-            Err(())
-        };
     }
     Err(())
 }
@@ -3405,6 +3794,9 @@ async fn proxy_upstream(
             session.url = url.clone();
         }
         let status = response.status();
+        if !status.is_success() {
+            log_upstream_status(&url, status, "playback proxy");
+        }
         let upstream_headers = response.headers().clone();
         let is_playlist = is_hls_playlist(
             &url,
@@ -3537,6 +3929,23 @@ fn is_dash_manifest(url: &url::Url, content_type: Option<&str>) -> bool {
         })
         || content_type
             .is_some_and(|value| value.to_ascii_lowercase().contains("application/dash+xml"))
+}
+
+/// Avoid extra HEAD/range requests for ordinary media files. Some signed CDN
+/// URLs accept only the playback GET, and these extensions already tell us
+/// that manifest sniffing is unnecessary.
+fn has_known_media_file_extension(url: &url::Url) -> bool {
+    let Some(name) = url.path_segments().and_then(Iterator::last) else {
+        return false;
+    };
+    let Some((_, extension)) = name.rsplit_once('.') else {
+        return false;
+    };
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "mp4" | "m4v" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "asf" | "flv"
+            | "mpg" | "mpeg" | "ts" | "m2ts" | "3gp" | "ogv"
+    )
 }
 
 fn dash_xml_node(start: &quick_xml::events::BytesStart<'_>) -> Result<DashNode, ()> {
@@ -4694,22 +5103,29 @@ fn mobile_video_variant_is_better(
     current_frame_rate: Option<f64>,
     current_bandwidth: u64,
 ) -> bool {
+    let candidate_frame_rate_rank = mobile_frame_rate_rank(candidate_frame_rate);
+    let current_frame_rate_rank = mobile_frame_rate_rank(current_frame_rate);
+    if candidate_frame_rate_rank != current_frame_rate_rank {
+        return candidate_frame_rate_rank > current_frame_rate_rank;
+    }
     let candidate_resolution_rank = mobile_resolution_rank(candidate_resolution);
     let current_resolution_rank = mobile_resolution_rank(current_resolution);
     if candidate_resolution_rank != current_resolution_rank {
         return candidate_resolution_rank > current_resolution_rank;
     }
-    if candidate_resolution_rank == 1 {
-        let candidate_pixels = resolution_pixel_count(candidate_resolution);
-        let current_pixels = resolution_pixel_count(current_resolution);
-        if candidate_pixels != current_pixels {
-            return candidate_pixels < current_pixels;
-        }
-    }
-    let candidate_frame_rate_rank = mobile_frame_rate_rank(candidate_frame_rate);
-    let current_frame_rate_rank = mobile_frame_rate_rank(current_frame_rate);
-    if candidate_frame_rate_rank != current_frame_rate_rank {
-        return candidate_frame_rate_rank > current_frame_rate_rank;
+    let candidate_pixels = resolution_pixel_count(candidate_resolution);
+    let current_pixels = resolution_pixel_count(current_resolution);
+    if candidate_pixels != current_pixels {
+        // Among mobile-safe variants, preserve as much picture quality as
+        // possible. If every available option exceeds 1080p, prefer the
+        // smallest oversized rendition to reduce decoder and bandwidth load.
+        return if candidate_resolution_rank == 2 {
+            candidate_pixels > current_pixels
+        } else if candidate_resolution_rank == 1 {
+            candidate_pixels < current_pixels
+        } else {
+            candidate_pixels.is_some()
+        };
     }
     candidate_bandwidth > current_bandwidth
 }
@@ -5246,7 +5662,7 @@ async fn materialize_dash_track(
     credential_origin: &url::Origin,
     request_headers: &HashMap<String, String>,
     already_downloaded: u64,
-    upstream_status: Option<&AtomicU16>,
+    upstream_failure: Option<&UpstreamFailureInfo>,
 ) -> Result<(Option<String>, Vec<String>, u64), ()> {
     tokio::fs::create_dir_all(asset_dir).await.map_err(|_| ())?;
     let mut downloaded_bytes = 0u64;
@@ -5259,6 +5675,7 @@ async fn materialize_dash_track(
     parts.extend(track.segments.iter().cloned());
     for (index, part) in parts.iter().enumerate() {
         if validate_media_url(&part.url, &state.allowed_media_hosts).is_err() {
+            record_disallowed_media_host(&part.url, upstream_failure);
             return Err(());
         }
         let remaining = max_conversion_bytes()
@@ -5286,7 +5703,7 @@ async fn materialize_dash_track(
                 expected,
                 false,
                 Some((start, end)),
-                upstream_status,
+                upstream_failure,
             )
             .await?
         } else {
@@ -5298,7 +5715,7 @@ async fn materialize_dash_track(
                 &temporary_path,
                 remaining,
                 false,
-                upstream_status,
+                upstream_failure,
             )
             .await?
         };
@@ -5340,7 +5757,7 @@ async fn download_dash_conversion_input(
     output_path: &PathBuf,
     assets_dir: &PathBuf,
     mobile_compatibility: bool,
-    upstream_status: &AtomicU16,
+    upstream_failure: &UpstreamFailureInfo,
 ) -> Result<bool, ()> {
     tokio::fs::create_dir(assets_dir).await.map_err(|_| ())?;
     let credential_origin = initial_url.origin();
@@ -5353,7 +5770,7 @@ async fn download_dash_conversion_input(
         &source_mpd_path,
         MAX_HLS_MANIFEST_BYTES as u64,
         true,
-        Some(upstream_status),
+        Some(upstream_failure),
     )
     .await?;
     if !is_dash_manifest(&manifest_url, Some(&content_type)) {
@@ -5385,7 +5802,7 @@ async fn download_dash_conversion_input(
             &credential_origin,
             request_headers,
             downloaded_bytes,
-            Some(upstream_status),
+            Some(upstream_failure),
         )
         .await?;
         downloaded_bytes = downloaded_bytes.saturating_add(video_bytes);
@@ -5831,7 +6248,10 @@ async fn materialize_hls_subtitle_renditions(
         let temporary_path = assets_dir.join(format!("subtitle-source-{index}.m3u8"));
         let local_playlist = assets_dir.join(format!("subtitle-{index}.m3u8"));
         let local_assets = assets_dir.join(format!("subtitle-{index}"));
-        let asset_prefix = format!("{asset_directory_name}/subtitle-{index}");
+        // The subtitle playlist lives directly in `assets_dir`, so its segment
+        // URIs must be relative to that directory. The master playlist adds
+        // `asset_directory_name` when it points to this playlist.
+        let asset_prefix = format!("subtitle-{index}");
         let track_result = async {
             let (final_url, manifest, manifest_size) = download_hls_media_playlist_manifest(
                 state,
@@ -5952,7 +6372,9 @@ async fn materialize_hls_audio_renditions(
         let temporary_path = assets_dir.join(format!("audio-source-{index}.m3u8"));
         let local_playlist = assets_dir.join(format!("audio-{index}.m3u8"));
         let local_assets = assets_dir.join(format!("audio-{index}"));
-        let asset_prefix = format!("{asset_directory_name}/audio-{index}");
+        // Keep child playlist segments relative to `assets_dir`; the master
+        // playlist itself prefixes the audio playlist with the asset directory.
+        let asset_prefix = format!("audio-{index}");
         let result = async {
             let (final_url, manifest, manifest_size) = download_hls_media_playlist_manifest(
                 state,
@@ -6056,7 +6478,7 @@ async fn download_hls_conversion_input(
     output_path: &PathBuf,
     assets_dir: &PathBuf,
     mobile_compatibility: bool,
-    upstream_status: &AtomicU16,
+    upstream_failure: &UpstreamFailureInfo,
 ) -> Result<bool, ()> {
     let credential_origin = initial_url.origin();
     tokio::fs::create_dir(assets_dir).await.map_err(|_| ())?;
@@ -6082,7 +6504,7 @@ async fn download_hls_conversion_input(
             &temporary_manifest,
             MAX_HLS_MANIFEST_BYTES as u64,
             true,
-            Some(upstream_status),
+            Some(upstream_failure),
         )
         .await?;
         downloaded_bytes = downloaded_bytes.saturating_add(bytes);
@@ -6106,6 +6528,7 @@ async fn download_hls_conversion_input(
             let _ = tokio::fs::remove_file(&temporary_manifest).await;
             playlist_url = join_with_same_origin_query(&final_url, &selection.uri)?;
             if validate_media_url(&playlist_url, &state.allowed_media_hosts).is_err() {
+                record_disallowed_media_host(&playlist_url, Some(upstream_failure));
                 return Err(());
             }
             if !selection.audio_renditions.is_empty() {
@@ -6114,6 +6537,8 @@ async fn download_hls_conversion_input(
                     let audio_url = join_with_same_origin_query(&final_url, &rendition.uri)?;
                     if validate_media_url(&audio_url, &state.allowed_media_hosts).is_ok() {
                         resolved_audio.push((audio_url, rendition));
+                    } else {
+                        record_disallowed_media_host(&audio_url, Some(upstream_failure));
                     }
                 }
                 if resolved_audio.is_empty() {
@@ -6131,6 +6556,7 @@ async fn download_hls_conversion_input(
                         continue;
                     };
                     if validate_media_url(&subtitle_url, &state.allowed_media_hosts).is_err() {
+                        record_disallowed_media_host(&subtitle_url, Some(upstream_failure));
                         continue;
                     }
                     resolved_subtitles.push((subtitle_url, rendition));
@@ -6169,7 +6595,7 @@ async fn download_hls_conversion_input(
                 &video_assets,
                 "video",
                 downloaded_bytes,
-                Some(upstream_status),
+                Some(upstream_failure),
             )
             .await?,
         );
@@ -6222,7 +6648,7 @@ async fn download_hls_conversion_input(
             assets_dir,
             asset_directory_name,
             downloaded_bytes,
-            Some(upstream_status),
+            Some(upstream_failure),
         )
         .await?;
     }
@@ -6273,7 +6699,7 @@ async fn materialize_hls_media_playlist(
     assets_dir: &PathBuf,
     asset_prefix: &str,
     already_downloaded: u64,
-    upstream_status: Option<&AtomicU16>,
+    upstream_failure: Option<&UpstreamFailureInfo>,
 ) -> Result<u64, ()> {
     tokio::fs::create_dir_all(assets_dir)
         .await
@@ -6288,7 +6714,7 @@ async fn materialize_hls_media_playlist(
         assets_dir,
         asset_prefix,
         already_downloaded,
-        upstream_status,
+        upstream_failure,
     )
     .await?;
     let mut downloaded_bytes = already_downloaded.saturating_add(range_bytes);
@@ -6310,6 +6736,7 @@ async fn materialize_hls_media_playlist(
         let is_key = line.starts_with("#EXT-X-KEY:");
         let resource_url = join_with_same_origin_query(base_url, reference)?;
         if validate_media_url(&resource_url, &state.allowed_media_hosts).is_err() {
+            record_disallowed_media_host(&resource_url, upstream_failure);
             return Err(());
         }
         let resource_index = replacements.len();
@@ -6324,7 +6751,7 @@ async fn materialize_hls_media_playlist(
             &temporary_path,
             remaining,
             false,
-            upstream_status,
+            upstream_failure,
         )
         .await?;
         if is_key && length != 16 {
@@ -6379,13 +6806,14 @@ async fn materialize_hls_byte_ranges(
     assets_dir: &PathBuf,
     asset_prefix: &str,
     already_downloaded: u64,
-    upstream_status: Option<&AtomicU16>,
+    upstream_failure: Option<&UpstreamFailureInfo>,
 ) -> Result<(String, u64), ()> {
     let (mut output, requests) = rewrite_hls_byte_ranges(manifest, base_url, asset_prefix)?;
     let mut downloaded_bytes = 0u64;
 
     for request in requests {
         if validate_media_url(&request.url, &state.allowed_media_hosts).is_err() {
+            record_disallowed_media_host(&request.url, upstream_failure);
             return Err(());
         }
         let length = request.end - request.start + 1;
@@ -6404,7 +6832,7 @@ async fn materialize_hls_byte_ranges(
             length,
             false,
             Some((request.start, request.end)),
-            upstream_status,
+            upstream_failure,
         )
         .await?;
         if received != length {
@@ -7418,9 +7846,12 @@ fn apply_playback_request_headers(
     same_origin: bool,
 ) -> reqwest::RequestBuilder {
     for (name, value) in headers {
-        // CDNs commonly require the provider's User-Agent or Accept value. Keep
-        // credentials and origin-scoped headers on the original media origin.
-        if same_origin || matches!(name.as_str(), "accept" | "user-agent") {
+        // CDNs commonly require the provider's browser context after a signed
+        // source URL redirects. Preserve Referer and Origin across the
+        // allowlisted redirect chain, but never forward credentials to a new
+        // origin. Authorization, cookies, and custom headers remain scoped to
+        // the original media host.
+        if same_origin || matches!(name.as_str(), "accept" | "user-agent" | "referer" | "origin") {
             request = request.header(name, value);
         }
     }
@@ -8395,6 +8826,38 @@ fn is_authorized(headers: &HeaderMap, api_key: &[u8], session_key: &[u8]) -> boo
 mod tests {
     use super::*;
 
+    #[test]
+    fn known_media_extensions_skip_manifest_probe_but_extensionless_urls_do_not() {
+        for value in [
+            "https://cdn.example/video.mp4?token=secret",
+            "https://cdn.example/video.MKV",
+            "https://cdn.example/video.ts?expires=123",
+        ] {
+            assert!(has_known_media_file_extension(&url::Url::parse(value).unwrap()));
+        }
+        for value in [
+            "https://cdn.example/stream?token=secret",
+            "https://cdn.example/playlist.m3u8",
+            "https://cdn.example/manifest.mpd",
+            "https://cdn.example/segment.m4s",
+        ] {
+            assert!(!has_known_media_file_extension(&url::Url::parse(value).unwrap()));
+        }
+    }
+
+    #[test]
+    fn extensionless_manifest_probe_sniffs_hls_and_dash_prefixes() {
+        assert_eq!(
+            sniff_media_playlist_content_type(b"\xef\xbb\xbf  #EXTM3U\n#EXTINF:6,\nsegment.ts"),
+            Some("application/vnd.apple.mpegurl")
+        );
+        assert_eq!(
+            sniff_media_playlist_content_type(b"<?xml version=\"1.0\"?><MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\"/>"),
+            Some("application/dash+xml")
+        );
+        assert_eq!(sniff_media_playlist_content_type(b"\x00\x00\x00\x18ftyp"), None);
+    }
+
     async fn materialize_dash_track_for_test(
         track: &DashTrackPlan,
         kind: &str,
@@ -8681,6 +9144,46 @@ mod tests {
             .collect();
         assert_eq!(output_languages, vec!["eng", "jpn", "deu"]);
         assert_eq!(output_audio[0]["disposition"]["default"], 1);
+
+        let selected_output = dir.join("selected-track.mp4");
+        transcode_conversion_candidate(
+            &ffmpeg,
+            &input,
+            &selected_output,
+            ConversionMode::Remux,
+            None,
+            ConversionOutputFormat::Mp4,
+            true,
+            audio_count,
+            &[2],
+            false,
+            source_video_frame_rate(&source_info),
+        )
+        .await
+        .expect("an explicitly selected source audio track should produce a mobile MP4");
+        let selected_probe = tokio::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type:stream_tags=language",
+                "-of",
+                "json",
+            ])
+            .arg(&selected_output)
+            .output()
+            .await
+            .unwrap();
+        assert!(selected_probe.status.success());
+        let selected_info: Value = serde_json::from_slice(&selected_probe.stdout).unwrap();
+        let selected_languages: Vec<_> = selected_info["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|stream| stream["codec_type"] == "audio")
+            .map(|stream| stream["tags"]["language"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(selected_languages, vec!["deu"]);
         tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 
@@ -8785,6 +9288,318 @@ mod tests {
                 "{name} should be tagged for SDR BT.709 output"
             );
         }
+        tokio::fs::remove_dir_all(dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn worker_extracts_embedded_text_subtitles_for_mobile_playback() {
+        let ffmpeg = PathBuf::from("ffmpeg");
+        let ffmpeg_ready = tokio::process::Command::new(&ffmpeg)
+            .arg("-version")
+            .output()
+            .await;
+        if !ffmpeg_ready.is_ok_and(|result| result.status.success()) {
+            eprintln!("Skipping FFmpeg subtitle integration: ffmpeg is not installed");
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "aurales-subtitle-extract-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let input = dir.join("embedded-subtitle.mkv");
+        let subtitle = dir.join("english.srt");
+        tokio::fs::write(
+            &subtitle,
+            "1\n00:00:00,100 --> 00:00:00,900\nEmbedded source subtitle cue\n",
+        )
+        .await
+        .unwrap();
+        let generated = tokio::process::Command::new(&ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x180:rate=24:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=400:sample_rate=48000:duration=1",
+                "-i",
+            ])
+            .arg(&subtitle)
+            .args([
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-map",
+                "2:s:0",
+                "-c:v",
+                "mpeg4",
+                "-c:a",
+                "aac",
+                "-c:s",
+                "srt",
+                "-metadata:s:s:0",
+                "language=eng",
+                "-metadata:s:s:0",
+                "title=English",
+                "-shortest",
+            ])
+            .arg(&input)
+            .output()
+            .await
+            .unwrap();
+        assert!(generated.status.success(), "failed to prepare subtitle fixture");
+
+        let source_info = probe_local_media(&ffmpeg, &input).await.unwrap();
+        let conversion_id = uuid::Uuid::new_v4().simple().to_string();
+        let session_url = format!(
+            "/v1/media/{conversion_id}?signature=fixture&expires=9999999999"
+        );
+        let tracks = extract_text_subtitle_tracks(
+            &ffmpeg,
+            &input,
+            &dir,
+            &conversion_id,
+            &session_url,
+            &source_info,
+        )
+        .await;
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].lang, "eng");
+        assert_eq!(tracks[0].label, "English");
+        let asset_name = tracks[0].url.rsplit('/').next().unwrap().split('?').next().unwrap();
+        let vtt = tokio::fs::read_to_string(dir.join(asset_name)).await.unwrap();
+        assert!(vtt.contains("WEBVTT"));
+        assert!(vtt.contains("Embedded source subtitle cue"));
+
+        tokio::fs::remove_dir_all(dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn worker_extracts_external_hls_subtitle_renditions_for_mobile_playback() {
+        let ffmpeg = PathBuf::from("ffmpeg");
+        let ffmpeg_ready = tokio::process::Command::new(&ffmpeg)
+            .arg("-version")
+            .output()
+            .await;
+        if !ffmpeg_ready.is_ok_and(|result| result.status.success()) {
+            eprintln!("Skipping FFmpeg HLS subtitle integration: ffmpeg is not installed");
+            return;
+        }
+
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/browser/fixtures");
+        let dir = std::env::temp_dir().join(format!(
+            "aurales-hls-subtitle-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::create_dir_all(dir.join("assets/subtitle-0"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(dir.join("assets/subtitle-1"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(dir.join("assets/audio-0"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(dir.join("assets/audio-1"))
+            .await
+            .unwrap();
+        tokio::fs::copy(fixtures.join("hls-segment-000.m2ts"), dir.join("video.ts"))
+            .await
+            .unwrap();
+        let audio_generated = tokio::process::Command::new(&ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=600:sample_rate=48000:duration=12",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "96k",
+                "-f",
+                "mpegts",
+            ])
+            .arg(dir.join("assets/audio-0/resource-0000.ts"))
+            .output()
+            .await
+            .unwrap();
+        assert!(audio_generated.status.success(), "failed to prepare HLS audio fixture");
+        let audio_generated = tokio::process::Command::new(&ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=900:sample_rate=48000:duration=12",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "96k",
+                "-f",
+                "mpegts",
+            ])
+            .arg(dir.join("assets/audio-1/resource-0000.ts"))
+            .output()
+            .await
+            .unwrap();
+        assert!(audio_generated.status.success(), "failed to prepare second HLS audio fixture");
+        tokio::fs::write(
+            dir.join("master.m3u8"),
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"English\",LANGUAGE=\"en\",DEFAULT=YES,AUTOSELECT=YES,URI=\"assets/audio-0.m3u8\"\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"French\",LANGUAGE=\"fr\",DEFAULT=NO,AUTOSELECT=YES,URI=\"assets/audio-1.m3u8\"\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"English\",LANGUAGE=\"en\",DEFAULT=YES,AUTOSELECT=YES,URI=\"assets/subtitle-0.m3u8\"\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"French\",LANGUAGE=\"fr\",DEFAULT=NO,AUTOSELECT=YES,URI=\"assets/subtitle-1.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=160x90,CODECS=\"avc1.42c01e,mp4a.40.2\",AUDIO=\"aud\",SUBTITLES=\"subs\"\nvideo.m3u8\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            dir.join("video.m3u8"),
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:12\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:12.000000,\nvideo.ts\n#EXT-X-ENDLIST\n",
+        )
+        .await
+        .unwrap();
+        for index in 0..2 {
+            tokio::fs::write(
+                dir.join(format!("assets/audio-{index}.m3u8")),
+                format!("#EXTM3U\n#EXT-X-TARGETDURATION:12\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:12.000000,\naudio-{index}/resource-0000.ts\n#EXT-X-ENDLIST\n"),
+            )
+            .await
+            .unwrap();
+        }
+        tokio::fs::write(
+            dir.join("assets/subtitle-0.m3u8"),
+            "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:6.000000,\nsubtitle-0/resource-0000.vtt\n#EXTINF:6.000000,\nsubtitle-0/resource-0001.vtt\n#EXT-X-ENDLIST\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            dir.join("assets/subtitle-1.m3u8"),
+            "#EXTM3U\n#EXT-X-TARGETDURATION:12\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:12.000000,\nsubtitle-1/resource-0000.vtt\n#EXT-X-ENDLIST\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            dir.join("assets/subtitle-0/resource-0000.vtt"),
+            "WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0\n\n00:00:00.000 --> 00:00:02.000\nExternal HLS subtitle cue\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            dir.join("assets/subtitle-0/resource-0001.vtt"),
+            "WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:540000\n\n00:00:00.000 --> 00:00:02.000\nSecond HLS subtitle cue\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            dir.join("assets/subtitle-1/resource-0000.vtt"),
+            "WEBVTT\n\n00:00:03.000 --> 00:00:05.000\nFrench HLS subtitle cue\n",
+        )
+        .await
+        .unwrap();
+
+        let input = dir.join("master.m3u8");
+        let source_info = probe_local_media(&ffmpeg, &input).await.unwrap();
+        let audio_tracks = source_info["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|stream| stream["codec_type"] == "audio")
+            .collect::<Vec<_>>();
+        assert!(audio_tracks.len() >= 2, "source metadata: {source_info}");
+        assert_eq!(audio_tracks[0]["tags"]["language"], "en");
+        assert_eq!(audio_tracks[1]["tags"]["language"], "fr");
+        let selected_audio_output = dir.join("selected-french.mp4");
+        transcode_local_output_using_encoder_with_audio_policy(
+            &ffmpeg,
+            &input,
+            &selected_audio_output,
+            ConversionMode::Remux,
+            None,
+            ConversionOutputFormat::Mp4,
+            true,
+            Some(1),
+            &[],
+            false,
+            source_video_frame_rate(&source_info),
+        )
+        .await
+        .expect("worker should prepare the requested external HLS audio track");
+        let selected_audio_info = probe_local_media(&ffmpeg, &selected_audio_output)
+            .await
+            .unwrap();
+        let selected_audio_tracks = selected_audio_info["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|stream| stream["codec_type"] == "audio")
+            .collect::<Vec<_>>();
+        assert_eq!(selected_audio_tracks.len(), 1);
+        assert_eq!(selected_audio_tracks[0]["codec_name"], "aac");
+        assert!(source_info["streams"].as_array().unwrap().iter().any(|stream| {
+            stream["codec_type"] == "subtitle" && stream["codec_name"] == "webvtt"
+        }), "FFprobe should discover the source HLS subtitle rendition");
+        let conversion_id = uuid::Uuid::new_v4().simple().to_string();
+        let session_url = format!(
+            "/v1/media/{conversion_id}?signature=fixture&expires=9999999999"
+        );
+        let tracks = extract_text_subtitle_tracks(
+            &ffmpeg,
+            &input,
+            &dir,
+            &conversion_id,
+            &session_url,
+            &source_info,
+        )
+        .await;
+
+        assert_eq!(tracks.len(), 2, "source metadata: {source_info}");
+        assert_eq!(tracks[0].lang, "en");
+        assert!(tracks[0].label.contains("English"));
+        assert_eq!(tracks[1].lang, "fr");
+        assert!(tracks[1].label.contains("French"));
+        for (track, expected_cue) in tracks.iter().zip([
+            "External HLS subtitle cue",
+            "French HLS subtitle cue",
+        ]) {
+            let asset_name = track.url.rsplit('/').next().unwrap().split('?').next().unwrap();
+            let vtt = tokio::fs::read_to_string(dir.join(asset_name)).await.unwrap();
+            assert!(vtt.contains(expected_cue), "extracted VTT: {vtt}");
+        }
+        let english_asset = tracks[0]
+            .url
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .split('?')
+            .next()
+            .unwrap();
+        let english_vtt = tokio::fs::read_to_string(dir.join(english_asset))
+            .await
+            .unwrap();
+        assert_eq!(english_vtt.matches("WEBVTT").count(), 1, "{english_vtt}");
+        assert!(!english_vtt.contains("X-TIMESTAMP-MAP"), "{english_vtt}");
+        assert!(
+            english_vtt.contains("00:00:06.000 --> 00:00:08.000"),
+            "{english_vtt}"
+        );
+        assert!(english_vtt.contains("Second HLS subtitle cue"), "{english_vtt}");
+
         tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 
@@ -9895,6 +10710,35 @@ mod tests {
     }
 
     #[test]
+    fn provider_context_follows_allowlisted_redirects_without_forwarding_credentials() {
+        let headers = HashMap::from([
+            ("accept".to_string(), "video/*".to_string()),
+            ("authorization".to_string(), "Bearer secret".to_string()),
+            ("cookie".to_string(), "session=secret".to_string()),
+            ("origin".to_string(), "https://addon.example".to_string()),
+            ("referer".to_string(), "https://addon.example/watch".to_string()),
+            ("user-agent".to_string(), "Aurales test".to_string()),
+            ("x-provider-token".to_string(), "secret".to_string()),
+        ]);
+        let request = apply_playback_request_headers(
+            reqwest::Client::new().get("https://cdn.example/video.mp4"),
+            &headers,
+            false,
+        )
+        .build()
+        .unwrap();
+        let actual = request.headers();
+
+        assert_eq!(actual.get("accept").unwrap(), "video/*");
+        assert_eq!(actual.get("origin").unwrap(), "https://addon.example");
+        assert_eq!(actual.get("referer").unwrap(), "https://addon.example/watch");
+        assert_eq!(actual.get("user-agent").unwrap(), "Aurales test");
+        assert!(actual.get("authorization").is_none());
+        assert!(actual.get("cookie").is_none());
+        assert!(actual.get("x-provider-token").is_none());
+    }
+
+    #[test]
     fn stale_conversion_file_names_allow_only_uuid_owned_variants() {
         let valid = [
             "0123456789abcdef0123456789abcdef.input",
@@ -10081,6 +10925,44 @@ mod tests {
     }
 
     #[test]
+    fn failed_range_request_preserves_upstream_status_without_treating_redirects_as_errors() {
+        let upstream_failure = UpstreamFailureInfo::default();
+        let url = url::Url::parse("https://cdn.example/segment.m4s").unwrap();
+        assert!(record_failed_upstream_status(
+            StatusCode::FORBIDDEN,
+            &url,
+            Some(&upstream_failure)
+        ));
+        assert_eq!(upstream_failure.status(), 403);
+        assert_eq!(upstream_failure.host().as_deref(), Some("cdn.example"));
+        assert_eq!(source_fetch_failure(403).code(), "source_forbidden");
+
+        let redirect_failure = UpstreamFailureInfo::default();
+        assert!(!record_failed_upstream_status(
+            StatusCode::TEMPORARY_REDIRECT,
+            &url,
+            Some(&redirect_failure)
+        ));
+        assert_eq!(redirect_failure.status(), 0);
+        assert_eq!(redirect_failure.host(), None);
+    }
+
+    #[test]
+    fn disallowed_child_host_has_a_distinct_conversion_failure() {
+        let upstream_failure = UpstreamFailureInfo::default();
+        record_disallowed_media_host(
+            &url::Url::parse("https://cdn.example/segment.m4s").unwrap(),
+            Some(&upstream_failure),
+        );
+        assert_eq!(
+            source_fetch_failure(upstream_failure.status()).code(),
+            "source_host_not_allowed"
+        );
+        assert_eq!(upstream_failure.host().as_deref(), Some("cdn.example"));
+        assert_eq!(source_fetch_failure(403).code(), "source_forbidden");
+    }
+
+    #[test]
     fn hls_byte_range_rewriter_removes_tags_and_assigns_separate_local_segments() {
         let base = url::Url::parse("https://cdn.example/path/index.m3u8").unwrap();
         let manifest = "#EXTM3U\n#EXTINF:4,\n#EXT-X-BYTERANGE:4@0\nmedia.mp4\n#EXTINF:4,\n#EXT-X-BYTERANGE:4\nmedia.mp4\n#EXT-X-ENDLIST\n";
@@ -10153,6 +11035,79 @@ mod tests {
                 subtitle_renditions: Vec::new(),
             })
         );
+    }
+
+    #[test]
+    fn mobile_variant_selection_keeps_highest_safe_resolution() {
+        let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=640x360,FRAME-RATE=30\n360.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720,FRAME-RATE=30\n720.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=5200000,RESOLUTION=1920x1080,FRAME-RATE=30\n1080.m3u8\n";
+        assert_eq!(
+            select_hls_conversion_variant_for_mobile(master, true)
+                .unwrap()
+                .unwrap()
+                .uri,
+            "1080.m3u8"
+        );
+    }
+
+    #[test]
+    fn mobile_variant_selection_uses_smallest_oversized_resolution() {
+        let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=5200000,RESOLUTION=1920x1080,FRAME-RATE=30\n1080.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=2560x1440,FRAME-RATE=30\n1440.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=16000000,RESOLUTION=3840x2160,FRAME-RATE=30\n2160.m3u8\n";
+        assert_eq!(
+            select_hls_conversion_variant_for_mobile(master, true)
+                .unwrap()
+                .unwrap()
+                .uri,
+            "1080.m3u8"
+        );
+
+        let oversized = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=2560x1440,FRAME-RATE=30\n1440.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=16000000,RESOLUTION=3840x2160,FRAME-RATE=30\n2160.m3u8\n";
+        assert_eq!(
+            select_hls_conversion_variant_for_mobile(oversized, true)
+                .unwrap()
+                .unwrap()
+                .uri,
+            "1440.m3u8"
+        );
+    }
+
+    #[test]
+    fn mobile_variant_selection_prefers_compatible_frame_rate_over_resolution() {
+        let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=9000000,RESOLUTION=1920x1080,FRAME-RATE=120\n1080-120.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720,FRAME-RATE=60\n720-60.m3u8\n";
+        assert_eq!(
+            select_hls_conversion_variant_for_mobile(master, true)
+                .unwrap()
+                .unwrap()
+                .uri,
+            "720-60.m3u8"
+        );
+    }
+
+    #[test]
+    fn hls_subtitle_playlist_matching_uses_language_before_ordered_fallback() {
+        let playlists = vec![
+            LocalHlsSubtitlePlaylist {
+                path: PathBuf::from("subtitle-fr.m3u8"),
+                language: Some("fr".to_string()),
+            },
+            LocalHlsSubtitlePlaylist {
+                path: PathBuf::from("subtitle-en.m3u8"),
+                language: Some("en".to_string()),
+            },
+        ];
+        let mut used = HashSet::new();
+        assert_eq!(
+            match_local_hls_subtitle_playlist(&playlists, &mut used, Some("en-US")),
+            Some(1)
+        );
+        assert_eq!(
+            match_local_hls_subtitle_playlist(&playlists, &mut used, Some("de")),
+            Some(0)
+        );
+        assert_eq!(
+            match_local_hls_subtitle_playlist(&playlists, &mut used, None),
+            None
+        );
+        assert!(!hls_languages_match("zh-Hant", "zh-Hans"));
     }
 
     #[test]

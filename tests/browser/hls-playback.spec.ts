@@ -107,3 +107,63 @@ test('native Safari HLS recognizes a signed worker playlist without an m3u8 path
   await expect(page.locator('body')).toHaveAttribute('data-playback-started', 'true', { timeout: 15_000 })
   await expect(page.locator('body')).not.toHaveAttribute('data-playback-error', /.+/)
 })
+
+test('iOS WebKit HLS audio and subtitle selectors switch source renditions', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'ios-webkit', 'This verifies source track switching in the iOS WebKit player.')
+  const segment = await readFile(resolve(process.cwd(), 'tests/browser/fixtures/hls-segment-000.m2ts'))
+  const master = '#EXTM3U\n#EXT-X-VERSION:3\n'
+    + '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="French",LANGUAGE="fr",DEFAULT=YES,AUTOSELECT=YES,URI="audio-fr.m3u8"\n'
+    + '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="English",LANGUAGE="en",DEFAULT=NO,AUTOSELECT=YES,URI="audio-en.m3u8"\n'
+    + '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",LANGUAGE="en",DEFAULT=NO,AUTOSELECT=YES,URI="subs-en.m3u8"\n'
+    + '#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=640x360,CODECS="avc1.42E01E,mp4a.40.2",AUDIO="aud",SUBTITLES="subs"\n'
+    + 'video.m3u8\n'
+  const mediaPlaylist = (segmentName: string) => `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:12\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:12.000000,\n${segmentName}\n#EXT-X-ENDLIST\n`
+  const subtitlesPlaylist = '#EXTM3U\n#EXT-X-TARGETDURATION:12\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:12.000000,\nsubtitle-en.vtt\n#EXT-X-ENDLIST\n'
+  const segmentRequests = { french: 0, english: 0 }
+  let subtitleRequests = 0
+  await page.route('**/hls-tracks/master.m3u8', (route) => route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: master }))
+  await page.route('**/hls-tracks/video.m3u8', (route) => route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: mediaPlaylist('video.ts') }))
+  await page.route('**/hls-tracks/audio-fr.m3u8', (route) => route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: mediaPlaylist('audio-fr.ts') }))
+  await page.route('**/hls-tracks/audio-en.m3u8', (route) => route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: mediaPlaylist('audio-en.ts') }))
+  await page.route('**/hls-tracks/subs-en.m3u8', (route) => route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: subtitlesPlaylist }))
+  for (const name of ['video.ts', 'audio-fr.ts', 'audio-en.ts']) {
+    await page.route(`**/hls-tracks/${name}`, (route) => {
+      if (name === 'audio-fr.ts') segmentRequests.french += 1
+      if (name === 'audio-en.ts') segmentRequests.english += 1
+      return route.fulfill({ status: 200, contentType: 'video/mp2t', body: segment })
+    })
+  }
+  await page.route('**/hls-tracks/subtitle-en.vtt', (route) => {
+    subtitleRequests += 1
+    return route.fulfill({
+      status: 200,
+      contentType: 'text/vtt',
+      body: 'WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nEnglish subtitle\n',
+    })
+  })
+
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/hls-tracks/master.m3u8')}`)
+  const audioButton = page.getByRole('button', { name: 'Audio tracks' })
+  await audioButton.click()
+  const englishAudio = page.getByRole('menuitemradio', { name: 'English' })
+  const frenchAudio = page.getByRole('menuitemradio', { name: 'French' })
+  await expect(englishAudio).toBeVisible()
+  await expect(frenchAudio).toBeVisible()
+  const targetAudio = await englishAudio.getAttribute('aria-checked') === 'true' ? frenchAudio : englishAudio
+  const targetLanguage = (await targetAudio.textContent())?.trim() || ''
+  const targetSegment = targetLanguage === 'English' ? 'english' : 'french'
+  const priorRequests = segmentRequests[targetSegment]
+  await targetAudio.click()
+  await expect.poll(() => segmentRequests[targetSegment]).toBeGreaterThan(priorRequests)
+  await audioButton.click()
+  await expect(page.getByRole('menuitemradio', { name: targetLanguage, exact: true })).toHaveAttribute('aria-checked', 'true')
+
+  await page.getByRole('button', { name: 'Subtitle tracks' }).click()
+  const englishSubtitle = page.getByRole('menuitemradio', { name: 'English' })
+  await expect(englishSubtitle).toBeVisible()
+  const priorSubtitleRequests = subtitleRequests
+  await englishSubtitle.click()
+  await expect.poll(() => subtitleRequests).toBeGreaterThan(priorSubtitleRequests)
+  await page.getByRole('button', { name: 'Subtitle tracks' }).click()
+  await expect(page.getByRole('menuitemradio', { name: 'English' })).toHaveAttribute('aria-checked', 'true')
+})

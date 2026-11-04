@@ -46,7 +46,7 @@ test('Aurales InAppPlayer renders video frames, tracks progress, and seeks a bro
 
 test('touch player controls fit a phone viewport and meet the minimum hit area', async ({ page }, testInfo) => {
   test.skip(!testInfo.project.use.isMobile, 'Touch-sized playback controls are verified in mobile browser projects.')
-  await page.setViewportSize({ width: 390, height: 844 })
+  await page.setViewportSize({ width: 360, height: 740 })
   await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/h264-aac.mp4')}`)
   await expect(page.locator('.inapp-player-controls')).toBeVisible()
 
@@ -65,6 +65,10 @@ test('touch player controls fit a phone viewport and meet the minimum hit area',
   expect(metrics.buttons.length).toBeGreaterThan(0)
   expect(metrics.buttons.every((button) => button.width >= 44 && button.height >= 44), JSON.stringify(metrics.buttons)).toBe(true)
   expect(metrics.buttons.every((button) => button.left >= 0 && button.right <= metrics.viewportWidth + 1), JSON.stringify(metrics.buttons)).toBe(true)
+  await expect(page.getByRole('button', { name: 'Pick another stream' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open with an external player' })).toBeVisible()
+  await expect(page.locator('.inapp-player-pick-another')).toHaveCSS('width', '44px')
+  await expect(page.locator('.inapp-player-external-player > div > button').first()).toHaveCSS('width', '44px')
 
   const fullscreen = await page.getByRole('button', { name: 'Full screen' }).boundingBox()
   expect(fullscreen).not.toBeNull()
@@ -170,7 +174,9 @@ test('a failed media source clears buffering and explains why iOS fullscreen is 
     Object.defineProperty(element, 'webkitEnterFullscreen', { configurable: true, value: () => element.setAttribute('data-webkit-fullscreen-requested', 'true') })
     element.dispatchEvent(new Event('error'))
   })
-  await expect(page.getByRole('alert')).toBeVisible()
+  // Mobile browsers may immediately begin worker conversion instead of showing
+  // a terminal error panel, so the recovery alert is not a stable prerequisite.
+  await expect(page.getByRole('button', { name: 'Full screen' })).toBeVisible()
   await video.evaluate((element) => element.dispatchEvent(new Event('waiting')))
   await expect(page.getByText('Buffering stream...')).toBeHidden()
   await page.getByRole('button', { name: 'Full screen' }).tap()
@@ -253,6 +259,32 @@ test('Aurales InAppPlayer converts external ASS subtitles for browser text track
   const selector = page.getByRole('button', { name: 'Subtitle tracks' })
   await selector.click()
   await expect(page.getByRole('menuitemradio', { name: 'External subtitle' })).toBeVisible()
+})
+
+test('external subtitle hosts do not receive credentials from the video source', async ({ page }) => {
+  let subtitleRequestHeaders: Record<string, string> | undefined
+  await page.route('https://subs.example/en.vtt', async (route) => {
+    subtitleRequestHeaders = await route.request().allHeaders()
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/vtt; charset=utf-8',
+      headers: { 'access-control-allow-origin': '*' },
+      body: 'WEBVTT\n\n00:00:00.100 --> 00:00:00.900\nExternal subtitle\n',
+    })
+  })
+  const headers = encodeURIComponent(JSON.stringify({
+    authorization: 'Bearer private-source-token',
+    cookie: 'source-session=private',
+    'x-provider-token': 'private',
+    referer: 'https://addon.example/watch?token=private-referer',
+  }))
+  await page.goto(`/tests/browser/player-harness.html?source=${encodeURIComponent('/tests/browser/fixtures/h264-aac.mp4')}&subtitle=${encodeURIComponent('https://subs.example/en.vtt')}&headers=${headers}`)
+  await expect.poll(() => subtitleRequestHeaders).toBeDefined()
+  expect(subtitleRequestHeaders).not.toHaveProperty('authorization')
+  expect(subtitleRequestHeaders).not.toHaveProperty('cookie')
+  expect(subtitleRequestHeaders).not.toHaveProperty('x-provider-token')
+  expect(subtitleRequestHeaders?.referer).not.toContain('private-referer')
+  await expect.poll(() => page.locator('video').evaluate((video: HTMLVideoElement) => video.textTracks[0]?.cues?.[0]?.text || '')).toBe('External subtitle')
 })
 
 test('Aurales InAppPlayer exposes browser-native subtitle tracks in its selector', async ({ page }) => {

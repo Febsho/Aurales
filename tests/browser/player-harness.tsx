@@ -11,6 +11,13 @@ const initialUrl = params.get('source')
 if (!initialUrl) throw new Error('Harness requires a source query parameter')
 const subtitleUrl = params.get('subtitle')
 const playbackRequestHeaders = JSON.parse(params.get('headers') || '{}') as PlaybackRequestHeaders
+const sourceMediaInfo = {
+  container: params.get('container') || undefined,
+  videoCodec: params.get('videoCodec') || undefined,
+  audioCodec: params.get('audioCodec') || undefined,
+  resolution: params.get('resolution') || undefined,
+  bitrate: params.has('bitrate') ? Number(params.get('bitrate')) : undefined,
+}
 
 function clearPlaybackState() {
   delete document.body.dataset.playbackStarted
@@ -31,6 +38,7 @@ function Harness() {
   return <InAppPlayer
     url={url}
     playbackRequestHeaders={playbackRequestHeaders}
+    sourceMediaInfo={sourceMediaInfo}
     title="Aurales player fixture"
     subtitle="Player integration test"
     subtitles={subtitleUrl ? [{ id: 'browser-subtitle', url: subtitleUrl, lang: 'en', label: 'External subtitle' }] : []}

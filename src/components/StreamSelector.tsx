@@ -18,8 +18,8 @@ import { useNativePlayerSupported } from '../hooks/useNativePlayerSupported'
 import { rankStreams, type SmartPlayMode, type SmartStream } from '../services/streams/smartScoring'
 import { rankStreamCandidates } from '../services/streams/nativeScoring'
 import { SmartFallbackQueue } from '../services/streams/smartFallback'
-import { recordReliabilityEvent } from '../services/streams/reliabilityHistory'
-import { classifyPlaybackFailure, diagnosticForStream, recoveryCandidates, type SourceDiagnostic } from '../services/streams/playbackHealth'
+import { recordReliabilityEvent, streamFingerprint } from '../services/streams/reliabilityHistory'
+import { classifyPlaybackFailure, diagnosticForStream, recoveryCandidates, shouldAutomaticallyRecoverSource, type SourceDiagnostic } from '../services/streams/playbackHealth'
 import { buildSmartContext, preparedStreamRegistry, type PreparedStream } from '../services/streams/preparedStreams'
 import { canonicalStreamKey } from '../services/streams/preloadUtils'
 import { probeStreamUrl } from '../services/streams/streamProbe'
@@ -30,6 +30,7 @@ import { cacheClearCategory } from '../services/cache/sqliteCache'
 import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { getServerStreams, reportJellyfinPlayback } from '../services/serverIntegrations'
 import { markPerformance, measurePerformance } from '../services/performanceMetrics'
+import { inferSourceMediaInfo } from '../services/player/browserPlayback'
 
 interface AddonStream extends StreamResult {
   addonName: string
@@ -194,10 +195,10 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
   const startSmartPlayRef = useRef<() => void>(() => {})
   const handlePlayRef = useRef<(stream: AddonStream, index: number, urlOverride?: string, recoveryStartTime?: number) => void>(() => {})
   const fastPathTriedRef = useRef(false)
-  const pendingSmartFallbackRef = useRef<AddonStream | null>(null)
+  const pendingSmartFallbackRef = useRef<{ stream: AddonStream; positionSeconds: number } | null>(null)
   const warmedStreamUrlsRef = useRef(new Map<string, string>())
   const warmingStreamUrlsRef = useRef(new Set<string>())
-  const resumeSmartFallbackRef = useRef<(failed: AddonStream) => void>(() => {})
+  const resumeSmartFallbackRef = useRef<(failed: AddonStream, candidates?: AddonStream[], positionSeconds?: number) => void>(() => {})
   const rankingGenerationRef = useRef(0)
   const playRequestGenerationRef = useRef(0)
   const hadPlaybackRef = useRef(false)
@@ -210,7 +211,10 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
   const preferredSubtitles = useAppStore((s) => s.preferredSubtitles)
   const automaticStreamRecovery = useAppStore((s) => s.automaticStreamRecovery)
   const sessionFailedSourcesRef = useRef(new Set<string>())
+  const sessionFailedSourceUrlsRef = useRef(new Map<string, Set<string>>())
   const sessionFailedAddonsRef = useRef(new Map<string, number>())
+  const sessionFailureReasonsRef = useRef(new Map<string, ReturnType<typeof classifyPlaybackFailure>>())
+  const refreshedRecoveryAddonsRef = useRef(new Set<string>())
 
   // A manual open must win before passive Smart Play effects get a chance to
   // consume a prepared source or start ranking. Layout effects run first.
@@ -272,7 +276,10 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
     setSubtitles([])
     setSourceDiagnostics({})
     sessionFailedSourcesRef.current.clear()
+    sessionFailedSourceUrlsRef.current.clear()
     sessionFailedAddonsRef.current.clear()
+    sessionFailureReasonsRef.current.clear()
+    refreshedRecoveryAddonsRef.current.clear()
 
     const cleanMediaId = String(mediaId).trim().replace(/:(\d+):(\d+)$/, '')
     if (!cleanMediaId) {
@@ -750,7 +757,7 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
     if (!pendingSmartFallbackRef.current || filteredStreams.length === 0) return
     const failed = pendingSmartFallbackRef.current
     pendingSmartFallbackRef.current = null
-    resumeSmartFallbackRef.current(failed)
+    resumeSmartFallbackRef.current(failed.stream, undefined, failed.positionSeconds)
   }, [filteredStreams.length])
 
   useEffect(() => {
@@ -895,12 +902,18 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
   startSmartPlayRef.current = startSmartPlay
   handlePlayRef.current = handlePlay
 
-  const resumeSmartFallback = async (_failed: AddonStream) => {
+  const resumeSmartFallback = async (_failed: AddonStream, candidates: AddonStream[] = providerStreams, positionSeconds = 0) => {
     if (!smartActiveRef.current) return
+    const resumeAt = Math.max(0, positionSeconds, playback?.startTime ?? startTime ?? 0)
+    const continueFromPosition = (stream: AddonStream, index: number) => {
+      void getPlayerSnapshot()
+        .then((snapshot) => handlePlay(stream, index, undefined, Math.max(resumeAt, snapshot.timePos ?? 0)))
+        .catch(() => handlePlay(stream, index, undefined, resumeAt))
+    }
     const generation = ++rankingGenerationRef.current
     let rankedStreams: AddonStream[]
     try {
-      rankedStreams = await rankSelectorStreams(providerStreams)
+      rankedStreams = await rankSelectorStreams(candidates)
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return
       throw error
@@ -909,8 +922,60 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
     const ranked = recoveryCandidates(rankedStreams, sessionFailedSourcesRef.current, sessionFailedAddonsRef.current)
     smartQueueRef.current = new SmartFallbackQueue(ranked)
     const next = smartQueueRef.current.next()
-    if (!next) { smartActiveRef.current = false; return }
-    handlePlay(next, streams.indexOf(next))
+    if (next) {
+      continueFromPosition(next, streams.indexOf(next))
+      return
+    }
+
+    // A failed signed URL may have expired while the source itself is still
+    // available. Once already-loaded alternatives are exhausted, refresh each
+    // failed provider at most once and try any newly issued URL automatically.
+    const retryableRefreshReasons = new Set(['HTTP_4XX', 'SOURCE_EXPIRED', 'SOURCE_UNAVAILABLE'])
+    const request = {
+      mediaType,
+      mediaId: String(mediaId).trim().replace(/:(\d+):(\d+)$/, ''),
+      tmdbId,
+      seasonEpisode,
+      sourceAddonId,
+      sourceAddonItemId,
+    }
+    for (const [addonId, reason] of sessionFailureReasonsRef.current) {
+      if (!retryableRefreshReasons.has(reason) || refreshedRecoveryAddonsRef.current.has(addonId)) continue
+      refreshedRecoveryAddonsRef.current.add(addonId)
+      const freshResults = await streamPreloadManager.retryAddons(request, [addonId])
+      if (generation !== rankingGenerationRef.current || !smartActiveRef.current) return
+      const freshStreams = freshResults as AddonStream[]
+      if (!freshStreams.length) continue
+      setStreams((current) => [...current.filter((stream) => stream.addonId !== addonId), ...freshStreams])
+      setSourceDiagnostics((current) => {
+        if (!(addonId in current)) return current
+        const nextDiagnostics = { ...current }
+        delete nextDiagnostics[addonId]
+        return nextDiagnostics
+      })
+      // The durable fingerprint intentionally ignores signed query strings.
+      // Allow a single retry when the provider rotates the signature on the
+      // same URL path, but continue excluding an unchanged stale URL.
+      const failedUrls = sessionFailedSourceUrlsRef.current.get(addonId) || new Set<string>()
+      const rotatedSignatureFingerprints = new Set(freshStreams
+        .filter((stream) => Boolean(stream.url) && !failedUrls.has(stream.url!))
+        .map((stream) => streamFingerprint(stream)))
+      const failedFingerprintsForRefresh = new Set([...sessionFailedSourcesRef.current]
+        .filter((fingerprint) => !rotatedSignatureFingerprints.has(fingerprint)))
+      const refreshedRanked = recoveryCandidates(
+        await rankSelectorStreams(freshStreams),
+        failedFingerprintsForRefresh,
+        sessionFailedAddonsRef.current,
+      )
+      if (generation !== rankingGenerationRef.current || !smartActiveRef.current) return
+      const refreshedQueue = new SmartFallbackQueue(refreshedRanked)
+      const refreshedNext = refreshedQueue.next()
+      if (!refreshedNext) continue
+      smartQueueRef.current = refreshedQueue
+      continueFromPosition(refreshedNext, -1)
+      return
+    }
+    smartActiveRef.current = false
   }
   resumeSmartFallbackRef.current = resumeSmartFallback
 
@@ -922,16 +987,35 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
     const diagnostic = diagnosticForStream(playback.stream, state, reason, undefined, sourceDiagnostics[playback.stream.addonId])
     setSourceDiagnostics((current) => ({ ...current, [playback.stream.addonId]: diagnostic }))
     sessionFailedSourcesRef.current.add(diagnostic.sourceFingerprint)
+    if (playback.stream.url) {
+      const failedUrls = sessionFailedSourceUrlsRef.current.get(playback.stream.addonId) || new Set<string>()
+      failedUrls.add(playback.stream.url)
+      sessionFailedSourceUrlsRef.current.set(playback.stream.addonId, failedUrls)
+    }
     sessionFailedAddonsRef.current.set(playback.stream.addonId, (sessionFailedAddonsRef.current.get(playback.stream.addonId) || 0) + 1)
+    sessionFailureReasonsRef.current.set(playback.stream.addonId, reason)
     recordReliabilityEvent(playback.stream, state === 'UNSTABLE' ? 'unstable' : 'failed_start')
     const key = playbackMemoryKey(mediaType, String(tmdbId || mediaId), seasonEpisode?.season, seasonEpisode?.episode)
     recordPlaybackPreference(key, playback.stream, 'failure', { audioLanguage: preferredAudio[0], subtitleLanguage: preferredSubtitles[0] })
+    // A manually selected source may still be impossible for the worker to
+    // fetch (for example, a provider returns HTTP 403). When recovery is
+    // enabled, continue with another source instead of leaving mobile users
+    // stuck at the conversion error panel.
+    if (shouldAutomaticallyRecoverSource(message, reason) && automaticStreamRecovery && !smartActiveRef.current) {
+      smartActiveRef.current = true
+      smartQueueRef.current = null
+      const resumeAt = Math.max(0, positionSeconds ?? playback.startTime ?? startTime ?? 0)
+      if (filteredStreams.length === 0) { pendingSmartFallbackRef.current = { stream: playback.stream, positionSeconds: resumeAt }; return }
+      void resumeSmartFallback(playback.stream, filteredStreams, resumeAt)
+      return
+    }
     if (!smartActiveRef.current || !automaticStreamRecovery) return
     if (!smartQueueRef.current) {
       // Fast path started before the addon fetch settled — build the fallback
       // queue now, or wait for results if none have arrived yet.
-      if (filteredStreams.length === 0) { pendingSmartFallbackRef.current = playback.stream; return }
-      void resumeSmartFallback(playback.stream)
+      const resumeAt = Math.max(0, positionSeconds ?? playback.startTime ?? startTime ?? 0)
+      if (filteredStreams.length === 0) { pendingSmartFallbackRef.current = { stream: playback.stream, positionSeconds: resumeAt }; return }
+      void resumeSmartFallback(playback.stream, undefined, resumeAt)
       return
     }
     const next = smartQueueRef.current.next()
@@ -942,15 +1026,23 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
 
   const handlePlaybackStarted = () => {
     if (playback) {
-      if (playback.stream.provider === 'jellyfin' && playback.stream.connectionId && playback.stream.sourceItemId) {
+      const serverCandidate = playback.stream.provider === 'jellyfin'
+        ? playback.stream
+        : streams.find((stream) => stream.provider === 'jellyfin'
+          && (!sourceConnectionId || stream.connectionId === sourceConnectionId))
+      const jellyfinTarget = serverCandidate ? { ...serverCandidate, requiresEpisodeResolution: false } : (!nativePlayerAvailable && sourceConnectionId && sourceItemId
+        ? { connectionId: sourceConnectionId, sourceItemId, mediaSourceId: undefined, playSessionId: undefined, transcode: false, directPlay: true, requiresEpisodeResolution: mediaType === 'series' && Boolean(seasonEpisode) }
+        : undefined)
+      if (jellyfinTarget?.connectionId && jellyfinTarget.sourceItemId) {
         void reportJellyfinPlayback({
-          connectionId: playback.stream.connectionId,
-          itemId: playback.stream.sourceItemId,
-          mediaSourceId: playback.stream.mediaSourceId,
-          playSessionId: playback.stream.playSessionId || playback.playSessionId,
+          connectionId: jellyfinTarget.connectionId,
+          itemId: jellyfinTarget.sourceItemId,
+          ...(jellyfinTarget.requiresEpisodeResolution ? { season: seasonEpisode?.season, episode: seasonEpisode?.episode } : {}),
+          mediaSourceId: jellyfinTarget.mediaSourceId,
+          playSessionId: jellyfinTarget.playSessionId || playback.playSessionId,
           positionTicks: Math.max(0, Math.round((playback.startTime ?? 0) * 10_000_000)),
           event: 'start', isPaused: false,
-          playMethod: playback.stream.transcode ? 'Transcode' : playback.stream.directPlay ? 'DirectPlay' : 'DirectStream',
+          playMethod: jellyfinTarget.transcode ? 'Transcode' : jellyfinTarget.directPlay ? 'DirectPlay' : 'DirectStream',
         }).catch(() => undefined)
       }
       recordReliabilityEvent(playback.stream, 'success')
@@ -1020,6 +1112,17 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
     if (nativePlayerAvailable === undefined) return null
     const isAnimePlayback = Boolean(anilistId || malId)
     const simklMediaType: 'movie' | 'show' | 'anime' = isAnimePlayback ? 'anime' : mediaType === 'series' ? 'show' : 'movie'
+    // Keep playback reporting tied to the Jellyfin item that supplied this
+    // title even when the user chooses an AIOMetadata/AIOStreams addon source.
+    // Jellyfin's playback callbacks are what let AIOMetadata update its linked
+    // scrobble trackers and watched state for that server item.
+    const serverCandidate = playback.stream.provider === 'jellyfin'
+      ? playback.stream
+      : streams.find((stream) => stream.provider === 'jellyfin'
+        && (!sourceConnectionId || stream.connectionId === sourceConnectionId))
+    const jellyfinTarget = serverCandidate ? { ...serverCandidate, requiresEpisodeResolution: false } : (!nativePlayerAvailable && sourceConnectionId && sourceItemId
+      ? { connectionId: sourceConnectionId, sourceItemId, mediaSourceId: undefined, playSessionId: undefined, transcode: false, directPlay: true, requiresEpisodeResolution: mediaType === 'series' && Boolean(seasonEpisode) }
+      : undefined)
     const playbackItem: PlaybackItem = {
       localId: String(mediaId).trim().replace(/:(\d+):(\d+)$/, ''),
       title,
@@ -1039,12 +1142,14 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
       anilistId,
       season: seasonEpisode?.season,
       episode: seasonEpisode?.episode,
-      serverConnectionId: playback.stream.provider === 'jellyfin' ? playback.stream.connectionId : undefined,
-      serverItemId: playback.stream.provider === 'jellyfin' ? playback.stream.sourceItemId : undefined,
-      serverMediaSourceId: playback.stream.provider === 'jellyfin' ? playback.stream.mediaSourceId : undefined,
-      serverPlaySessionId: playback.stream.provider === 'jellyfin' ? playback.stream.playSessionId || playback.playSessionId : undefined,
-      serverPlayMethod: playback.stream.provider === 'jellyfin'
-        ? (playback.stream.transcode ? 'Transcode' : playback.stream.directPlay ? 'DirectPlay' : 'DirectStream')
+      serverConnectionId: jellyfinTarget?.connectionId,
+      serverItemId: jellyfinTarget?.sourceItemId,
+      serverMediaSourceId: jellyfinTarget?.mediaSourceId,
+      serverPlaySessionId: jellyfinTarget?.playSessionId || (jellyfinTarget ? playback.playSessionId : undefined),
+      serverSeason: jellyfinTarget?.requiresEpisodeResolution ? seasonEpisode?.season : undefined,
+      serverEpisode: jellyfinTarget?.requiresEpisodeResolution ? seasonEpisode?.episode : undefined,
+      serverPlayMethod: jellyfinTarget
+        ? (jellyfinTarget.transcode ? 'Transcode' : jellyfinTarget.directPlay ? 'DirectPlay' : 'DirectStream')
         : undefined,
     }
 
@@ -1085,11 +1190,7 @@ function StreamSelectorSession({ startFirstStream, open, onClose, mediaType, med
           title={title}
           subtitle={seasonEpisode ? `From S${seasonEpisode.season} E${seasonEpisode.episode}` : undefined}
           subtitles={mergedSubtitles}
-          sourceMediaInfo={{
-            container: playback.stream.container,
-            videoCodec: playback.stream.videoCodec,
-            audioCodec: playback.stream.audioCodec,
-          }}
+          sourceMediaInfo={inferSourceMediaInfo(playback.stream, playback.url)}
           serverTrackInfo={playback.stream.provider === 'jellyfin' ? {
             provider: playback.stream.provider,
             sourceItemId: playback.stream.sourceItemId,

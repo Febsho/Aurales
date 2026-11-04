@@ -46,9 +46,16 @@ export class MediaWorkerHttpError extends Error {
 }
 
 /** MP4 has broader native playback support on phones; desktop can use HLS/MSE. */
-export function getMediaConversionOutputFormat(userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : ''): MediaConversionOutputFormat {
+export function getMediaConversionOutputFormat(
+  userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '',
+  coarseTouchDevice = typeof navigator !== 'undefined'
+    && navigator.maxTouchPoints > 0
+    && typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(pointer: coarse)').matches,
+): MediaConversionOutputFormat {
   const iPadDesktopMode = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 1 && /Macintosh/i.test(userAgent)
-  return /Android|iPhone|iPad|iPod|Mobile/i.test(userAgent) || iPadDesktopMode ? 'mp4' : 'hls'
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(userAgent) || iPadDesktopMode || coarseTouchDevice ? 'mp4' : 'hls'
 }
 
 export function getSupportedMediaConversionOutputFormat(
@@ -73,10 +80,39 @@ export function getSupportedMediaConversionOutputFormat(
 export type MediaConversionStatus =
   | { jobId: string; status: 'processing' }
   | { jobId: string; status: 'cancelled' }
-  | { jobId: string; status: 'failed'; error: string }
-  | { jobId: string; status: 'ready'; mode: Exclude<MediaConversionMode, 'auto'>; bytes: number; url: string; subtitles: MediaConversionSubtitle[]; liveSnapshot?: boolean; audioTracksReduced?: boolean; sourceInfo?: { container: string; streams: Array<{ codec_type?: string; codec_name?: string; profile?: string }> } }
+  | { jobId: string; status: 'failed'; error: string; sourceHost?: string }
+  | { jobId: string; status: 'ready'; mode: Exclude<MediaConversionMode, 'auto'>; bytes: number; url: string; subtitles: MediaConversionSubtitle[]; liveSnapshot?: boolean; audioTracksReduced?: boolean; sourceInfo?: { container: string; streams: Array<{ codec_type?: string; codec_name?: string; profile?: string; tags?: { language?: string; title?: string; handler_name?: string; comment?: string } }> } }
 
 export type PlaybackRequestHeaders = Record<string, string>
+
+/** Match browser source requests when the addon did not supply provider headers. */
+function playbackHeadersForWorker(headers: PlaybackRequestHeaders): PlaybackRequestHeaders {
+  const hasHeader = (name: string) => Object.keys(headers).some((key) => key.toLowerCase() === name)
+  let appOrigin: string | undefined
+  if (typeof window !== 'undefined') {
+    try {
+      const parsedOrigin = new URL(window.location.origin)
+      if (parsedOrigin.protocol === 'http:' || parsedOrigin.protocol === 'https:') appOrigin = parsedOrigin.origin
+    } catch {
+      // Native and opaque browser origins do not provide a valid HTTP Referer.
+    }
+  }
+  const defaults: PlaybackRequestHeaders = {}
+  if (!hasHeader('user-agent') && typeof navigator !== 'undefined' && navigator.userAgent) {
+    defaults['user-agent'] = navigator.userAgent
+  }
+  // Browsers normally send the app origin as Referer for cross-origin media
+  // requests. Reproduce that for worker fetches to support common hotlink checks.
+  if (!hasHeader('referer') && appOrigin) {
+    defaults.referer = `${appOrigin}/`
+  }
+  // Some media hosts apply the same origin check to server-side worker
+  // requests that they apply to a browser's cross-origin media request.
+  if (!hasHeader('origin') && appOrigin) {
+    defaults.origin = appOrigin
+  }
+  return validatePlaybackRequestHeaders({ ...defaults, ...headers })
+}
 
 /** Use a timer-backed abort so worker requests also work in older mobile Safari. */
 function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit, timeoutMs: number, signal?: AbortSignal): Promise<Response> {
@@ -135,7 +171,7 @@ export async function createMediaSession(url: string, signal?: AbortSignal, requ
     method: 'POST',
     headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
     credentials: workerCredentials(config),
-    body: JSON.stringify({ url, headers: validatePlaybackRequestHeaders(requestHeaders) }),
+    body: JSON.stringify({ url, headers: playbackHeadersForWorker(requestHeaders) }),
   }, 10_000, signal)
   if (!response.ok) {
     let errorCode: string | undefined
@@ -152,8 +188,11 @@ export async function createMediaSession(url: string, signal?: AbortSignal, requ
   return { url: validateMediaSessionUrl(data.url, config.baseUrl), expiresAt: data.expiresAt }
 }
 
-export async function startMediaConversion(url: string, mode: MediaConversionMode, signal?: AbortSignal, requestHeaders: PlaybackRequestHeaders = {}, outputFormat: MediaConversionOutputFormat = 'mp4', mobileCompatibility = false, preferredAudioLanguages: string[] = []): Promise<string> {
+export async function startMediaConversion(url: string, mode: MediaConversionMode, signal?: AbortSignal, requestHeaders: PlaybackRequestHeaders = {}, outputFormat: MediaConversionOutputFormat = 'mp4', mobileCompatibility = false, preferredAudioLanguages: string[] = [], audioTrackIndex?: number): Promise<string> {
   const config = requireConfig()
+  if (audioTrackIndex !== undefined && (!Number.isInteger(audioTrackIndex) || audioTrackIndex < 0 || audioTrackIndex > 31)) {
+    throw new Error('Invalid source audio track index.')
+  }
   const audioPreferences = mobileCompatibility
     ? [...new Set(preferredAudioLanguages.map((language) => language.trim().toLowerCase()).filter((language) => /^[a-z0-9-]{1,16}$/.test(language)))].slice(0, 16)
     : []
@@ -161,7 +200,7 @@ export async function startMediaConversion(url: string, mode: MediaConversionMod
     method: 'POST',
     headers: workerHeaders(config, { 'Content-Type': 'application/json', Accept: 'application/json' }),
     credentials: workerCredentials(config),
-    body: JSON.stringify({ url, mode, outputFormat, ...(mobileCompatibility ? { mobileCompatibility: true } : {}), ...(audioPreferences.length ? { preferredAudioLanguages: audioPreferences } : {}), headers: validatePlaybackRequestHeaders(requestHeaders) }),
+    body: JSON.stringify({ url, mode, outputFormat, ...(mobileCompatibility ? { mobileCompatibility: true } : {}), ...(audioPreferences.length ? { preferredAudioLanguages: audioPreferences } : {}), ...(audioTrackIndex !== undefined ? { audioTrackIndex } : {}), headers: playbackHeadersForWorker(requestHeaders) }),
   }, 10_000, signal)
   if (!response.ok) {
     let errorCode: string | undefined
@@ -192,7 +231,23 @@ export async function getMediaConversionStatus(jobId: string, signal?: AbortSign
   }
   if (data.status === 'processing') return { jobId, status: 'processing' }
   if (data.status === 'cancelled') return { jobId, status: 'cancelled' }
-  if (data.status === 'failed') return { jobId, status: 'failed', error: typeof data.error === 'string' ? data.error : 'conversion_failed' }
+  if (data.status === 'failed') {
+    let sourceHost: string | undefined
+    if (data.sourceHost !== undefined) {
+      if (typeof data.sourceHost !== 'string' || data.sourceHost.length > 253
+        || !/^[a-z\d](?:[a-z\d.-]*[a-z\d])?$/i.test(data.sourceHost)
+        || data.sourceHost.includes('..')) {
+        throw new Error('Media worker returned an invalid upstream source hostname.')
+      }
+      sourceHost = data.sourceHost.toLowerCase()
+    }
+    return {
+      jobId,
+      status: 'failed',
+      error: typeof data.error === 'string' ? data.error : 'conversion_failed',
+      ...(sourceHost ? { sourceHost } : {}),
+    }
+  }
   if (typeof data.bytes !== 'number' || !Number.isFinite(data.bytes) || typeof data.mode !== 'string' || !['remux', 'audioAac', 'h264Aac', 'h264AacLow', 'h264AacCompat'].includes(data.mode) || typeof data.url !== 'string') {
     throw new Error('Media worker returned an invalid conversion result.')
   }
@@ -217,7 +272,7 @@ export async function getMediaConversionStatus(jobId: string, signal?: AbortSign
     url: validateMediaSessionUrl(data.url, config.baseUrl),
     subtitles: ((data.subtitles || []) as MediaConversionSubtitle[]).map((track) => ({
       ...track,
-      url: validateMediaSessionUrl(track.url, config.baseUrl),
+      url: validateMediaSubtitleUrl(track.url, config.baseUrl),
     })),
     ...(typeof data.liveSnapshot === 'boolean' ? { liveSnapshot: data.liveSnapshot } : {}),
     ...(typeof data.audioTracksReduced === 'boolean' ? { audioTracksReduced: data.audioTracksReduced } : {}),
@@ -235,7 +290,11 @@ function isMediaSourceInfo(value: unknown): value is NonNullable<Extract<MediaCo
     && info.streams.every((stream) => Boolean(stream) && typeof stream === 'object'
       && (!('codec_type' in stream) || typeof (stream as Record<string, unknown>).codec_type === 'string')
       && (!('codec_name' in stream) || typeof (stream as Record<string, unknown>).codec_name === 'string')
-      && (!('profile' in stream) || typeof (stream as Record<string, unknown>).profile === 'string'))
+      && (!('profile' in stream) || typeof (stream as Record<string, unknown>).profile === 'string')
+      && (!('tags' in stream) || (Boolean((stream as Record<string, unknown>).tags)
+        && typeof (stream as Record<string, unknown>).tags === 'object'
+        && ['language', 'title', 'handler_name', 'comment'].every((key) => !((stream as Record<string, unknown>).tags as Record<string, unknown>)[key]
+          || typeof ((stream as Record<string, unknown>).tags as Record<string, unknown>)[key] === 'string'))))
 }
 
 export async function cancelMediaConversion(jobId: string): Promise<void> {
@@ -584,6 +643,18 @@ function validateMediaSessionUrl(value: string, baseUrl: string): string {
     throw new Error('Media worker returned an unsafe playback session URL.')
   }
   return sessionUrl.toString()
+}
+
+function validateMediaSubtitleUrl(value: string, baseUrl: string): string {
+  let subtitleUrl: URL
+  try { subtitleUrl = new URL(value, `${baseUrl}/`) } catch { throw new Error('Media worker returned an unsafe subtitle URL.') }
+  if (subtitleUrl.origin !== baseUrl
+    || !/^\/v1\/media\/[a-f\d]{32}\/[a-f\d]{32}-subtitle-\d+\.vtt$/i.test(subtitleUrl.pathname)
+    || !subtitleUrl.searchParams.has('signature')
+    || !subtitleUrl.searchParams.has('expires')) {
+    throw new Error('Media worker returned an unsafe subtitle URL.')
+  }
+  return subtitleUrl.toString()
 }
 
 const PLAYBACK_REQUEST_HEADER_NAMES = new Set(['accept', 'authorization', 'cookie', 'origin', 'referer', 'user-agent'])
