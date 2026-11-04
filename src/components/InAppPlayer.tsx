@@ -2716,9 +2716,9 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
                   setError('')
                   requestWorkerConversionRef.current?.(video)
                 }}
-                className="mb-2 min-h-11 w-full rounded-xl border border-white/20 bg-white px-4 py-2 text-left text-sm font-semibold text-black hover:bg-white/90 disabled:opacity-50"
+                className="inapp-player-convert-primary mb-2 min-h-12 w-full rounded-xl border border-white/20 bg-white px-4 py-3 text-left text-sm font-bold text-black hover:bg-white/90 active:scale-[.99] disabled:opacity-50"
               >
-                Retry automatic conversion
+                {conversionBusy ? 'Preparing a compatible stream…' : 'Convert for this device'}
               </button>
               {conversionModes.length > 0 && !conversionSourceAccessBlockedRef.current && <div className="flex flex-wrap gap-2">
                 {conversionModes.filter((mode) => !conversionModesTriedRef.current.includes(mode)).map((mode) => (
@@ -2727,7 +2727,7 @@ export default function InAppPlayer({ url, playbackRequestHeaders = NO_PLAYBACK_
                     type="button"
                     disabled={conversionBusy}
                     onClick={() => { void convertWithWorker(mode) }}
-                    className="min-h-11 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-50"
+                    className="min-h-11 touch-manipulation rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-50"
                   >
                     {mode === 'auto' ? 'Try automatic conversion' : mode === 'remux' ? 'Try stream-copy remux' : mode === 'audioAac' ? 'Convert audio to AAC' : mode === 'h264AacLow' ? 'Try smaller 720p/30 H.264' : mode === 'h264AacCompat' ? 'Try 480p/30 H.264' : 'Convert video to H.264'}
                   </button>

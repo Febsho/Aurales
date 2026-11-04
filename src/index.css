@@ -7096,3 +7096,53 @@ html[data-nav="sidebar-overlay"] .detail-sticky-header {
     pointer-events: auto;
   }
 }
+
+/* Make playback recovery readable and reliably tappable on phones in both
+   orientations. Keep the action above Safari's safe areas and player controls. */
+@media (pointer: coarse) and (max-width: 900px) {
+  html[data-runtime-platform="web"].full-player-active .inapp-player-error-panel {
+    top: max(4.5rem, calc(env(safe-area-inset-top) + 3.5rem));
+    bottom: max(14rem, calc(env(safe-area-inset-bottom) + 12rem));
+    /* Use an explicit half-width offset because WebKit's individual `translate`
+       transform can be lost when the fullscreen layer is rotated/resized. */
+    left: calc(50% - min(46vw, 17rem));
+    transform: none;
+    translate: none;
+    width: min(92vw, 34rem);
+    max-height: none;
+    padding: clamp(.9rem, 3.5vw, 1.25rem);
+    border-color: rgba(248, 113, 113, .28);
+    background: rgba(8, 9, 11, .96);
+    box-shadow: 0 1.25rem 3.5rem rgba(0, 0, 0, .55);
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+    z-index: 1000;
+  }
+
+  html[data-runtime-platform="web"].full-player-active .inapp-player-error-actions {
+    position: sticky;
+    bottom: -.9rem;
+    z-index: 3;
+    padding-bottom: .25rem;
+    background: linear-gradient(180deg, rgba(8, 9, 11, .97), #08090b 1rem);
+  }
+
+  html[data-runtime-platform="web"].full-player-active .inapp-player-error-actions button {
+    position: relative;
+    z-index: 4;
+    min-height: 3rem;
+    touch-action: manipulation;
+    pointer-events: auto;
+  }
+
+  html[data-runtime-platform="web"].full-player-active .inapp-player-convert-primary {
+    box-shadow: 0 .4rem 1.5rem rgba(255, 255, 255, .12);
+  }
+}
+
+@media (pointer: coarse) and (max-width: 900px) and (orientation: landscape) {
+  html[data-runtime-platform="web"].full-player-active .inapp-player-error-panel {
+    top: max(3.25rem, calc(env(safe-area-inset-top) + 2.5rem));
+    bottom: max(7rem, calc(env(safe-area-inset-bottom) + 6rem));
+  }
+}
