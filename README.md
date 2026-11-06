@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://github.com/Febsho/Aurales/releases/latest">
-    <img src="https://img.shields.io/badge/Download-v0.5.2-ffffff?style=for-the-badge&logo=github&logoColor=black" alt="Download Aurales" />
+    <img src="https://img.shields.io/badge/Download-v0.5.5-ffffff?style=for-the-badge&logo=github&logoColor=black" alt="Download Aurales" />
   </a>
 </p>
 
@@ -488,7 +488,7 @@ More information is available in [`RUST_CORE_ARCHITECTURE.md`](./RUST_CORE_ARCHI
 
 The latest release is:
 
-## Aurales v0.5.4
+## Aurales v0.5.5
 
 **[Download from GitHub Releases](https://github.com/Febsho/Aurales/releases/latest)**
 
@@ -508,7 +508,7 @@ Available for:
 The recommended Windows package is the NSIS installer:
 
 ```text
-Aurales_0.5.4_x64-setup.exe
+Aurales_0.5.5_x64-setup.exe
 ```
 
 The MSI package is also available for managed installations.
@@ -522,13 +522,13 @@ The MSI package is also available for managed installations.
 Download:
 
 ```text
-Aurales_0.5.4_amd64.flatpak
+Aurales_0.5.5_amd64.flatpak
 ```
 
 Install:
 
 ```bash
-flatpak install --user ./Aurales_0.5.3_amd64.flatpak
+flatpak install --user ./Aurales_0.5.5_amd64.flatpak
 ```
 
 Run:
@@ -542,19 +542,19 @@ flatpak run com.aurales.app
 Download:
 
 ```text
-Aurales_0.5.4_amd64.AppImage
+Aurales_0.5.5_amd64.AppImage
 ```
 
 Make it executable:
 
 ```bash
-chmod +x Aurales_0.5.3_amd64.AppImage
+chmod +x Aurales_0.5.5_amd64.AppImage
 ```
 
 Run:
 
 ```bash
-./Aurales_0.5.3_amd64.AppImage
+./Aurales_0.5.5_amd64.AppImage
 ```
 
 The AppImage bundles the required media components including:
@@ -571,15 +571,16 @@ so separate media packages are normally unnecessary.
 
 
 
-# v0.5.4
+# v0.5.5
 
-Version 0.5.4 fixes desktop layout, media server credentials, and Aurales Sync.
+Version 0.5.5 improves mobile web playback reliability and refines Discovery.
 
-* Correct the desktop Settings overview and Discovery content widths without changing the web layout.
-* Fix adding media servers on Windows by storing credentials with local Windows Credential Manager persistence.
-* Stop unchanged encrypted settings from reappearing as pending Sync changes, and restore the Sync vault automatically on Windows app startup.
+* Improve HLS playback and track selection on mobile Safari, including subtitle handling and recovery after playback errors.
+* Detect unsupported mobile codecs and containers earlier, then automatically use compatible media conversion profiles when needed.
+* Improve playback recovery controls and report media source access failures more clearly.
+* Refine the desktop Discovery layout, artwork, and recommendation shelves.
 
-See the full release notes on the **[v0.5.4 release page](https://github.com/Febsho/Aurales/releases/tag/v0.5.4)**.
+See the full release notes on the **[v0.5.5 release page](https://github.com/Febsho/Aurales/releases/tag/v0.5.5)**.
 
 ---
 
