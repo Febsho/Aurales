@@ -73,6 +73,24 @@ pub struct ServerConnection {
     pub last_refreshed_at: Option<String>,
 }
 
+/// Server connection credentials are exported only into the password-encrypted
+/// Aurales Sync vault, never through the ordinary server connection listing.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncedServerConnection {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub server_url: String,
+    pub username: Option<String>,
+    pub auth_mode: String,
+    pub base_directory: Option<String>,
+    pub enabled: bool,
+    pub credential: Option<String>,
+    pub access_token: Option<String>,
+    pub user_id: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionTestResult {
@@ -242,6 +260,49 @@ pub fn list_connections(db: &Database) -> Result<Vec<ServerConnection>, String> 
         item.has_secret = load_secret(&item.id).ok().flatten().is_some();
     }
     Ok(connections)
+}
+
+pub fn export_connections_for_sync(db: &Database) -> Result<Vec<SyncedServerConnection>, String> {
+    let connections = list_connections(db)?;
+    connections.into_iter().map(|connection| {
+        let secret = load_secret(&connection.id)?;
+        Ok(SyncedServerConnection {
+                id: connection.id, kind: connection.kind, name: connection.name,
+                server_url: connection.server_url, username: connection.username,
+                auth_mode: connection.auth_mode, base_directory: connection.base_directory,
+                enabled: connection.enabled,
+                credential: secret.as_ref().map(|value| value.credential.clone()),
+                access_token: secret.as_ref().and_then(|value| value.access_token.clone()),
+                user_id: secret.and_then(|value| value.user_id),
+            })
+    }).collect()
+}
+
+pub fn import_connections_from_sync(db: &Database, entries: Vec<SyncedServerConnection>) -> Result<(), String> {
+    let incoming = entries.iter().map(|entry| entry.id.clone()).collect::<std::collections::HashSet<_>>();
+    for entry in entries {
+        if let Some(credential) = entry.credential.filter(|value| !value.is_empty()) {
+            let request = SaveServerConnectionRequest {
+                id: Some(entry.id.clone()), kind: entry.kind, name: entry.name,
+                server_url: entry.server_url, username: entry.username,
+                secret: Some(credential.clone()), auth_mode: entry.auth_mode,
+                base_directory: entry.base_directory, enabled: entry.enabled,
+            };
+            save_connection(db, request)?;
+            store_secret(&entry.id, &StoredSecret { credential, access_token: entry.access_token, user_id: entry.user_id })?;
+        } else {
+            let conn = db.conn.lock().map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO server_connections (id,kind,name,server_url,username,auth_mode,base_directory,enabled,status,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'disconnected',datetime('now')) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,name=excluded.name,server_url=excluded.server_url,username=excluded.username,auth_mode=excluded.auth_mode,base_directory=excluded.base_directory,enabled=excluded.enabled,updated_at=datetime('now')",
+                params![entry.id, entry.kind, entry.name, entry.server_url, entry.username, entry.auth_mode, entry.base_directory, entry.enabled as i64],
+            ).map_err(|e| e.to_string())?;
+        }
+    }
+    let existing = list_connections(db)?;
+    for connection in existing {
+        if !incoming.contains(&connection.id) { remove_connection(db, &connection.id)?; }
+    }
+    Ok(())
 }
 
 pub fn save_connection(
@@ -603,6 +664,75 @@ pub fn catalog_items(
     Ok(items)
 }
 
+/// Resolve one cached media-server item by its exact source id. Poster cards
+/// use this when a catalog entry has an identity but no artwork, avoiding a
+/// scan across every catalog for each Home card.
+pub fn catalog_item_by_id(
+    db: &Database,
+    connection_id: &str,
+    source_item_id: &str,
+) -> Result<Option<ServerCatalogItem>, String> {
+    let kind = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT kind FROM server_connections WHERE id=?1",
+            [connection_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+    };
+    let Some(kind) = kind else { return Ok(None) };
+    let secret = load_secret(connection_id)?.unwrap_or_default();
+    let item = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT connection_id,source_item_id,catalog_ids_json,media_type,title,year,season,episode,parent_source_item_id,tmdb_id,tvdb_id,imdb_id,anilist_id,mal_id,poster,backdrop,raw_json FROM server_catalog_items WHERE connection_id=?1 AND source_item_id=?2",
+            params![connection_id, source_item_id],
+            catalog_item_from_row,
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+    };
+    Ok(item.map(|item| authenticate_catalog_artwork(item, &kind, &secret)))
+}
+
+/// Return only the cached episodes for one series instead of loading every
+/// catalog into the webview and filtering there for each poster card.
+pub fn episode_items(
+    db: &Database,
+    connection_id: &str,
+    series_id: &str,
+    max_items: Option<usize>,
+) -> Result<Vec<ServerCatalogItem>, String> {
+    let kind = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT kind FROM server_connections WHERE id=?1",
+            [connection_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default()
+    };
+    let secret = load_secret(connection_id)?.unwrap_or_default();
+    let limit = max_items.unwrap_or(usize::MAX).min(i64::MAX as usize) as i64;
+    let sql = "SELECT connection_id,source_item_id,catalog_ids_json,media_type,title,year,season,episode,parent_source_item_id,tmdb_id,tvdb_id,imdb_id,anilist_id,mal_id,poster,backdrop,raw_json FROM server_catalog_items WHERE connection_id=?1 AND media_type='episode' AND (parent_source_item_id=?2 OR json_extract(raw_json,'$.SeriesId')=?2) ORDER BY season,episode LIMIT ?3";
+    let items = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![connection_id, series_id, limit], catalog_item_from_row)
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(Result::ok).collect::<Vec<_>>()
+    };
+    Ok(items
+        .into_iter()
+        .map(|item| authenticate_catalog_artwork(item, &kind, &secret))
+        .collect())
+}
+
 pub fn search_catalogs(db: &Database, query: &str) -> Result<Vec<ServerCatalogItem>, String> {
     let needle = query.trim().to_ascii_lowercase();
     if needle.is_empty() {
@@ -914,6 +1044,19 @@ fn catalog_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerCata
     let tvdb_id: Option<String> = row.get(10)?;
     let anilist_id: Option<String> = row.get(12)?;
     let raw_value: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+    let cached_poster: Option<String> = row.get(14)?;
+    let cached_backdrop: Option<String> = row.get(15)?;
+    // Older catalog scans fabricated image URLs even when Jellyfin had no
+    // ImageTags for the item. Ignore those persisted URLs at read time so a
+    // Home card can use its real fallback without waiting for a full rescan.
+    let is_jellyfin_item = raw_value.get("serverUrl").and_then(Value::as_str).is_some();
+    let has_primary_image = raw_value.pointer("/ImageTags/Primary")
+        .and_then(Value::as_str).is_some_and(|tag| !tag.is_empty());
+    let has_backdrop_image = raw_value.get("BackdropImageTags")
+        .and_then(Value::as_array)
+        .is_some_and(|tags| tags.iter().any(|tag| tag.as_str().is_some_and(|tag| !tag.is_empty())));
+    let poster = if is_jellyfin_item && !has_primary_image { None } else { cached_poster };
+    let backdrop = if is_jellyfin_item && !has_backdrop_image { None } else { cached_backdrop };
     let raw_runtime = raw_value.get("RunTimeTicks").and_then(Value::as_i64).map(|ticks| ticks / 10_000_000);
     Ok(ServerCatalogItem {
         source_addon_id: format!("server:{connection_id}"),
@@ -957,8 +1100,8 @@ fn catalog_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerCata
         imdb_id: row.get(11)?,
         anilist_id,
         mal_id: row.get(13)?,
-        poster: row.get(14)?,
-        backdrop: row.get(15)?,
+        poster,
+        backdrop,
         raw: raw_value,
     })
 }

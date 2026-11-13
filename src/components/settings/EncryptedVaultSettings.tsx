@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { isSyncVaultUnlocked, lockSyncVault, unlockSyncVault } from '../../services/sync/encryptedVault'
 import { syncPasswordPersistenceAvailable } from '../../services/sync/secureLogin'
-import { downloadSyncNow } from '../../services/sync/auralesSync'
+import { downloadSyncNow, getSyncConfig, syncIfConfigured } from '../../services/sync/auralesSync'
 
 const VAULT_STATE_EVENT = 'aurales:sync-vault-state-changed'
 
@@ -26,7 +26,9 @@ export default function EncryptedVaultSettings({ connected }: { connected: boole
       setPassword('')
       setBusy(true)
       const result = await downloadSyncNow()
-      setMessage(`Encrypted settings unlocked. Downloaded ${result.downloaded} sync records.`)
+      const automatic = getSyncConfig().autoSync !== false
+      if (automatic) await syncIfConfigured()
+      setMessage(`Encrypted settings unlocked. Downloaded ${result.downloaded} sync records${automatic ? ' and synced this device’s latest settings' : ''}.`)
     } catch (error) {
       lockSyncVault()
       setMessage(error instanceof Error ? error.message : 'Could not unlock encrypted settings.')

@@ -361,6 +361,30 @@ export function ensureProfiles(): AuralesProfile[] {
 }
 
 export function getProfiles(): AuralesProfile[] { return ensureProfiles() }
+/** Drop the one device-created bootstrap profile after a first Sync pull brought real cloud profiles. */
+export async function replaceBootstrapProfileWithSyncedProfile(bootstrapId: string, replacementId: string): Promise<boolean> {
+  const profiles = getProfiles()
+  const bootstrap = profiles.find((profile) => profile.id === bootstrapId)
+  if (profiles.length < 2 || !bootstrap?.isDefault || bootstrap.name !== 'Default' || !profiles.some((profile) => profile.id === replacementId)) return false
+  writeProfiles(profiles.filter((profile) => profile.id !== bootstrapId))
+  const wasActive = getActiveProfileId() === bootstrapId
+  if (wasActive) {
+    clearRuntimeProfileState()
+    localStorage.setItem(ACTIVE_KEY, replacementId)
+    await loadProfileState(replacementId)
+  }
+  const suffix = `:profile:${bootstrapId}`
+  const legacyPrefix = `${PROFILE_STATE_PREFIX}${bootstrapId}:`
+  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+    const key = localStorage.key(index)
+    if (key && (key.endsWith(suffix) || key.startsWith(legacyPrefix))) localStorage.removeItem(key)
+  }
+  await deleteStoredProfileState(bootstrapId).catch((error) => {
+    console.error('[profiles] could not remove replaced bootstrap profile state', error)
+  })
+  window.dispatchEvent(new CustomEvent(PROFILE_CHANGED_EVENT, { detail: { profileId: wasActive ? replacementId : getActiveProfileId() } }))
+  return true
+}
 export function getActiveProfileId(): string {
   const profiles = ensureProfiles()
   const saved = localStorage.getItem(ACTIVE_KEY)

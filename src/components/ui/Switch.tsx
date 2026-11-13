@@ -14,9 +14,10 @@ interface SwitchProps {
   label?: string
   disabled?: boolean
   size?: 'sm' | 'md'
+  tone?: 'accent' | 'success'
 }
 
-export default function Switch({ checked, onChange, label, disabled, size = 'md' }: SwitchProps) {
+export default function Switch({ checked, onChange, label, disabled, size = 'md', tone = 'accent' }: SwitchProps) {
   const track = size === 'sm' ? 'h-5 w-9' : 'h-6 w-11'
   const thumb = size === 'sm' ? 'h-3.5 w-3.5' : 'h-4.5 w-4.5'
   const travel = size === 'sm' ? 'translate-x-4' : 'translate-x-5'
@@ -41,7 +42,7 @@ export default function Switch({ checked, onChange, label, disabled, size = 'md'
         track,
         // A hairline border keeps the off state perceivable: an unchecked
         // track alone is only ~1.3:1 against the surrounding surface.
-        checked ? 'border-accent bg-accent' : 'border-white/20 bg-white/10',
+        checked ? tone === 'success' ? 'border-[#30d158] bg-[#30d158]' : 'border-accent bg-accent' : 'border-white/20 bg-white/10',
         disabled
           // 35% opacity rendered disabled rows illegible. Section 18 asks for
           // readable disabled states, so the control desaturates rather than

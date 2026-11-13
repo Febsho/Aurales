@@ -60,6 +60,27 @@ pub async fn list_server_connections(
 }
 
 #[tauri::command]
+pub async fn export_server_connections_for_sync(
+    db: State<'_, Database>,
+) -> Result<Vec<server::SyncedServerConnection>, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::export_connections_for_sync(&db))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn import_server_connections_from_sync(
+    connections: Vec<server::SyncedServerConnection>,
+    db: State<'_, Database>,
+) -> Result<(), String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || server::import_connections_from_sync(&db, connections))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn save_server_connection(
     request: SaveServerConnectionRequest,
     db: State<'_, Database>,
@@ -135,6 +156,35 @@ pub async fn get_server_catalog_items(
     let db = db.inner().clone();
     tokio::task::spawn_blocking(move || {
         server::catalog_items(&db, &connection_id, &catalog_id, max_items)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn get_server_item(
+    connection_id: String,
+    item_id: String,
+    db: State<'_, Database>,
+) -> Result<Option<ServerCatalogItem>, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        server::catalog_item_by_id(&db, &connection_id, &item_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn get_server_episodes(
+    connection_id: String,
+    series_id: String,
+    max_items: Option<usize>,
+    db: State<'_, Database>,
+) -> Result<Vec<ServerCatalogItem>, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        server::episode_items(&db, &connection_id, &series_id, max_items)
     })
     .await
     .map_err(|e| e.to_string())?

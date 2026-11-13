@@ -119,7 +119,6 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   const artProviders = useAppStore((s) => s.artProviders)
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
-  const betterPosters = useAppStore((s) => s.betterPosters)
   const appManagedMetadata = useAppStore((s) => s.appManagedMetadata)
   const heroTrailerDelay = useAppStore((s) => s.heroTrailerDelay)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic'
@@ -128,7 +127,7 @@ function HeroSection({ items, isSmall = false, fixed = false, onActiveBackdropCh
   const preferredAudio = useAppStore((s) => s.preferredAudio)
   const preferredSubtitles = useAppStore((s) => s.preferredSubtitles)
   const artProviderKey = useMemo(() => JSON.stringify(artProviders), [artProviders])
-  const customArtKey = useMemo(() => JSON.stringify({ customArtUrls, betterPosters }), [customArtUrls, betterPosters])
+  const customArtKey = useMemo(() => JSON.stringify(customArtUrls), [customArtUrls])
   const trailerLanguage = preferredAudio[0] || preferredSubtitles[0] || 'en'
   const [heroTrailer, setHeroTrailer] = useState<TrailerSource | null>(null)
   const [heroTrailerPlaying, setHeroTrailerPlaying] = useState(false)

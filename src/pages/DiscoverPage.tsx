@@ -1,20 +1,30 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Info, RefreshCw, RotateCcw, Search, Settings, Shuffle, ThumbsDown, X } from 'lucide-react'
 import type { DiscoverConfig, DiscoveryCatalogContinuation, SearchResult, WatchProgress } from '../types'
-import { discoverTmdbPageWithCache, discoverTmdbWithCache, getTmdbPerson, getTrendingTmdb, tmdbProvider } from '../services/tmdb'
+import { discoverTmdbPageWithCache, discoverTmdbWithCache, getTmdbCertification, getTmdbPerson, getTrendingTmdb, tmdbProvider } from '../services/tmdb'
 import MediaRow from '../components/MediaRow'
 import MediaCard from '../components/MediaCard'
-import { applySearchResultArt, getSearchResultCustomArt, resolveArtFromProviders } from '../services/artwork'
+import { applySearchResultArt, getSearchResultCustomArt, resolveArtFromProviders, resolveSearchResultCustomArt } from '../services/artwork'
 import { loadAmbientColor } from '../services/ambientColor'
+import { getTmdbCleanPoster } from '../services/tmdb'
 import { classifyPosterColor, POSTER_COLOR_GROUPS, selectPosterColorItems, type PosterColorGroup } from '../services/discovery/posterColor'
 import { useAppStore } from '../stores/appStore'
+import { useWatchedCacheStore } from '../stores/watchedCacheStore'
+import { useVisibilityOnce } from '../hooks/useVisibilityOnce'
+import { getProviderWatchedEpisodeSummary, isWatchedFromProviders, searchResultToLookup, type ProviderWatchedEpisodeSummary, type WatchedSource } from '../services/watchedStatus'
+import { isInLocalWatchlist } from '../services/localWatchlist'
+import { ensurePosterProgress, getPosterProgressSnapshot, getPosterTimeLeftSnapshot, subscribePosterProgress } from '../services/posterProgress'
+import { getPosterArtworkCandidate, getPosterEpisodeSegmentCount, getPosterFadeAppearance, getPosterVisibleDetails, POSTER_RATING_CAPTION_CLASS, POSTER_RATING_CAPTION_STAR_CLASS } from '../services/posterLayout'
+import { PosterBottomStack } from '../components/media/PosterBottomStack'
+import { PosterFooterCaption } from '../components/media/PosterFooterCaption'
+import { getJellyfinPosterEpisodeSummaryForMedia, type PosterEpisodeSummary } from '../services/posterEpisodeSummary'
 import { useCatalogStore } from '../stores/catalogStore'
-import { useDiscoverStore, type DiscoverTab } from '../stores/discoverStore'
+import { toggleDiscoverContentType, useDiscoverStore, type DiscoverContentType } from '../stores/discoverStore'
 import CatalogKeyNotice from '../components/CatalogKeyNotice'
 import DiscoverPrefsPanel from '../components/DiscoverPrefsPanel'
 import DiscoveryCalendarRow from '../components/discovery/DiscoveryCalendarRow'
-import { applyRecommendationFeedback, buildPopularTopTen, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, orderRecommendationsBySource, orderRuntimeCandidates, orderSpotlightCandidates, prioritizeLiveTrends, prioritizeLiveTrendsWithin, rankCandidates, reconcileTrendingSignals, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
+import { applyRecommendationFeedback, buildPopularTopTen, buildTastePickerPool, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, generateDiscoverySections, interleaveLiveTrendSources, orderRecommendationsBySource, orderRuntimeCandidates, orderSpotlightCandidates, prioritizeLiveTrends, prioritizeLiveTrendsWithin, rankCandidates, reconcileTrendingSignals, selectEditorialReason, sortRecommendationsByPopularity, trendingScopeFingerprint } from '../services/discovery/recommendationEngine'
 import { loadRecommendationFeedback, resetTasteFeedback, saveRecommendationFeedback } from '../services/discovery/feedbackStore'
 import type { DiscoveryMode, RecommendationCandidate, RecommendationFeedback } from '../services/discovery/types'
 import { getWatchedMovies as getTraktWatchedMovies, getWatchedShows as getTraktWatchedShows, getRatings as getTraktRatings } from '../services/trakt/sync'
@@ -36,6 +46,344 @@ import { editorialAccolade } from '../services/accolades'
 import { getLocalWatchlist, subscribeLocalWatchlist, type LocalWatchlistItem } from '../services/localWatchlist'
 import { parseLibraryAddedAt, type DatedLibraryItem } from '../services/discovery/libraryItems'
 import { preferredScrollBehavior } from '../services/motion'
+
+function DiscoverPosterRatingBelow({ rating }: { rating?: string }) {
+  const settings = useAppStore((state) => state.posterOverlay)
+  if (!settings.enabled || !settings.showRatingBelow || !rating) return null
+  return <span className={`${POSTER_RATING_CAPTION_CLASS} discover-poster-rating-below justify-center`} aria-label={`Rating ${rating} out of 10`}><svg className={POSTER_RATING_CAPTION_STAR_CLASS} viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" /></svg>{rating}</span>
+}
+
+/** Keep watch state visible on Discover's editorial poster tiles too. */
+function DiscoverPosterWatchMark({ item, rating, logo }: { item: SearchResult; rating?: string; logo?: ReactNode }) {
+  const posterSettings = useAppStore((state) => state.posterOverlay)
+  const showWatched = posterSettings.enabled && posterSettings.showWatched
+  const showFavorite = posterSettings.enabled && posterSettings.showFavorite
+  const showAsCheckmark = posterSettings.showAsCheckmark
+  const contentAlignment = posterSettings.contentAlignment
+  const showGenre = posterSettings.enabled && posterSettings.showGenre
+  const showCertification = posterSettings.enabled && posterSettings.showCertification
+  const showEpisodes = posterSettings.enabled && posterSettings.showEpisodes && item.type === 'series'
+  const showEpisodesWatched = posterSettings.enabled && posterSettings.showEpisodesWatched && item.type === 'series'
+  const showNextEpisode = posterSettings.enabled && posterSettings.showNextEpisode && item.type === 'series'
+  const showProgress = posterSettings.enabled && posterSettings.showProgress && posterSettings.progressPlacement !== 'off'
+  const needsEpisodeSummary = showEpisodes || showEpisodesWatched || showNextEpisode
+    || showProgress && posterSettings.splitEpisodeProgress && item.type === 'series'
+  const showTimeLeft = posterSettings.enabled && posterSettings.showTimeLeft
+  const showRating = posterSettings.enabled && posterSettings.showRating
+  const style = useAppStore((state) => state.posterOverlay.style)
+  const primaryProgressProvider = useAppStore((state) => state.primaryProgressProvider)
+  const connectedSourceFlags = useAppStore((state) => [state.traktConnected, state.simklConnected, Boolean(state.pmdbApiKey), Boolean(state.mdblistApiKey || localStorage.getItem('mdblist_oauth_tokens')), state.anilistConnected].map(Number).join(''))
+  const sources = useMemo(() => {
+    const connected: WatchedSource[] = [
+      'local',
+      ...(connectedSourceFlags[0] === '1' ? ['trakt' as const] : []),
+      ...(connectedSourceFlags[1] === '1' ? ['simkl' as const] : []),
+      ...(connectedSourceFlags[2] === '1' ? ['pmdb' as const] : []),
+      ...(connectedSourceFlags[3] === '1' ? ['mdblist' as const] : []),
+      ...(connectedSourceFlags[4] === '1' ? ['anilist' as const] : []),
+    ]
+    return primaryProgressProvider === 'all' ? connected : [primaryProgressProvider as WatchedSource]
+  }, [connectedSourceFlags, primaryProgressProvider])
+  const localWatchDataEnabled = sources.includes('local')
+  const ids = {
+    id: item.id,
+    imdbId: item.imdbId,
+    tmdbId: item.tmdbId,
+    tvdbId: item.tvdbId,
+    malId: item.malId,
+    anilistId: item.anilistId,
+  }
+  const isCachedWatched = useWatchedCacheStore((state) => state.isWatched(ids, localWatchDataEnabled))
+  const watchProgress = useAppStore((state) => state.watchProgress)
+  const localWatchedEpisodes = useMemo(() => {
+    if (!localWatchDataEnabled || item.type !== 'series') return 0
+    const aliases = new Set([item.id, item.imdbId, item.tmdbId, item.tvdbId, item.sourceItemId,
+      item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined].filter((value) => value != null).map(String))
+    const title = item.title.normalize('NFKD').replace(/\p{M}/gu, '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+    const watched = new Set<string>()
+    for (const [key, entry] of watchProgress) {
+      if (!entry.completed || entry.season == null || entry.episode == null
+        || (entry.mediaType === 'movie' ? 'movie' : 'series') !== 'series') continue
+      const entryTitle = entry.title?.normalize('NFKD').replace(/\p{M}/gu, '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+      const entryAliases = [key, entry.id, entry.mediaId, entry.imdbId, entry.tmdbId,
+        entry.tmdbId != null ? `tmdb-${entry.tmdbId}` : undefined].filter((value) => value != null).map(String)
+      const matches = entryAliases.some((alias) => aliases.has(alias) || [...aliases].some((id) => alias.startsWith(`${id}:`)))
+        || Boolean(title && entryTitle === title)
+      if (matches) watched.add(`${entry.season}:${entry.episode}`)
+    }
+    return watched.size
+  }, [item.id, item.imdbId, item.sourceItemId, item.tmdbId, item.title, item.tvdbId, item.type, localWatchDataEnabled, watchProgress])
+  const serviceProgress = useSyncExternalStore(subscribePosterProgress, getPosterProgressSnapshot, getPosterProgressSnapshot)
+  const serviceTimeLeft = useSyncExternalStore(subscribePosterProgress, getPosterTimeLeftSnapshot, getPosterTimeLeftSnapshot)
+  const favorite = useSyncExternalStore(
+    subscribeLocalWatchlist,
+    () => isInLocalWatchlist(item),
+    () => false,
+  )
+  const markerRef = useRef<HTMLSpanElement>(null)
+  const visible = useVisibilityOnce(markerRef, { rootMargin: '240px' })
+  const [watched, setWatched] = useState(false)
+  const [watchedResolved, setWatchedResolved] = useState(false)
+  const [progressResolved, setProgressResolved] = useState(false)
+  const [episodeSummaryResolved, setEpisodeSummaryResolved] = useState(false)
+  const [posterDetailsFallbackReady, setPosterDetailsFallbackReady] = useState(false)
+  const [episodeSummary, setEpisodeSummary] = useState<PosterEpisodeSummary | ProviderWatchedEpisodeSummary | undefined>()
+  const certificationKey = `${item.type}:${item.tmdbId || item.id}`
+  const [resolvedCertification, setResolvedCertification] = useState<{ key: string; value?: string }>()
+  useEffect(() => {
+    setPosterDetailsFallbackReady(false)
+    if (!visible) return
+    // A connected service can stall indefinitely. Keep the poster itself from
+    // disappearing forever; unresolved status fields stay absent until they
+    // have real data, while the artwork and available details can render.
+    const timer = window.setTimeout(() => {
+      const poster = markerRef.current?.closest<HTMLElement>('.discover-poster-fade')
+      if (poster) {
+        poster.dataset.posterDetailsFallbackReady = 'true'
+        poster.dataset.posterStatusReady = 'true'
+      }
+      setPosterDetailsFallbackReady(true)
+      window.dispatchEvent(new Event('aurales:discover-poster-status-ready'))
+    }, 4_000)
+    return () => window.clearTimeout(timer)
+  }, [item.id, visible])
+  const needsCertificationResolution = showCertification && !item.certification && visible
+    && resolvedCertification?.key !== certificationKey
+  useEffect(() => {
+    if (!showCertification || item.certification || !visible || resolvedCertification?.key === certificationKey) return
+    let cancelled = false
+    ;(async () => {
+      const { resolveTmdbIdFromExternalIds } = await import('../services/metadataEnrich')
+      const tmdbId = await resolveTmdbIdFromExternalIds(item, item.type)
+      const value = tmdbId ? await getTmdbCertification(item.type, tmdbId) : undefined
+      if (!cancelled) setResolvedCertification({ key: certificationKey, value })
+    })().catch(() => { if (!cancelled) setResolvedCertification({ key: certificationKey }) })
+    return () => { cancelled = true }
+  }, [certificationKey, item, item.anilistId, item.certification, item.id, item.imdbId, item.malId, item.tmdbId, item.tvdbId, item.type, resolvedCertification?.key, showCertification, visible])
+  useLayoutEffect(() => {
+    if (!visible) return
+    const needsProgressResolution = showProgress || showTimeLeft
+    const poster = markerRef.current?.closest<HTMLElement>('.discover-poster-fade')
+    if (!showWatched && !needsProgressResolution && !needsEpisodeSummary && !needsCertificationResolution) {
+      setWatchedResolved(true)
+      setProgressResolved(true)
+      setEpisodeSummaryResolved(true)
+      if (poster) {
+        poster.dataset.posterStatusReady = 'true'
+        window.dispatchEvent(new Event('aurales:discover-poster-status-ready'))
+      }
+      return
+    }
+    if (showWatched) setWatchedResolved(false)
+    if (needsProgressResolution) setProgressResolved(false)
+    if (needsEpisodeSummary) setEpisodeSummaryResolved(false)
+    if (!poster) return
+    delete poster.dataset.posterStatusReady
+    delete poster.dataset.posterDetailsFallbackReady
+    const artwork = poster.querySelector<HTMLImageElement>('img[data-discover-media-key]')
+    const currentArtworkUrl = artwork && (artwork.currentSrc || artwork.src)
+    const sameArtworkAlreadyLoaded = artwork?.dataset.artworkLoaded === 'true'
+      && artwork.dataset.artworkLoadedUrl === currentArtworkUrl
+    if (artwork && !sameArtworkAlreadyLoaded) {
+      delete artwork.dataset.artworkLoaded
+      delete artwork.dataset.artworkLoadedUrl
+      artwork.dataset.artworkLoadedPending = 'true'
+    }
+  }, [visible, item.id, item.type, primaryProgressProvider, isCachedWatched, sources,
+    showWatched, showProgress, showTimeLeft, needsEpisodeSummary, needsCertificationResolution])
+  useEffect(() => {
+    if ((!showProgress && !showTimeLeft) || !visible) {
+      setProgressResolved(true)
+      return
+    }
+    let cancelled = false
+    setProgressResolved(false)
+    void ensurePosterProgress().finally(() => { if (!cancelled) setProgressResolved(true) })
+    return () => { cancelled = true }
+  }, [showProgress, showTimeLeft, visible])
+  useEffect(() => {
+    if (!showWatched || !visible) {
+      setWatched(false)
+      setWatchedResolved(true)
+      return
+    }
+    // The local cache contains Jellyfin watched state as well as playback
+    // history. Honor it for both the combined source and an explicitly local
+    // selection, matching the ordinary Home poster cards.
+    if (localWatchDataEnabled && isCachedWatched) {
+      setWatched(true)
+      setWatchedResolved(true)
+      return
+    }
+    let cancelled = false
+    setWatched(false)
+    setWatchedResolved(false)
+    void isWatchedFromProviders(searchResultToLookup(item), sources, watchProgress)
+      .then((result) => { if (!cancelled) setWatched(result) })
+      .catch(() => { if (!cancelled) setWatched(false) })
+      .finally(() => { if (!cancelled) setWatchedResolved(true) })
+    return () => { cancelled = true }
+  }, [isCachedWatched, item, localWatchDataEnabled, primaryProgressProvider, showWatched, sources, visible, watchProgress])
+  useEffect(() => {
+    if (!needsEpisodeSummary || !visible) {
+      setEpisodeSummary(undefined)
+      setEpisodeSummaryResolved(true)
+      return
+    }
+    let cancelled = false
+    setEpisodeSummary(undefined)
+    setEpisodeSummaryResolved(false)
+    const refreshEpisodeSummary = () => {
+      const serverSummary = localWatchDataEnabled
+        ? getJellyfinPosterEpisodeSummaryForMedia(item)
+        : Promise.resolve(undefined)
+      const providerSummary = sources.some((source) => source !== 'local')
+        ? getProviderWatchedEpisodeSummary(searchResultToLookup(item), sources)
+        : Promise.resolve(undefined)
+      void Promise.all([serverSummary, providerSummary]).then(([server, provider]) => {
+        if (cancelled) return
+        const preferred = primaryProgressProvider === 'local' ? server : provider || server
+        const watched = Math.max(server?.watched || 0, provider?.watched || 0, localWatchedEpisodes)
+        const nextEpisode = server && (server.watched || 0) > (provider?.watched || 0)
+          ? server.nextEpisode || provider?.nextEpisode
+          : provider?.nextEpisode || server?.nextEpisode
+        setEpisodeSummary(preferred ? { ...preferred, watched, ...(nextEpisode ? { nextEpisode } : {}) } : undefined)
+      }).catch(() => { if (!cancelled) setEpisodeSummary(undefined) })
+        .finally(() => { if (!cancelled) setEpisodeSummaryResolved(true) })
+    }
+    refreshEpisodeSummary()
+    window.addEventListener('aurales:server-catalogs-changed', refreshEpisodeSummary)
+    return () => {
+      cancelled = true
+      window.removeEventListener('aurales:server-catalogs-changed', refreshEpisodeSummary)
+    }
+  }, [item, localWatchedEpisodes, localWatchDataEnabled, needsEpisodeSummary, primaryProgressProvider, sources, visible])
+
+  const posterDetailsReady = posterDetailsFallbackReady || watchedResolved && progressResolved && episodeSummaryResolved
+    && (!showCertification || Boolean(item.certification) || !visible || resolvedCertification?.key === certificationKey)
+  useEffect(() => {
+    if (!visible || !posterDetailsReady) return
+    const poster = markerRef.current?.closest<HTMLElement>('.discover-poster-fade')
+    if (!poster) return
+    poster.dataset.posterStatusReady = 'true'
+    window.dispatchEvent(new Event('aurales:discover-poster-status-ready'))
+  }, [posterDetailsReady, visible])
+
+  const watchedCheckmark = <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" strokeWidth="2" /><path d="m8 12 2.5 2.5L16.5 9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+  const watchedMarker = !showWatched ? null
+    : style === 'line' && !showAsCheckmark
+      ? <span className={`discover-poster-watch-mark discover-poster-watch-mark--line${watched ? '' : ' is-pending'}`} aria-label={watched ? 'Watched' : undefined} title={watched ? 'Watched' : undefined} />
+      : style === 'symbol'
+        ? <span className={`discover-poster-watch-mark discover-poster-watch-mark--symbol${watched ? '' : ' is-pending'}`} aria-label={watched ? 'Watched' : undefined} title={watched ? 'Watched' : undefined}><svg viewBox="0 0 24 24" aria-hidden="true">{showAsCheckmark ? <><circle cx="12" cy="12" r="10" fill="white" /><path d="m7.5 12.2 3 3L17 8.8" fill="none" stroke="#111" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></> : <circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" strokeWidth="2" />}</svg></span>
+        : <span className={`discover-poster-watch-mark${style === 'tag' ? ' discover-poster-watch-mark--tag' : style === 'badge' ? ' discover-poster-watch-mark--badge' : ''}${watched ? '' : ' is-pending'}`} aria-label={watched ? 'Watched' : undefined} title={watched ? 'Watched' : undefined}>{showAsCheckmark && watchedCheckmark}<span className={showAsCheckmark ? 'hidden sm:inline' : ''}>Watched</span></span>
+  const episodeWatched = episodeSummary?.total != null
+    ? Math.min(episodeSummary.total, episodeSummary.watched)
+    : episodeSummary?.watched || 0
+  const episodesLeft = episodeSummary?.total != null
+    ? Math.max(0, episodeSummary.total - episodeWatched)
+    : undefined
+  const progressIds = [item.id, item.imdbId, item.tmdbId, item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined,
+    item.tvdbId, item.malId, item.malId != null ? `mal-${item.malId}` : undefined,
+    item.anilistId, item.anilistId != null ? `anilist-${item.anilistId}` : undefined].filter((value) => value != null).map(String)
+  const normalizedTitle = item.title.normalize('NFKD').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+  let progressPct: number | undefined
+  let localRemainingSeconds: number | undefined
+  if (localWatchDataEnabled) {
+    for (const [key, entry] of watchProgress) {
+      if (entry.completed || entry.durationSeconds <= 0 || (entry.mediaType === 'movie' ? 'movie' : 'series') !== item.type) continue
+      const aliases = [key, entry.id, entry.mediaId, entry.imdbId, entry.tmdbId,
+        entry.tmdbId != null ? `tmdb-${entry.tmdbId}` : undefined].filter((value) => value != null).map(String)
+      const entryTitle = entry.title?.normalize('NFKD').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+      const matches = aliases.some((alias) => progressIds.includes(alias) || progressIds.some((id) => alias.startsWith(`${id}:`)))
+        || Boolean(normalizedTitle && normalizedTitle === entryTitle)
+      if (!matches) continue
+      const pct = Math.max(0, Math.min(100, entry.progressSeconds / entry.durationSeconds * 100))
+      if (pct > (progressPct ?? 0)) {
+        progressPct = pct
+        localRemainingSeconds = Math.max(0, entry.durationSeconds - entry.progressSeconds)
+      }
+    }
+  }
+  const titleKey = normalizedTitle ? `title:${item.type}:${normalizedTitle}` : undefined
+  const serviceKeys = progressIds.map((id) => `${item.type}:${id}`)
+  if (titleKey) serviceKeys.push(titleKey)
+  for (const key of serviceKeys) {
+    const pct = serviceProgress.get(key)
+    if (pct != null && pct > (progressPct ?? 0)) progressPct = pct
+  }
+  let serviceRemainingSeconds: number | undefined
+  for (const key of serviceKeys) {
+    const candidate = serviceTimeLeft.get(key)
+    if (candidate && (!serviceRemainingSeconds || candidate.pct >= (progressPct ?? 0))) serviceRemainingSeconds = candidate.remainingSeconds
+  }
+  const posterProgressPct = posterSettings.splitEpisodeProgress && item.type === 'series'
+    && episodeSummary?.total ? Math.min(100, episodeWatched / episodeSummary.total * 100) : progressPct
+  const displayedProgress = !watched && showProgress && posterProgressPct != null && posterProgressPct > 2
+    ? posterProgressPct : undefined
+  const remainingSeconds = localRemainingSeconds ?? serviceRemainingSeconds
+  const formatTimeLeft = (seconds: number) => {
+    const minutes = Math.max(0, Math.ceil(seconds / 60))
+    if (minutes < 60) return `${minutes}m`
+    const hours = Math.floor(minutes / 60)
+    const rest = minutes % 60
+    return rest ? `${hours}h ${rest}m` : `${hours}h`
+  }
+  const genre = item.genres?.[0]
+    || (item.genreIds?.[0] != null
+      ? (item.isAnime ? GENRE_MAP_ANIME[item.genreIds[0]] : item.type === 'series' ? GENRE_MAP_TV[item.genreIds[0]] : GENRE_MAP_MOVIE[item.genreIds[0]])
+      : undefined)
+  const ageRating = showCertification ? item.certification || (resolvedCertification?.key === certificationKey ? resolvedCertification.value : undefined) : undefined
+  const visibleDetails = getPosterVisibleDetails({ genre: showGenre && Boolean(genre), rating: showRating && Boolean(rating), ageRating: Boolean(ageRating) })
+  const captionGenre = visibleDetails.genre ? genre : undefined
+  const captionRating = visibleDetails.rating ? rating : undefined
+  const details = [
+    visibleDetails.ageRating ? ageRating : undefined,
+    showEpisodes && episodesLeft != null ? `${episodesLeft} episodes left` : undefined,
+    showEpisodesWatched && episodeSummary && (episodeSummary.total != null || episodeWatched > 0)
+      ? episodeSummary.total != null ? `${episodeWatched}/${episodeSummary.total} watched` : `${episodeWatched} watched`
+      : undefined,
+    showNextEpisode && episodeSummary?.nextEpisode ? `Next ${episodeSummary.nextEpisode}` : undefined,
+    showTimeLeft && remainingSeconds != null ? `${formatTimeLeft(remainingSeconds)} left` : undefined,
+  ].filter(Boolean)
+  const progressSegments = item.type === 'series' && posterSettings.splitEpisodeProgress
+    ? getPosterEpisodeSegmentCount(episodeSummary?.total)
+    : 0
+  const segmentFill = progressSegments > 0 && episodeSummary?.total
+    ? Math.max(0, Math.min(progressSegments, episodeWatched / episodeSummary.total * progressSegments))
+    : 0
+  const progressPlacement = posterSettings.progressPlacement
+  const progressBar = displayedProgress == null ? null : progressSegments > 0
+    ? <span className={`discover-poster-segment-progress discover-poster-segment-progress--${progressPlacement}`} role="progressbar" aria-label="Episodes watched" aria-valuemin={0} aria-valuemax={episodeSummary?.total} aria-valuenow={episodeWatched}>{Array.from({ length: progressSegments }, (_, index) => <span key={index} style={{ background: segmentFill >= index + 1 ? '#fff' : segmentFill > index ? `linear-gradient(to right,#fff ${(segmentFill - index) * 100}%,rgba(255,255,255,.42) ${(segmentFill - index) * 100}%)` : 'rgba(255,255,255,.42)' }} />)}</span>
+    : <span className={`discover-poster-progress discover-poster-progress--${progressPlacement}`} role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(displayedProgress)}><span style={{ width: `${displayedProgress}%` }} /></span>
+  const progressRing = posterSettings.progressPlacement === 'around-status' && displayedProgress != null
+    ? <span className="discover-poster-progress-ring"><span className="discover-poster-progress-ring__status">{watched
+      ? <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="white" /><path d="m7.5 12.2 3 3L17 8.8" fill="none" stroke="#111" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>}</span><svg className="discover-poster-progress-ring__outline" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="15" fill="none" stroke="rgba(255,255,255,.42)" strokeWidth="2.5" /><circle cx="18" cy="18" r="15" fill="none" stroke="#fff" strokeWidth="2.5" strokeDasharray={`${displayedProgress * .9425} 94.25`} strokeLinecap="round" /></svg></span>
+    : null
+  const lineMarker = style === 'line' && !showAsCheckmark ? watchedMarker : null
+  const footerMarker = lineMarker ? null : watchedMarker
+  const hasCaption = Boolean(progressRing || footerMarker || showFavorite && favorite || captionGenre || captionRating)
+  const footer = hasCaption ? <PosterFooterCaption
+    alignment={contentAlignment}
+    className="discover-poster-caption-row"
+    status={progressRing || footerMarker}
+    favorite={showFavorite && favorite ? <span className="text-sm" aria-label="In favorites" title="In favorites">♥</span> : undefined}
+    genre={captionGenre}
+    showSeparator={!progressRing && !footerMarker}
+    rating={captionRating ? <><svg className="h-3 w-3 shrink-0 fill-current" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" /></svg>{captionRating}</> : undefined}
+  /> : undefined
+  return <>
+    <span ref={markerRef} className={`discover-poster-probe${watchedMarker ? '' : ' is-pending'}`} aria-hidden="true" />
+    {lineMarker}
+    {(details.length > 0 || showProgress && posterSettings.progressPlacement === 'under-details' && progressBar) && <span className={`discover-poster-details discover-poster-details--${contentAlignment}`}>{details.map((detail) => <span key={detail}>{detail}</span>)}{showProgress && posterSettings.progressPlacement === 'under-details' && progressBar}</span>}
+    <PosterBottomStack
+      className={`poster-bottom-stack--${contentAlignment}`}
+      logo={logo}
+      footer={footer}
+      bottomProgress={showProgress && posterSettings.progressPlacement === 'along-bottom' ? progressBar : undefined}
+    />
+  </>
+}
 
 
 const GENRE_MAP_MOVIE: Record<number, string> = {
@@ -69,6 +417,7 @@ const DISCOVERY_MOODS = [
   { id: 'edge-of-seat', label: 'Edge of Your Seat', genres: [28, 53, 80, 27, 9648, 10759, 10768] },
   { id: 'mind-bending', label: 'Mind-Bending', genres: [878, 9648, 14, 53, 10765] },
 ] as const
+type DiscoveryContinuationKey = 'movies' | 'shows' | 'anime-movies' | 'anime-shows'
 
 export const SERVICE_PROVIDER_MAP: Record<string, { ids: number[]; name: string }> = {
   "Netflix": { ids: [8], name: "Netflix" },
@@ -173,7 +522,9 @@ function DiscoveryReveal({ children }: { children: import('react').ReactNode }) 
 }
 
 function revealDiscoveryArtwork(event: import('react').SyntheticEvent<HTMLImageElement>): void {
-  event.currentTarget.dataset.artworkLoaded = 'true'
+  const image = event.currentTarget
+  image.dataset.artworkLoaded = 'true'
+  image.dataset.artworkLoadedUrl = image.currentSrc || image.src
 }
 
 // Anime = explicitly flagged, or Japanese-language animation. Plain genre-16 animation
@@ -182,10 +533,10 @@ function isAnimeLike(entry: SearchResult): boolean {
   return Boolean(entry.isAnime || (entry.genreIds?.includes(16) && ['ja', 'zh', 'ko'].includes(entry.originalLanguage || '')))
 }
 
-function matchesDiscoverTab(entry: SearchResult, tab: DiscoverTab): boolean {
-  if (tab === 'anime') return isAnimeLike(entry)
-  if (tab === 'movies') return entry.type === 'movie' && !isAnimeLike(entry)
-  return entry.type === 'series' && !isAnimeLike(entry)
+function matchesDiscoverContent(entry: SearchResult, contentTypes: DiscoverContentType[]): boolean {
+  if (isAnimeLike(entry)) return contentTypes.includes('anime')
+  if (entry.type === 'movie') return contentTypes.includes('movies')
+  return contentTypes.includes('shows')
 }
 const FORCED_DISCOVERY_REFRESHES = new Set<string>()
 
@@ -314,6 +665,35 @@ function makeConfig(
   return config
 }
 
+function makeContentTypeConfigs(
+  contentTypes: DiscoverContentType[],
+  sortBy: string,
+  preferences: { region: string; minRating: number; includeAdult: boolean },
+  overrides: Partial<DiscoverConfig> = {},
+): DiscoverConfig[] {
+  const configs: DiscoverConfig[] = []
+  if (contentTypes.includes('movies')) {
+    configs.push(makeConfig('movie', sortBy, preferences, { ...overrides, excludeKeywords: overrides.excludeKeywords ?? ANIME_EXCLUDE_KEYWORDS }))
+  }
+  if (contentTypes.includes('shows')) {
+    configs.push(makeConfig('series', sortBy, preferences, { ...overrides, excludeKeywords: overrides.excludeKeywords ?? ANIME_EXCLUDE_KEYWORDS }))
+  }
+  if (contentTypes.includes('anime')) {
+    const animeOverrides: Partial<DiscoverConfig> = {
+      ...overrides,
+      // Use the API query only to constrain the anime source. Additional
+      // genre/mood filters are applied to results by the continuation matcher
+      // so an OR mood list does not accidentally require every genre.
+      includeGenres: ['16'],
+      genreMatchMode: 'AND',
+      originalLanguage: overrides.originalLanguage || 'ja',
+      excludeKeywords: overrides.excludeKeywords ?? HENTAI_EXCLUDE_KEYWORDS,
+    }
+    configs.push(makeConfig('movie', sortBy, preferences, animeOverrides), makeConfig('series', sortBy, preferences, animeOverrides))
+  }
+  return configs
+}
+
 function useDiscoverRow(config: DiscoverConfig, rowId: string, enabled = true, refreshNonce = 0, onLoadingChange?: (rowId: string, loading: boolean) => void, enrichResults = true) {
   const setCachedRow = useDiscoverStore((s) => s.setCachedRow)
 
@@ -408,6 +788,10 @@ export default function DiscoverPage() {
   const activeProfile = getActiveProfile()
   const tab = useDiscoverStore((s) => s.tab)
   const setTab = useDiscoverStore((s) => s.setTab)
+  const contentTypes = useDiscoverStore((s) => s.contentTypes)
+  const setContentTypes = useDiscoverStore((s) => s.setContentTypes)
+  const contentTypeKey = [...contentTypes].sort().join('+')
+  const continuationTabs: NonNullable<DiscoveryCatalogContinuation['tabs']> = contentTypes.map((type) => type === 'shows' ? 'series' : type)
   const persistedRankings = useDiscoverStore((s) => s.rankedSnapshots)
   const dailySnapshotMeta = useDiscoverStore((s) => s.dailySnapshotMeta)
   const catalogSetCache = useCatalogStore((s) => s.setCache)
@@ -434,7 +818,6 @@ export default function DiscoverPage() {
 
   const [feedback, setFeedback] = useState<RecommendationFeedback[]>(() => loadRecommendationFeedback())
   const [trendingSnapshot, setTrendingSnapshot] = useState<{ scope: string; items: SearchResult[] }>({ scope: '', items: [] })
-  const [bingeTrending, setBingeTrending] = useState<SearchResult[]>([])
   const [similarCandidates, setSimilarCandidates] = useState<RecommendationCandidate[]>([])
   const [watchedTasteMetadata, setWatchedTasteMetadata] = useState<NonNullable<import('../services/discovery/types').DiscoveryActivity['tasteMetadata']>>([])
   const [connectedActivity, setConnectedActivity] = useState<{ items: SearchResult[]; progress: import('../types').WatchProgress[]; ratings: Array<{item:SearchResult;rating:number}>; watchlist:DatedLibraryItem[]; rewatches:SearchResult[]; bingeItems:SearchResult[] }>({ items:[], progress:[], ratings:[], watchlist:[], rewatches:[], bingeItems:[] })
@@ -455,6 +838,7 @@ export default function DiscoverPage() {
   const [selectedSimilaritySectionId, setSelectedSimilaritySectionId] = useState<string | null>(null)
   const [tasteQuery, setTasteQuery] = useState('')
   const [bingeIndex, setBingeIndex] = useState(0)
+  const [weekendPlanIndex, setWeekendPlanIndex] = useState(0)
   const [selectedRuntimeBucketId, setSelectedRuntimeBucketId] = useState<(typeof DISCOVERY_RUNTIME_BUCKETS)[number]['id']>('long-night')
   const [selectedDiscoveryMoodId, setSelectedDiscoveryMoodId] = useState<(typeof DISCOVERY_MOODS)[number]['id']>('mind-bending')
   const [selectedPosterColor, setSelectedPosterColor] = useState<PosterColorGroup | 'all'>('all')
@@ -468,8 +852,8 @@ export default function DiscoverPage() {
   const moreToDiscoverItemsRef = useRef<SearchResult[]>([])
   const moreToDiscoverStatusRef = useRef<'idle' | 'loading' | 'error' | 'paused' | 'done'>('idle')
   const moreToDiscoverLoadingRef = useRef(false)
-  const moreToDiscoverPagesRef = useRef({ movie: 3, series: 3 })
-  const moreToDiscoverExhaustedRef = useRef({ movie: false, series: false })
+  const moreToDiscoverPagesRef = useRef<Record<DiscoveryContinuationKey, number>>({ movies: 3, shows: 3, 'anime-movies': 3, 'anime-shows': 3 })
+  const moreToDiscoverExhaustedRef = useRef<Record<DiscoveryContinuationKey, boolean>>({ movies: false, shows: false, 'anime-movies': false, 'anime-shows': false })
   const loadMoreDiscoveryRef = useRef<() => Promise<void>>(async () => undefined)
   const genrePicksRef = useRef<HTMLDivElement>(null)
   const surpriseButtonRef = useRef<HTMLButtonElement>(null)
@@ -507,7 +891,12 @@ export default function DiscoverPage() {
   const [heroLogoError,setHeroLogoError]=useState(false)
   const preferencesWereOpenRef = useRef(false)
   const [heroArt,setHeroArt]=useState<Record<string,{poster?:string;backdrop?:string;logo?:string}>>({})
+  const [resolvedPosterLogoLookups, setResolvedPosterLogoLookups] = useState<Record<string, boolean>>({})
+  const [failedPosterLogos, setFailedPosterLogos] = useState<Record<string, boolean>>({})
+  const [posterLogoLoadRevision, setPosterLogoLoadRevision] = useState(0)
+  const [posterDetailsLoadRevision, setPosterDetailsLoadRevision] = useState(0)
   const [loadedHeroBackdrop,setLoadedHeroBackdrop]=useState<string | null>(null)
+  const [loadedWeekendBackdrop,setLoadedWeekendBackdrop]=useState<string | null>(null)
   const [surpriseSpinning, setSurpriseSpinning] = useState(false)
   const [pickerRollDurationMs, setPickerRollDurationMs] = useState(520)
   const surpriseSpinningRef = useRef(false)
@@ -555,7 +944,13 @@ export default function DiscoverPage() {
     return () => window.removeEventListener('aurales:discovery-feedback', refreshFeedback)
   }, [])
 
-  const genreMap = tab === 'movies' ? GENRE_MAP_MOVIE : tab === 'series' ? GENRE_MAP_TV : GENRE_MAP_ANIME
+  const genreMap = useMemo(() => {
+    const combined: Record<number, string> = {}
+    if (contentTypes.includes('movies')) Object.assign(combined, GENRE_MAP_MOVIE)
+    if (contentTypes.includes('shows')) Object.assign(combined, GENRE_MAP_TV)
+    if (contentTypes.includes('anime')) Object.assign(combined, GENRE_MAP_ANIME)
+    return combined
+  }, [contentTypes])
   const genreOptions = useMemo(() => Object.entries(genreMap).map(([id, title]) => ({ id: Number(id), title })), [genreMap])
   const contentType = tab === 'movies' ? 'movie' : 'series'
   const preferences = useMemo(() => ({ region, minRating, includeAdult }), [region, minRating, includeAdult])
@@ -564,24 +959,25 @@ export default function DiscoverPage() {
   // signature in every row key so a provider/language/genre change cannot
   // silently reuse results fetched for the previous query.
   const discoveryPrefsKey = opaqueScope(prefsSignature(prefs))
-  const discoveryQueryKey = `${preferenceKey}-${discoveryPrefsKey}`
+  const discoveryQueryKey = `${preferenceKey}-${discoveryPrefsKey}-${contentTypeKey}`
   useEffect(() => { setSelectedPosterColor('all') }, [tab, discoveryQueryKey])
-  const continuationScope = `${tab}:${discoveryQueryKey}`
+  const continuationScope = `${contentTypeKey}:${discoveryQueryKey}`
   useEffect(() => {
     moreToDiscoverScopeRef.current = continuationScope
     moreToDiscoverItemsRef.current = []
     moreToDiscoverStatusRef.current = 'idle'
     moreToDiscoverLoadingRef.current = false
-    moreToDiscoverPagesRef.current = { movie: 3, series: 3 }
-    moreToDiscoverExhaustedRef.current = tab === 'anime'
-      ? { movie: false, series: false }
-      : tab === 'movies'
-        ? { movie: false, series: true }
-        : { movie: true, series: false }
+    moreToDiscoverPagesRef.current = { movies: 3, shows: 3, 'anime-movies': 3, 'anime-shows': 3 }
+    moreToDiscoverExhaustedRef.current = {
+      movies: !contentTypes.includes('movies'),
+      shows: !contentTypes.includes('shows'),
+      'anime-movies': !contentTypes.includes('anime'),
+      'anime-shows': !contentTypes.includes('anime'),
+    }
     setMoreToDiscover([])
     setMoreToDiscoverStatus('idle')
-  }, [continuationScope, tab])
-  const trendingScope = `${tab}:${discoveryQueryKey}:week`
+  }, [continuationScope, contentTypes])
+  const trendingScope = `${contentTypeKey}:${discoveryQueryKey}:week`
   const currentTrending = useMemo(() => trendingSnapshot.scope === trendingScope ? trendingSnapshot.items : [], [trendingSnapshot, trendingScope])
   // A daily snapshot is stable for an unchanged taste profile, but connected
   // watchlists and playback history can hydrate after the first render. Include
@@ -599,7 +995,7 @@ export default function DiscoverPage() {
   // Snapshots are durable per person and Berlin date.  Switching away and
   // back therefore restores that profile's frozen daily Discover ranking,
   // updated when its local or connected taste signals have changed.
-  const dailySnapshotScope = `${getActiveProfileId()}:${tab}:${mode}:${discoveryQueryKey}:${accountScope}:${personalizationScope}`
+  const dailySnapshotScope = `${getActiveProfileId()}:${contentTypeKey}:${mode}:${discoveryQueryKey}:${accountScope}:${personalizationScope}`
   const dailySnapshotKey = makeDailySnapshotKey(berlinDateKey, dailySnapshotScope)
   const dailySnapshot = persistedRankings[dailySnapshotKey]
   const hasDailySnapshot = Boolean(dailySnapshot?.length && dailySnapshotMeta[dailySnapshotKey]?.algorithmVersion === DISCOVERY_ALGORITHM_VERSION)
@@ -618,6 +1014,9 @@ export default function DiscoverPage() {
     `discover-gems-${tab}-${discoveryQueryKey}`,
     `discover-quick-${tab}-${discoveryQueryKey}`,
     `discover-for-you-${tab}-${tasteGenre || 'starter'}-${discoveryQueryKey}`,
+    ...(contentTypes.includes('movies') ? [`discover-mix-movies-${discoveryQueryKey}`] : []),
+    ...(contentTypes.includes('shows') ? [`discover-mix-shows-${discoveryQueryKey}`] : []),
+    ...(contentTypes.includes('anime') ? [`discover-mix-anime-shows-${discoveryQueryKey}`, `discover-mix-anime-movies-${discoveryQueryKey}`] : []),
     ...(tab === 'anime' ? [`discover-anime-movies-${discoveryQueryKey}`, `discover-anime-movies-top-${discoveryQueryKey}`] : []),
   ]
 
@@ -630,25 +1029,25 @@ export default function DiscoverPage() {
   )
   useEffect(() => {
     let cancelled = false
-    getTrendingTmdb(contentType, 'week')
-      .then((items) => {
-        if (!cancelled) setTrendingSnapshot({ scope: trendingScope, items: items.map(applySearchResultArt) })
+    const sourceTypes = [
+      ...(contentTypes.includes('movies') || contentTypes.includes('anime') ? ['movie' as const] : []),
+      ...(contentTypes.includes('shows') || contentTypes.includes('anime') ? ['series' as const] : []),
+    ]
+    Promise.all(sourceTypes.map((type) => getTrendingTmdb(type, 'week')))
+      .then((sources) => {
+        if (cancelled) return
+        const unique = new Map<string, SearchResult>()
+        for (const item of interleaveLiveTrendSources(sources)) {
+          if (!matchesDiscoverContent(item, contentTypes)) continue
+          const key = mediaIdentity(item)
+          if (!unique.has(key)) unique.set(key, item)
+        }
+        setTrendingSnapshot({ scope: trendingScope, items: [...unique.values()].map(applySearchResultArt) })
       })
       .catch(() => undefined)
       .finally(() => { if (!cancelled) setTrendingReadyScope(trendingScope) })
     return () => { cancelled = true }
-  }, [contentType, trendingScope])
-  useEffect(() => {
-    let cancelled = false
-    if (tab !== 'movies') {
-      setBingeTrending([])
-      return () => { cancelled = true }
-    }
-    getTrendingTmdb('series', 'week')
-      .then((items) => { if (!cancelled) setBingeTrending(items.map(applySearchResultArt)) })
-      .catch(() => { if (!cancelled) setBingeTrending([]) })
-    return () => { cancelled = true }
-  }, [tab])
+  }, [contentTypes, trendingScope])
   const topRated = useDiscoverRow(
     makeConfig(contentType, 'vote_average.desc', preferences, {
       voteCountMin: tab === 'anime' ? 150 : 500,
@@ -715,6 +1114,26 @@ export default function DiscoverPage() {
     refreshNonce,
     reportDiscoveryRowLoading,
   )
+  const mixedMovies = useDiscoverRow(
+    makeConfig('movie', 'popularity.desc', preferences, { voteAverageMin: Math.max(6, minRating), voteCountMin: 100, excludeKeywords: ANIME_EXCLUDE_KEYWORDS }),
+    `discover-mix-movies-${discoveryQueryKey}`,
+    contentTypes.includes('movies'), refreshNonce, reportDiscoveryRowLoading,
+  )
+  const mixedShows = useDiscoverRow(
+    makeConfig('series', 'popularity.desc', preferences, { voteAverageMin: Math.max(6, minRating), voteCountMin: 100, excludeKeywords: ANIME_EXCLUDE_KEYWORDS }),
+    `discover-mix-shows-${discoveryQueryKey}`,
+    contentTypes.includes('shows'), refreshNonce, reportDiscoveryRowLoading,
+  )
+  const mixedAnimeShows = useDiscoverRow(
+    makeConfig('series', 'popularity.desc', preferences, { includeGenres: ['16'], genreMatchMode: 'AND', originalLanguage: 'ja', voteCountMin: 50, excludeKeywords: HENTAI_EXCLUDE_KEYWORDS }),
+    `discover-mix-anime-shows-${discoveryQueryKey}`,
+    contentTypes.includes('anime'), refreshNonce, reportDiscoveryRowLoading,
+  )
+  const mixedAnimeMovies = useDiscoverRow(
+    makeConfig('movie', 'popularity.desc', preferences, { includeGenres: ['16'], genreMatchMode: 'AND', originalLanguage: 'ja', voteCountMin: 50, excludeKeywords: HENTAI_EXCLUDE_KEYWORDS }),
+    `discover-mix-anime-movies-${discoveryQueryKey}`,
+    contentTypes.includes('anime'), refreshNonce, reportDiscoveryRowLoading,
+  )
   const forYou = useDiscoverRow(
     makeConfig(contentType, 'popularity.desc', preferences, {
       includeGenres: tab === 'anime'
@@ -740,7 +1159,7 @@ export default function DiscoverPage() {
       excludeKeywords: ANIME_EXCLUDE_KEYWORDS,
     }),
     `discover-binge-series-${discoveryQueryKey}`,
-    tab === 'movies',
+    contentTypes.includes('shows') || contentTypes.includes('anime'),
     refreshNonce,
     reportDiscoveryRowLoading,
   )
@@ -882,11 +1301,15 @@ export default function DiscoverPage() {
     ...hiddenGems.map((item) => recommendationCandidate(item,'tmdb-discover')),
     ...quickWatches.map((item) => recommendationCandidate(item,'tmdb-discover',{runtimeMinutes:item.runtime||(contentType==='movie'?95:30)})),
     ...(tab === 'anime' ? [...animeMovies, ...animeMoviesTop].map((item) => recommendationCandidate(item,'tmdb-discover')) : []),
+    ...mixedMovies.map((item) => recommendationCandidate(item, 'tmdb-discover')),
+    ...mixedShows.map((item) => recommendationCandidate(item, 'tmdb-discover')),
+    ...mixedAnimeShows.map((item) => recommendationCandidate({ ...item, isAnime: true }, 'tmdb-discover')),
+    ...mixedAnimeMovies.map((item) => recommendationCandidate({ ...item, isAnime: true }, 'tmdb-discover')),
     ...similarCandidates,
-  ], [forYou, trending, currentTrending, topRated, hiddenGems, quickWatches, animeMovies, animeMoviesTop, similarCandidates, contentType, tab])
+  ], [forYou, trending, currentTrending, topRated, hiddenGems, quickWatches, animeMovies, animeMoviesTop, mixedMovies, mixedShows, mixedAnimeShows, mixedAnimeMovies, similarCandidates, contentType, tab])
   const filteredCandidates = useMemo(() => {
-    return candidates.filter((c) => matchesDiscoverTab(c.item, tab) && candidatePassesPrefs(c.item, prefs))
-  }, [candidates, prefs, tab])
+    return candidates.filter((c) => matchesDiscoverContent(c.item, contentTypes) && candidatePassesPrefs(c.item, prefs))
+  }, [candidates, contentTypes, prefs])
 
   const liveRanked = useMemo(() => {
     const weights = prefsWeights(prefs)
@@ -914,8 +1337,8 @@ export default function DiscoverPage() {
     [persistedRankings, dailySnapshotMeta, dailySnapshotScope],
   )
   const validRankedSnapshot = useMemo(
-    () => dailySnapshot?.filter((entry) => matchesDiscoverTab(entry.item, tab)),
-    [dailySnapshot, tab],
+    () => dailySnapshot?.filter((entry) => matchesDiscoverContent(entry.item, contentTypes)),
+    [dailySnapshot, contentTypes],
   )
   const snapshotIsValid = Boolean(dailySnapshot && dailySnapshotMeta[dailySnapshotKey]?.algorithmVersion === DISCOVERY_ALGORITHM_VERSION && validRankedSnapshot?.length === dailySnapshot.length && dailySnapshot.length > 0)
   const recommendationSourcesReady = discoverySourcesSettled(recommendationRowIds, discoveryRowLoads, [
@@ -923,7 +1346,7 @@ export default function DiscoverPage() {
     similarReadyScope === similarScope,
     connectedReadyScope === accountScope,
   ])
-  const discoveryWaitScope = `${tab}:${discoveryQueryKey}:${mode}`
+  const discoveryWaitScope = `${contentTypeKey}:${discoveryQueryKey}:${mode}`
   useLayoutEffect(() => {
     // Wait for the real source state instead of replacing skeletons with an
     // error after an arbitrary four seconds. Keep a hard bound for stalled
@@ -939,16 +1362,16 @@ export default function DiscoverPage() {
   const initialWaitComplete = discoverySettledScope === discoveryWaitScope
   const ranked = useMemo(() => snapshotIsValid
     ? applyRecommendationFeedback(validRankedSnapshot!, feedback.filter((entry) => entry.createdAt > (dailySnapshotMeta[dailySnapshotKey]?.generatedAt ?? 0)))
-    : fallbackRankedSnapshot?.filter((entry) => matchesDiscoverTab(entry.item, tab))?.length
-      ? applyRecommendationFeedback(fallbackRankedSnapshot.filter((entry) => matchesDiscoverTab(entry.item, tab)), feedback)
+    : fallbackRankedSnapshot?.filter((entry) => matchesDiscoverContent(entry.item, contentTypes))?.length
+      ? applyRecommendationFeedback(fallbackRankedSnapshot.filter((entry) => matchesDiscoverContent(entry.item, contentTypes)), feedback)
       : liveRanked,
-  [snapshotIsValid, validRankedSnapshot, feedback, dailySnapshotMeta, dailySnapshotKey, fallbackRankedSnapshot, tab, liveRanked])
+  [snapshotIsValid, validRankedSnapshot, feedback, dailySnapshotMeta, dailySnapshotKey, fallbackRankedSnapshot, contentTypes, liveRanked])
   // A persisted provider snapshot can briefly outlive a content-tab switch
   // while its replacement loads. Keep every Discovery surface scoped to the
   // active tab so another media type never flashes into the recommendations.
-  const snapshotTabRanked = useMemo(() => ranked.filter((entry) => matchesDiscoverTab(entry.item, tab)), [ranked, tab])
+  const snapshotTabRanked = useMemo(() => ranked.filter((entry) => matchesDiscoverContent(entry.item, contentTypes)), [ranked, contentTypes])
   const currentTrendingRanked = useMemo(() => {
-    const sourceItems = currentTrending.filter((item) => item.poster && matchesDiscoverTab(item, tab) && candidatePassesPrefs(item, prefs))
+    const sourceItems = currentTrending.filter((item) => item.poster && matchesDiscoverContent(item, contentTypes) && candidatePassesPrefs(item, prefs))
     return orderRecommendationsBySource(rankCandidates(
       sourceItems.map((item) => recommendationCandidate(item, 'tmdb-trending')),
       tasteProfile,
@@ -963,7 +1386,7 @@ export default function DiscoverPage() {
   // Preserve the public weekly chart's actual feed order for the Spotlight,
   // OR TRY, Top 10 boosts and the randomizer. The popularity field is a noisy
   // per-title signal and must not reorder a rank supplied by the live source.
-  [activity, currentTrending, feedback, impressions, mode, prefs, rankingNow, tab, tasteProfile])
+  [activity, currentTrending, contentTypes, feedback, impressions, mode, prefs, rankingNow, tasteProfile])
   const tabRanked = useMemo(() => reconcileTrendingSignals(
     snapshotTabRanked,
     currentTrendingRanked,
@@ -1053,16 +1476,18 @@ export default function DiscoverPage() {
   const viewState = discoveryViewState(tabRanked.length, initialWaitComplete, currentTrendingRanked.length)
   const loadMoreDiscovery = useCallback(async () => {
     if (moreToDiscoverLoadingRef.current || moreToDiscoverStatusRef.current === 'done' || moreToDiscoverStatusRef.current === 'error' || moreToDiscoverStatusRef.current === 'paused') return
-    const requestScope = `${tab}:${discoveryQueryKey}`
+    const requestScope = `${contentTypeKey}:${discoveryQueryKey}`
     if (moreToDiscoverScopeRef.current !== requestScope) return
 
-    const sources: Array<{ type: 'movie' | 'series'; config: DiscoverConfig }> = tab === 'anime'
-      ? [
-        { type: 'series', config: makeConfig('series', 'popularity.desc', preferences, { originalLanguage: 'ja', includeGenres: ['16'], genreMatchMode: 'AND', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS }) },
-        { type: 'movie', config: makeConfig('movie', 'popularity.desc', preferences, { originalLanguage: 'ja', includeGenres: ['16'], genreMatchMode: 'AND', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS }) },
-      ]
-      : [{ type: contentType, config: makeConfig(contentType, 'popularity.desc', preferences, { excludeKeywords: ANIME_EXCLUDE_KEYWORDS }) }]
-    const activeSources = sources.filter(({ type }) => !moreToDiscoverExhaustedRef.current[type])
+    const sources: Array<{ key: DiscoveryContinuationKey; type: 'movie' | 'series'; config: DiscoverConfig }> = [
+      ...(contentTypes.includes('movies') ? [{ key: 'movies' as const, type: 'movie' as const, config: makeConfig('movie', 'popularity.desc', preferences, { excludeKeywords: ANIME_EXCLUDE_KEYWORDS }) }] : []),
+      ...(contentTypes.includes('shows') ? [{ key: 'shows' as const, type: 'series' as const, config: makeConfig('series', 'popularity.desc', preferences, { excludeKeywords: ANIME_EXCLUDE_KEYWORDS }) }] : []),
+      ...(contentTypes.includes('anime') ? [
+        { key: 'anime-shows' as const, type: 'series' as const, config: makeConfig('series', 'popularity.desc', preferences, { originalLanguage: 'ja', includeGenres: ['16'], genreMatchMode: 'AND', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS }) },
+        { key: 'anime-movies' as const, type: 'movie' as const, config: makeConfig('movie', 'popularity.desc', preferences, { originalLanguage: 'ja', includeGenres: ['16'], genreMatchMode: 'AND', excludeKeywords: HENTAI_EXCLUDE_KEYWORDS }) },
+      ] : []),
+    ]
+    const activeSources = sources.filter(({ key }) => !moreToDiscoverExhaustedRef.current[key])
     if (!activeSources.length) {
       moreToDiscoverStatusRef.current = 'done'
       setMoreToDiscoverStatus('done')
@@ -1073,10 +1498,10 @@ export default function DiscoverPage() {
     moreToDiscoverStatusRef.current = 'loading'
     setMoreToDiscoverStatus('loading')
     try {
-      const pageResults = await Promise.allSettled(activeSources.map(({ type, config }) => {
-        const page = Math.min(500, moreToDiscoverPagesRef.current[type] + 1)
-        return discoverTmdbPageWithCache(config, `discover-infinite-${tab}-${type}-${discoveryQueryKey}`, page)
-          .then((result) => ({ type, requestedPage: page, result }))
+      const pageResults = await Promise.allSettled(activeSources.map(({ key, type, config }) => {
+        const page = Math.min(500, moreToDiscoverPagesRef.current[key] + 1)
+        return discoverTmdbPageWithCache(config, `discover-infinite-${key}-${discoveryQueryKey}`, page)
+          .then((result) => ({ key, type, requestedPage: page, result }))
       }))
       if (moreToDiscoverScopeRef.current !== requestScope) return
       const pages = pageResults.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
@@ -1098,11 +1523,11 @@ export default function DiscoverPage() {
         ...moreToDiscoverItemsRef.current.map(mediaIdentity),
       ])
       const appendedCandidates: SearchResult[] = []
-      for (const { type, requestedPage, result } of pages) {
-        moreToDiscoverPagesRef.current[type] = requestedPage
-        if (requestedPage >= result.totalPages || result.items.length === 0) moreToDiscoverExhaustedRef.current[type] = true
+      for (const { key, requestedPage, result } of pages) {
+        moreToDiscoverPagesRef.current[key] = requestedPage
+        if (requestedPage >= result.totalPages || result.items.length === 0) moreToDiscoverExhaustedRef.current[key] = true
         for (const item of result.items) {
-          if (!matchesDiscoverTab(item, tab) || !candidatePassesPrefs(item, prefs)) continue
+          if (!matchesDiscoverContent(item, contentTypes) || !candidatePassesPrefs(item, prefs)) continue
           const key = mediaIdentity(item)
           if (!item.poster || key === heroMediaKey || existingIds.has(key)) continue
           existingIds.add(key)
@@ -1125,7 +1550,7 @@ export default function DiscoverPage() {
         moreToDiscoverItemsRef.current = [...moreToDiscoverItemsRef.current, ...appended]
         setMoreToDiscover(moreToDiscoverItemsRef.current)
       }
-      const hasActiveSources = sources.some(({ type }) => !moreToDiscoverExhaustedRef.current[type])
+      const hasActiveSources = sources.some(({ key }) => !moreToDiscoverExhaustedRef.current[key])
       // Keep the endless catalog moving when a provider page contains only
       // duplicates or entries excluded by the active tab/preferences. Returning
       // to idle recreates the sentinel observer, which immediately requests the
@@ -1141,7 +1566,7 @@ export default function DiscoverPage() {
     } finally {
       if (moreToDiscoverScopeRef.current === requestScope) moreToDiscoverLoadingRef.current = false
     }
-  }, [activity, contentType, currentTrendingRanked, discoveryQueryKey, feedback, heroMediaKey, impressions, mode, prefs, preferences, tabRanked, rankingNow, tab, tasteProfile])
+  }, [activity, contentTypeKey, contentTypes, currentTrendingRanked, discoveryQueryKey, feedback, heroMediaKey, impressions, mode, prefs, preferences, tabRanked, rankingNow, tasteProfile])
 
   useEffect(() => { loadMoreDiscoveryRef.current = loadMoreDiscovery }, [loadMoreDiscovery])
   useEffect(() => {
@@ -1266,6 +1691,35 @@ export default function DiscoverPage() {
     if (catalogItems.length < 5) return undefined
     return { id: 'trending-this-week', title: 'OR TRY', items: catalogItems.slice(0, 10), catalogItems }
   }, [currentTrendingRanked, heroItem, tabRanked, visiblePersonalizedSections])
+  // The video reference features a distinct Weekend Plan editorial card. Keep
+  // its rotating suggestion separate from both the hero spotlight and the
+  // Surprise Me roulette, while drawing from the same live, trend-first pool.
+  const weekendPlanCandidates = useMemo(() => {
+    const featuredKeys = new Set([
+      ...(heroMediaKey ? [heroMediaKey] : []),
+      ...visiblePersonalizedSections.flatMap((section) => section.items.map((entry) => mediaIdentity(entry.item))),
+      ...(trendingSection?.items.map((entry) => mediaIdentity(entry.item)) ?? []),
+      ...(activeSimilaritySection?.items.map((entry) => mediaIdentity(entry.item)) ?? []),
+    ])
+    const seen = new Set<string>()
+    const candidates = prioritizeLiveTrends(currentTrendingRanked, tabRanked).map((entry) => entry.item).filter((item) => {
+      const key = mediaIdentity(item)
+      if (!item.poster || !matchesDiscoverContent(item, contentTypes) || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    const distinctCandidates = candidates.filter((item) => !featuredKeys.has(mediaIdentity(item)))
+    // Lead with unseen titles, then retain featured alternatives so the
+    // weekend card can still rotate when the available catalog is small.
+    const unseenKeys = new Set(distinctCandidates.map(mediaIdentity))
+    return [
+      ...distinctCandidates,
+      ...candidates.filter((item) => mediaIdentity(item) !== heroMediaKey && !unseenKeys.has(mediaIdentity(item))),
+    ]
+  }, [activeSimilaritySection, contentTypes, currentTrendingRanked, heroMediaKey, tabRanked, trendingSection, visiblePersonalizedSections])
+  const activeWeekendPlanItem = weekendPlanCandidates.length
+    ? weekendPlanCandidates[weekendPlanIndex % weekendPlanCandidates.length]
+    : undefined
   const hiddenGemsSection = personalizedSections.find((section) => section.id === 'hidden-gems')
   const hiddenGemCatalogItems = useMemo(
     () => (hiddenGemsSection?.catalogItems ?? hiddenGemsSection?.items ?? []).map((entry) => entry.item).filter((item) => Boolean(item.poster)),
@@ -1274,15 +1728,18 @@ export default function DiscoverPage() {
   const hiddenGemItems = useMemo(() => hiddenGemCatalogItems.slice(0, 10), [hiddenGemCatalogItems])
   const timeTonightCatalogItems = useMemo(() => {
     const seen = new Set<string>()
-    const runtimeItems = tab === 'anime' ? [...timeTonight, ...timeTonightAnimeMovies] : timeTonight
+    const selectedRuntimeItems = tabRanked
+      .filter((entry) => entry.runtimeMinutes != null && entry.runtimeMinutes >= selectedRuntimeBucket.min && entry.runtimeMinutes <= selectedRuntimeBucket.max)
+      .map((entry) => entry.item)
+    const runtimeItems = [...timeTonight, ...timeTonightAnimeMovies, ...selectedRuntimeItems]
     const eligibleItems = runtimeItems.filter((item) => {
       const key = mediaIdentity(item)
-      if (!item.poster || seen.has(key)) return false
+      if (!item.poster || seen.has(key) || !matchesDiscoverContent(item, contentTypes)) return false
       seen.add(key)
       return true
     })
     return orderRuntimeCandidates(eligibleItems, currentTrendingRanked.map((entry) => entry.item))
-  }, [currentTrendingRanked, tab, timeTonight, timeTonightAnimeMovies])
+  }, [contentTypes, currentTrendingRanked, selectedRuntimeBucket.max, selectedRuntimeBucket.min, tabRanked, timeTonight, timeTonightAnimeMovies])
   const timeTonightItems = useMemo(() => timeTonightCatalogItems.slice(0, 10), [timeTonightCatalogItems])
   const timeTonightLoading = discoveryRowLoads[`discover-time-${tab}-${selectedRuntimeBucket.id}-${discoveryQueryKey}`]
     || (tab === 'anime' && discoveryRowLoads[`discover-time-anime-movies-${selectedRuntimeBucket.id}-${discoveryQueryKey}`])
@@ -1295,93 +1752,179 @@ export default function DiscoverPage() {
     const seen = new Set<string>()
     return prioritizeLiveTrends(currentTrendingRanked, tabRanked).map((entry) => entry.item).filter((item) => {
       const key = mediaIdentity(item)
-      if (!item.poster || featured.has(key) || seen.has(key) || !matchesDiscoverTab(item, tab)) return false
+      if (!item.poster || featured.has(key) || seen.has(key) || !matchesDiscoverContent(item, contentTypes)) return false
       seen.add(key)
       return true
     })
-  }, [currentTrendingRanked, heroItem, tab, tabRanked, trendingSection, visiblePersonalizedSections])
+  }, [contentTypes, currentTrendingRanked, heroItem, tabRanked, trendingSection, visiblePersonalizedSections])
   const bigScreenItems = useMemo(() => bigScreenCatalogItems.slice(0, 10), [bigScreenCatalogItems])
   const activeDiscoveryMood = DISCOVERY_MOODS.find((mood) => mood.id === selectedDiscoveryMoodId) ?? DISCOVERY_MOODS[2]
   const moodCatalogItems = useMemo(() => {
     const seen = new Set<string>()
     return prioritizeLiveTrends(currentTrendingRanked, tabRanked).map((entry) => entry.item).filter((item) => {
       const key = mediaIdentity(item)
-      if (!item.poster || !matchesDiscoverTab(item, tab) || seen.has(key) || !item.genreIds?.some((genreId) => activeDiscoveryMood.genres.some((id) => id === genreId))) return false
+      if (!item.poster || !matchesDiscoverContent(item, contentTypes) || seen.has(key) || !item.genreIds?.some((genreId) => activeDiscoveryMood.genres.some((id) => id === genreId))) return false
       seen.add(key)
       return true
     })
-  }, [activeDiscoveryMood, currentTrendingRanked, tab, tabRanked])
+  }, [activeDiscoveryMood, contentTypes, currentTrendingRanked, tabRanked])
   const moodItems = useMemo(() => moodCatalogItems.slice(0, 10), [moodCatalogItems])
   const bingeRecommendations = useMemo(() => {
-    const bingeRanked = tab === 'movies'
-      ? (() => {
-        const trendingSeries = bingeTrending.filter((item) => item.type === 'series' && !isAnimeLike(item) && candidatePassesPrefs(item, prefs))
-        const catalogSeries = bingeSeries.filter((item) => item.type === 'series' && !isAnimeLike(item) && candidatePassesPrefs(item, prefs))
-        const rankBingeItems = (items: SearchResult[], source: 'tmdb-trending' | 'tmdb-discover') => rankCandidates(
-          items.map((item) => recommendationCandidate(item, source)),
-          tasteProfile,
-          activity,
-          feedback,
-          mode,
-          rankingNow,
-          impressions,
-          prefsWeights(prefs),
-        )
-        const rankedTrends = rankBingeItems(trendingSeries, 'tmdb-trending')
-        const rankedCatalog = sortRecommendationsByPopularity(rankBingeItems(catalogSeries, 'tmdb-discover'))
-        return [...orderRecommendationsBySource(rankedTrends, trendingSeries), ...rankedCatalog]
-      })()
-      : (() => {
-        // Current live trend rank outranks any stale saved snapshot. Keep the
-        // remaining personalized catalog in popularity order behind it.
-        const liveTrendKeys = new Set(currentTrendingRanked.map((entry) => mediaIdentity(entry.item)))
-        const catalog = tabRanked.filter((entry) => !liveTrendKeys.has(mediaIdentity(entry.item)))
-        return [...currentTrendingRanked, ...sortRecommendationsByPopularity(catalog)]
-      })()
-    const matchesTab = (item: SearchResult) => item.type === 'series'
-      && (tab === 'anime' ? isAnimeLike(item) : !isAnimeLike(item))
+    if (!contentTypes.includes('shows') && !contentTypes.includes('anime')) return []
+    const allSeries = [...currentTrending, ...bingeSeries, ...tabRanked.map((entry) => entry.item)]
+    const unique = new Map<string, SearchResult>()
+    for (const item of allSeries) {
+      if (item.type !== 'series' || !matchesDiscoverContent(item, contentTypes) || !item.poster || !candidatePassesPrefs(item, prefs)) continue
+      const key = mediaIdentity(item)
+      if (!unique.has(key)) unique.set(key, item)
+    }
+    const bingeRanked = rankCandidates(
+      [...unique.values()].map((item) => recommendationCandidate(item, currentTrending.some((trend) => mediaIdentity(trend) === mediaIdentity(item)) ? 'tmdb-trending' : 'tmdb-discover')),
+      tasteProfile, activity, feedback, mode, rankingNow, impressions, prefsWeights(prefs),
+    )
     const seen = new Set<string>()
-    return bingeRanked.map((entry) => entry.item)
-      .filter((item) => matchesTab(item) && Boolean(item.poster))
+    // Keep this editorial series rail on the same public momentum rules as
+    // Spotlight and Surprise Me: current weekly TV trends lead, then popular
+    // catalog picks. Personal taste still filters the pool and affects ranking
+    // metadata, but an old high-affinity title should not bury what's hot now.
+    return prioritizeLiveTrends(
+      currentTrendingRanked.filter((entry) => entry.item.type === 'series'),
+      bingeRanked,
+    ).map((entry) => entry.item)
+      .filter((item) => item.type === 'series' && matchesDiscoverContent(item, contentTypes) && Boolean(item.poster))
       .filter((item) => {
         const key = mediaIdentity(item)
         if (seen.has(key)) return false
         seen.add(key)
         return true
       })
-      .slice(0, 5)
-  }, [activity, bingeSeries, bingeTrending, currentTrendingRanked, feedback, impressions, mode, prefs, rankingNow, tab, tabRanked, tasteProfile])
+  }, [activity, bingeSeries, contentTypes, currentTrending, currentTrendingRanked, feedback, impressions, mode, prefs, rankingNow, tabRanked, tasteProfile])
   const activeBingeItem = bingeRecommendations.length ? bingeRecommendations[bingeIndex % bingeRecommendations.length] : undefined
-  const [bingePosters, setBingePosters] = useState<Record<string, string>>({})
+  const bingeGalleryItems = useMemo(() => {
+    if (!activeBingeItem || bingeRecommendations.length < 2) return []
+    return Array.from({ length: Math.min(4, bingeRecommendations.length - 1) }, (_, index) =>
+      bingeRecommendations[(bingeIndex + index + 1) % bingeRecommendations.length]!,
+    )
+  }, [activeBingeItem, bingeIndex, bingeRecommendations])
+  const bingeArtworkItems = useMemo(() => activeBingeItem ? [activeBingeItem, ...bingeGalleryItems] : [], [activeBingeItem, bingeGalleryItems])
+  const [bingeArtwork, setBingeArtwork] = useState<Record<string, { poster?: string; backdrop?: string; logo?: string }>>({})
   const posterSize = useAppStore((state) => state.posterSize)
+  const posterArtworkSetting = useAppStore((state) => state.posterOverlay.artwork)
+  const posterFade = useAppStore((state) => state.posterOverlay.fade)
+  const posterColorMode = useAppStore((state) => state.posterOverlay.colorMode)
+  const posterContentAlignment = useAppStore((state) => state.posterOverlay.contentAlignment)
+  const [cleanDiscoverPosters, setCleanDiscoverPosters] = useState<Record<string, string | null>>({})
+  const [discoverPosterColors, setDiscoverPosterColors] = useState<Record<string, { r: number; g: number; b: number } | null>>({})
+  const [loadedDiscoverArtwork, setLoadedDiscoverArtwork] = useState<Record<string, boolean>>({})
+  const posterFadeStyleFor = (artworkUrl?: string) => {
+    const fadeAppearance = getPosterFadeAppearance(posterFade, posterColorMode, artworkUrl ? discoverPosterColors[artworkUrl] : undefined)
+    return {
+      '--discover-poster-fade-height': fadeAppearance.height,
+      '--discover-poster-fade': fadeAppearance.background,
+      '--discover-poster-content-alignment': posterContentAlignment,
+      '--discover-poster-object-position': posterContentAlignment === 'left' ? 'left center' : posterContentAlignment === 'right' ? 'right center' : 'center',
+    } as import('react').CSSProperties
+  }
+  const requestedDiscoverPosterColors = useRef(new Set<string>())
+  const revealDiscoverPosterWhenReady = (event: import('react').SyntheticEvent<HTMLImageElement>) => {
+    const image = event.currentTarget
+    const artworkUrl = image.currentSrc || image.src
+    const mediaKey = image.dataset.discoverMediaKey
+    const cleanArtworkReady = posterArtworkSetting !== 'poster' || !mediaKey || mediaKey in cleanDiscoverPosters
+    const logoLookupKey = image.dataset.logoLookupKey
+    const logoLookupReady = !logoLookupKey || resolvedPosterLogoLookups[logoLookupKey] === true
+    const posterContainer = image.closest<HTMLElement>('.discover-poster-fade')
+    const posterStatusReady = posterContainer?.dataset.posterStatusReady === 'true'
+    const titleLogo = image.parentElement?.querySelector<HTMLImageElement>('.discover-poster-title-logo')
+    const titleLogoReady = !titleLogo || titleLogo.dataset.titleLogoLoaded === 'true' || titleLogo.dataset.titleLogoFailed === 'true'
+    if ((posterColorMode !== 'artwork' || artworkUrl in discoverPosterColors) && cleanArtworkReady && logoLookupReady && posterStatusReady && titleLogoReady) {
+      revealDiscoveryArtwork(event)
+      setLoadedDiscoverArtwork((current) => current[artworkUrl] ? current : { ...current, [artworkUrl]: true })
+      return
+    }
+    image.dataset.artworkLoadedPending = 'true'
+  }
+  const markDiscoverTitleLogoLoaded = (event: React.SyntheticEvent<HTMLImageElement>) => {
+    event.currentTarget.dataset.titleLogoLoaded = 'true'
+    setPosterLogoLoadRevision((revision) => revision + 1)
+  }
+  const markDiscoverTitleLogoFailed = (event: React.SyntheticEvent<HTMLImageElement>) => {
+    event.currentTarget.dataset.titleLogoFailed = 'true'
+    const poster = event.currentTarget.closest<HTMLElement>('.discover-poster-fade')
+      ?.querySelector<HTMLImageElement>('img[data-logo-lookup-key]')
+    const lookupKey = poster?.dataset.logoLookupKey
+    if (lookupKey) setFailedPosterLogos((current) => current[lookupKey] ? current : { ...current, [lookupKey]: true })
+    setPosterLogoLoadRevision((revision) => revision + 1)
+  }
+  const selectDiscoverPosterArtwork = useCallback((poster?: string, backdrop?: string, cleanPoster?: string) => {
+    const selected = getPosterArtworkCandidate(posterArtworkSetting, poster, cleanPoster, backdrop)
+    if (!selected) return undefined
+    const usesBackdrop = posterArtworkSetting === 'backdrop' && Boolean(backdrop)
+    return cardArtworkUrl(selected, usesBackdrop ? 'landscape' : 'poster', posterSize)
+  }, [posterArtworkSetting, posterSize])
+  const artworkSettingsKey = useAppStore((state) => JSON.stringify([state.artProviders, state.customArtUrls, state.appManagedMetadata, state.fanartApiKey]))
+  const artworkCacheKey = useCallback((item: SearchResult) => `${artworkSettingsKey}:${mediaIdentity(item)}`, [artworkSettingsKey])
   useEffect(() => {
     let cancelled = false
     const resolvePosters = async () => {
-      const resolved = await Promise.all(bingeRecommendations.map(async (item) => {
-        const key = mediaIdentity(item)
+      const resolved = await Promise.all(bingeArtworkItems.map(async (item) => {
+        const key = artworkCacheKey(item)
         const displayItem = applySearchResultArt(item)
-        const customArt = getSearchResultCustomArt(item)
+        const customArt = await resolveSearchResultCustomArt(item)
         try {
           const providerArt = await resolveArtFromProviders(
             displayItem.type,
             { tmdbId: displayItem.tmdbId, tvdbId: displayItem.tvdbId, imdbId: displayItem.imdbId },
             Boolean(displayItem.isAnime),
-            'poster',
+            'all',
+            true,
           )
           const poster = customArt.poster || providerArt.poster || displayItem.poster || item.poster
-          return poster ? [key, cardArtworkUrl(poster, 'poster', posterSize)!] as const : null
+          const backdrop = customArt.backdrop || providerArt.backdrop || displayItem.backdrop || item.backdrop
+          const logo = customArt.logo || providerArt.logo || displayItem.logo || item.logo
+          return poster || backdrop || logo ? [key, {
+            poster: cardArtworkUrl(poster, 'poster', posterSize),
+            backdrop: cardArtworkUrl(backdrop, 'landscape', posterSize),
+            logo,
+          }] as const : null
         } catch {
           const poster = customArt.poster || displayItem.poster || item.poster
-          return poster ? [key, cardArtworkUrl(poster, 'poster', posterSize)!] as const : null
+          const backdrop = customArt.backdrop || displayItem.backdrop || item.backdrop
+          const logo = customArt.logo || displayItem.logo || item.logo
+          return poster || backdrop || logo ? [key, {
+            poster: cardArtworkUrl(poster, 'poster', posterSize),
+            backdrop: cardArtworkUrl(backdrop, 'landscape', posterSize),
+            logo,
+          }] as const : null
         }
       }))
-      if (!cancelled) setBingePosters(Object.fromEntries(resolved.filter((entry): entry is readonly [string, string] => Boolean(entry))))
+      if (!cancelled) {
+        const updates = Object.fromEntries(resolved.filter((entry): entry is readonly [string, { poster: string | undefined; backdrop: string | undefined; logo: string | undefined }] => entry !== null))
+        setBingeArtwork((current) => {
+          const changed = Object.entries(updates).some(([key, art]) =>
+            current[key]?.poster !== art.poster || current[key]?.backdrop !== art.backdrop || current[key]?.logo !== art.logo,
+          )
+          return changed ? { ...current, ...updates } : current
+        })
+        setResolvedPosterLogoLookups((current) => {
+          const keys = bingeArtworkItems.map((item) => artworkCacheKey(item))
+          if (keys.every((key) => current[key])) return current
+          return { ...current, ...Object.fromEntries(keys.map((key) => [key, true])) }
+        })
+      }
     }
     void resolvePosters()
     return () => { cancelled = true }
-  }, [bingeRecommendations, posterSize])
-  const bingePoster = (item: SearchResult) => bingePosters[mediaIdentity(item)] || cardArtworkUrl(applySearchResultArt(item).poster || item.poster, 'poster', posterSize)
+  }, [artworkCacheKey, artworkSettingsKey, bingeArtworkItems, posterSize])
+  const bingePoster = useCallback((item: SearchResult) => selectDiscoverPosterArtwork(
+    bingeArtwork[artworkCacheKey(item)]?.poster || cardArtworkUrl(applySearchResultArt(item).poster || item.poster, 'poster', posterSize),
+    bingeArtwork[artworkCacheKey(item)]?.backdrop || cardArtworkUrl(applySearchResultArt(item).backdrop || item.backdrop, 'landscape', posterSize),
+    cleanDiscoverPosters[mediaIdentity(item)] || undefined,
+  ), [artworkCacheKey, bingeArtwork, cleanDiscoverPosters, posterSize, selectDiscoverPosterArtwork])
+  const bingeLogo = (item: SearchResult) => bingeArtwork[artworkCacheKey(item)]?.logo || applySearchResultArt(item).logo || item.logo
+  const bingeBackdrop = (item: SearchResult) => bingeArtwork[artworkCacheKey(item)]?.backdrop || cardArtworkUrl(applySearchResultArt(item).backdrop || item.backdrop, 'landscape', posterSize)
   const activeBingeRating = formatDiscoveryRating(activeBingeItem?.rating)
+  const activeBingeLogo = activeBingeItem ? bingeLogo(activeBingeItem) : undefined
   const pickerPool = useMemo(() => {
     const seen = new Set<string>()
     // Live weekly trends lead the randomizer too; a still-valid daily snapshot
@@ -1480,7 +2023,7 @@ export default function DiscoverPage() {
     if (!tabRanked.length && !currentTrendingRanked.length) return []
     const query = tasteQuery.trim().toLocaleLowerCase()
     const seen = new Set<string>()
-    return [...currentTrendingRanked, ...tabRanked]
+    return buildTastePickerPool(currentTrendingRanked, tabRanked)
       .filter((entry) => {
         const key = mediaIdentity(entry.item)
         if (!entry.item.poster || key === heroMediaKey || pickedIds.includes(key) || seen.has(key)) return false
@@ -1490,36 +2033,118 @@ export default function DiscoverPage() {
       .map((entry) => entry.item)
   }, [currentTrendingRanked, heroMediaKey, pickedIds, tabRanked, tasteQuery])
   const tastePickCandidates = useMemo(() => tastePickPool.slice(0, 10 + pickOffset), [tastePickPool, pickOffset])
+  const discoveryArtworkItems = useMemo(() => {
+    const unique = new Map<string, SearchResult>()
+    for (const item of [activeWeekendPlanItem, ...tastePickCandidates, ...genreTiles.flatMap(({ items }) => items)]) {
+      if (!item) continue
+      unique.set(mediaIdentity(item), item)
+    }
+    return Array.from(unique.values())
+  }, [activeWeekendPlanItem, genreTiles, tastePickCandidates])
+  const [discoveryArtwork, setDiscoveryArtwork] = useState<Record<string, { poster?: string; backdrop?: string; logo?: string }>>({})
+  useEffect(() => {
+    let cancelled = false
+    const resolve = async () => {
+      const results: Array<[string, { poster?: string; backdrop?: string; logo?: string }]> = []
+      // Bound provider lookups so artwork enrichment does not starve catalogs.
+      for (let index = 0; index < discoveryArtworkItems.length; index += 4) {
+        const batch = discoveryArtworkItems.slice(index, index + 4)
+        const resolved = await Promise.all(batch.map(async (item): Promise<[string, { poster?: string; backdrop?: string; logo?: string }]> => {
+          const custom = await resolveSearchResultCustomArt(item)
+          const base = applySearchResultArt(item)
+          try {
+            const provider = await resolveArtFromProviders(
+              item.type === 'series' ? 'series' : 'movie',
+              { tmdbId: item.tmdbId, tvdbId: item.tvdbId, imdbId: item.imdbId },
+              Boolean(item.isAnime),
+              'all',
+              true,
+            )
+            return [mediaIdentity(item), {
+              poster: cardArtworkUrl(custom.poster || provider.poster || base.poster || item.poster, 'poster', posterSize),
+              backdrop: cardArtworkUrl(custom.backdrop || provider.backdrop || base.backdrop || item.backdrop, 'landscape', posterSize),
+              logo: custom.logo || provider.logo || base.logo || item.logo,
+            }]
+          } catch {
+            return [mediaIdentity(item), {
+              poster: cardArtworkUrl(custom.poster || base.poster || item.poster, 'poster', posterSize),
+              backdrop: cardArtworkUrl(custom.backdrop || base.backdrop || item.backdrop, 'landscape', posterSize),
+              logo: custom.logo || base.logo || item.logo,
+            }]
+          }
+        }))
+        results.push(...resolved)
+        if (cancelled) return
+      }
+      if (!cancelled) {
+        const updates = Object.fromEntries(results)
+        setDiscoveryArtwork((current) => {
+          const changed = Object.entries(updates).some(([key, art]) =>
+            current[key]?.poster !== art.poster || current[key]?.backdrop !== art.backdrop || current[key]?.logo !== art.logo,
+          )
+          return changed ? { ...current, ...updates } : current
+        })
+        setResolvedPosterLogoLookups((current) => {
+          const keys = discoveryArtworkItems.map((item) => artworkCacheKey(item))
+          if (keys.every((key) => current[key])) return current
+          return { ...current, ...Object.fromEntries(keys.map((key) => [key, true])) }
+        })
+      }
+    }
+    void resolve()
+    return () => { cancelled = true }
+  }, [artworkCacheKey, artworkSettingsKey, discoveryArtworkItems, posterSize])
+  const discoveryPoster = useCallback((item: SearchResult) => discoveryArtwork[mediaIdentity(item)]?.poster
+    || cleanDiscoverPosters[mediaIdentity(item)]
+    || cardArtworkUrl(applySearchResultArt(item).poster || item.poster, 'poster', posterSize), [cleanDiscoverPosters, discoveryArtwork, posterSize])
+  const discoveryBackdrop = useCallback((item: SearchResult) => discoveryArtwork[mediaIdentity(item)]?.backdrop
+    || cardArtworkUrl(applySearchResultArt(item).backdrop || item.backdrop, 'landscape', posterSize), [discoveryArtwork, posterSize])
+  const discoveryLogo = (item: SearchResult) => discoveryArtwork[mediaIdentity(item)]?.logo || applySearchResultArt(item).logo || item.logo
+  const discoverPosterTitleFallback = (item: SearchResult, posterUrl?: string, logo?: string, failed = false) => {
+    const lookupKey = artworkCacheKey(item)
+    if (!posterUrl || !loadedDiscoverArtwork[posterUrl] || !resolvedPosterLogoLookups[lookupKey] || (logo && !failed && !failedPosterLogos[lookupKey])) return null
+    return <span className="discover-poster-title-fallback">{item.title}</span>
+  }
   useEffect(() => { setPickerSelectionKey(null); setPickerLogoError(false); setHeroLogoError(false) }, [tab, mode, discoveryQueryKey])
   useEffect(() => { setSpotlightSelectionKey(null) }, [tab, mode, discoveryQueryKey])
   useEffect(() => { setHeroLogoError(false) }, [heroItem?.id])
   useEffect(() => { setPickerLogoError(false) }, [pickerItem?.id])
 
-  // Resolve the two editorial surfaces independently from the roulette.
+  // Resolve editorial artwork independently from the Surprise Me roulette.
   useEffect(() => {
     let cancelled = false
-    const featuredItems = [heroItem].filter((item): item is SearchResult => Boolean(item))
+    const featuredItems = [heroItem, activeWeekendPlanItem].filter((item): item is SearchResult => Boolean(item))
     void Promise.all(featuredItems.map(async (item) => {
-      const key = String(item.id)
-      if (heroArt[key]) return
+      const key = artworkCacheKey(item)
+      if (heroArt[key] || resolvedPosterLogoLookups[key]) return
       try {
-        const art = await resolveArtFromProviders(item.type === 'series' ? 'series' : 'movie', { tmdbId: item.tmdbId, tvdbId: item.tvdbId, imdbId: item.imdbId }, item.isAnime)
-        if (!cancelled) setHeroArt((prev) => prev[key] ? prev : { ...prev, [key]: art })
+        const [custom, art] = await Promise.all([
+          resolveSearchResultCustomArt(item),
+          resolveArtFromProviders(item.type === 'series' ? 'series' : 'movie', { tmdbId: item.tmdbId, tvdbId: item.tvdbId, imdbId: item.imdbId }, item.isAnime, 'all', true),
+        ])
+        if (!cancelled) setHeroArt((prev) => prev[key] ? prev : { ...prev, [key]: { ...art, ...custom } })
       } catch { /* provider artwork is optional */ }
+      finally {
+        if (!cancelled) setResolvedPosterLogoLookups((current) => current[key] ? current : { ...current, [key]: true })
+      }
     }))
     return () => { cancelled = true }
-  }, [heroItem, heroArt])
+  }, [activeWeekendPlanItem, artworkCacheKey, heroItem, heroArt, resolvedPosterLogoLookups])
 
   useEffect(() => {
     let cancelled = false
     if (!pickerOpen || !pickerItem || surpriseSpinning) return
-    const key = String(pickerItem.id)
-    if (heroArt[key]) return
-    resolveArtFromProviders(pickerItem.type === 'series' ? 'series' : 'movie', { tmdbId: pickerItem.tmdbId, tvdbId: pickerItem.tvdbId, imdbId: pickerItem.imdbId }, pickerItem.isAnime)
-      .then((art) => { if (!cancelled) setHeroArt((prev) => prev[key] ? prev : { ...prev, [key]: art }) })
+    const key = artworkCacheKey(pickerItem)
+    if (heroArt[key] || resolvedPosterLogoLookups[key]) return
+    Promise.all([
+      resolveSearchResultCustomArt(pickerItem),
+      resolveArtFromProviders(pickerItem.type === 'series' ? 'series' : 'movie', { tmdbId: pickerItem.tmdbId, tvdbId: pickerItem.tvdbId, imdbId: pickerItem.imdbId }, pickerItem.isAnime, 'all', true),
+    ])
+      .then(([custom, art]) => { if (!cancelled) setHeroArt((prev) => prev[key] ? prev : { ...prev, [key]: { ...art, ...custom } }) })
       .catch(() => undefined)
+      .finally(() => { if (!cancelled) setResolvedPosterLogoLookups((current) => current[key] ? current : { ...current, [key]: true }) })
     return () => { cancelled = true }
-  }, [heroArt, pickerItem, pickerOpen, surpriseSpinning])
+  }, [artworkCacheKey, heroArt, pickerItem, pickerOpen, resolvedPosterLogoLookups, surpriseSpinning])
 
   // Seed the catalog cache so "Show all" opens a full-screen view of a section like on Home
   useEffect(() => {
@@ -1710,27 +2335,134 @@ export default function DiscoverPage() {
   }
   const resetTastePicks = () => {
     const selected = tabRanked.map((entry) => entry.item).filter((item) => pickedIds.includes(mediaIdentity(item)))
-    setFeedback(resetTasteFeedback(selected))
+    const selectedFeedback = feedback.filter((entry) => entry.kind === 'more-like-this' && (pickedIds.includes(entry.mediaKey) || pickedIds.includes(mediaIdentity({ ...entry.item, provider: entry.item.provider || 'unknown' }))))
+    setFeedback(resetTasteFeedback([...selected, ...selectedFeedback.map((entry) => entry.item)], selectedFeedback.map((entry) => entry.mediaKey)))
     setPickedIds([])
     setPickOffset(0)
     try { localStorage.removeItem(pickStorageKey) } catch { /* use this session's selection */ }
   }
 
-  const handleTabChange = (nextTab: DiscoverTab) => {
-    setTab(nextTab)
+  const toggleContentType = (type: DiscoverContentType) => {
+    const next = toggleDiscoverContentType(contentTypes, type)
+    if (next === contentTypes) return
+    setContentTypes(next)
+    setTab(next.includes('movies') ? 'movies' : next.includes('shows') ? 'series' : 'anime')
     setSelectedGenreId(null)
   }
 
   const openItemDetail = (item: SearchResult, autoPlay = false) => navigate(item.type === 'movie' ? `/movie/${item.id}` : `/series/${item.id}`, { state: { ...item, autoPlay } })
   const openHeroDetail = (autoPlay = false) => { if (heroRecommendation) openItemDetail(heroRecommendation.item, autoPlay) }
-  const heroPoster = heroRecommendation ? (heroRecommendation.item.poster || heroArt[String(heroRecommendation.item.id)]?.poster || heroRecommendation.item.backdrop || heroArt[String(heroRecommendation.item.id)]?.backdrop) : undefined
-  const heroLogo = heroRecommendation ? (heroArt[String(heroRecommendation.item.id)]?.logo || heroRecommendation.item.logo) : undefined
-  const heroBackdrop = heroRecommendation ? (heroRecommendation.item.backdrop || heroArt[String(heroRecommendation.item.id)]?.backdrop || heroRecommendation.item.poster || heroArt[String(heroRecommendation.item.id)]?.poster) : undefined
+  const heroCustomArt = heroRecommendation ? getSearchResultCustomArt(heroRecommendation.item) : undefined
+  const heroPoster = heroRecommendation ? selectDiscoverPosterArtwork(
+    heroCustomArt?.poster || heroArt[artworkCacheKey(heroRecommendation.item)]?.poster || heroRecommendation.item.poster,
+    heroCustomArt?.backdrop || heroArt[artworkCacheKey(heroRecommendation.item)]?.backdrop || heroRecommendation.item.backdrop,
+    cleanDiscoverPosters[mediaIdentity(heroRecommendation.item)] || undefined,
+  ) : undefined
+  const heroLogo = heroRecommendation ? (heroArt[artworkCacheKey(heroRecommendation.item)]?.logo || heroRecommendation.item.logo) : undefined
+  const heroBackdrop = heroRecommendation ? cardArtworkUrl(heroCustomArt?.backdrop || heroArt[artworkCacheKey(heroRecommendation.item)]?.backdrop || heroRecommendation.item.backdrop || heroArt[artworkCacheKey(heroRecommendation.item)]?.poster || heroRecommendation.item.poster, 'landscape', posterSize) : undefined
   const heroRating = formatDiscoveryRating(heroRecommendation?.item.rating)
-  const pickerLogo = pickerRecommendation ? (heroArt[String(pickerRecommendation.item.id)]?.logo || pickerRecommendation.item.logo) : undefined
+  const weekendPlanCustomArt = activeWeekendPlanItem ? getSearchResultCustomArt(activeWeekendPlanItem) : undefined
+  const weekendPlanPoster = activeWeekendPlanItem ? selectDiscoverPosterArtwork(
+    weekendPlanCustomArt?.poster || heroArt[artworkCacheKey(activeWeekendPlanItem)]?.poster || activeWeekendPlanItem.poster,
+    weekendPlanCustomArt?.backdrop || heroArt[artworkCacheKey(activeWeekendPlanItem)]?.backdrop || activeWeekendPlanItem.backdrop,
+    cleanDiscoverPosters[mediaIdentity(activeWeekendPlanItem)] || undefined,
+  ) : undefined
+  const weekendPlanLogo = activeWeekendPlanItem ? heroArt[artworkCacheKey(activeWeekendPlanItem)]?.logo || activeWeekendPlanItem.logo : undefined
+  const weekendPlanBackdrop = activeWeekendPlanItem ? cardArtworkUrl(
+    weekendPlanCustomArt?.backdrop || heroArt[artworkCacheKey(activeWeekendPlanItem)]?.backdrop || activeWeekendPlanItem.backdrop || activeWeekendPlanItem.poster,
+    'landscape',
+    posterSize,
+  ) : undefined
+  const weekendPlanRating = formatDiscoveryRating(activeWeekendPlanItem?.rating)
+  const weekendPlanAccolade = activeWeekendPlanItem ? editorialAccolade({
+    type: activeWeekendPlanItem.type,
+    year: activeWeekendPlanItem.year,
+    releaseDate: activeWeekendPlanItem.releaseDate,
+    rating: activeWeekendPlanItem.rating,
+    voteCount: activeWeekendPlanItem.voteCount,
+  }) : null
+  const weekendPlanRuntime = activeWeekendPlanItem
+    ? tabRanked.find((entry) => mediaIdentity(entry.item) === mediaIdentity(activeWeekendPlanItem))?.runtimeMinutes
+      || currentTrendingRanked.find((entry) => mediaIdentity(entry.item) === mediaIdentity(activeWeekendPlanItem))?.runtimeMinutes
+      || activeWeekendPlanItem.runtime
+    : undefined
+  const pickerCustomArt = pickerRecommendation ? getSearchResultCustomArt(pickerRecommendation.item) : undefined
+  const pickerLogo = pickerRecommendation ? (heroArt[artworkCacheKey(pickerRecommendation.item)]?.logo || pickerRecommendation.item.logo) : undefined
   const pickerRating = formatDiscoveryRating(pickerRecommendation?.item.rating)
-  const pickerPoster = pickerRecommendation ? (pickerRecommendation.item.poster || heroArt[String(pickerRecommendation.item.id)]?.poster || pickerRecommendation.item.backdrop || heroArt[String(pickerRecommendation.item.id)]?.backdrop) : undefined
-  const pickerBackdrop = pickerRecommendation ? (pickerRecommendation.item.backdrop || heroArt[String(pickerRecommendation.item.id)]?.backdrop || pickerRecommendation.item.poster || heroArt[String(pickerRecommendation.item.id)]?.poster) : undefined
+  const pickerPoster = pickerRecommendation ? selectDiscoverPosterArtwork(
+    pickerCustomArt?.poster || heroArt[artworkCacheKey(pickerRecommendation.item)]?.poster || pickerRecommendation.item.poster,
+    pickerCustomArt?.backdrop || heroArt[artworkCacheKey(pickerRecommendation.item)]?.backdrop || pickerRecommendation.item.backdrop,
+    cleanDiscoverPosters[mediaIdentity(pickerRecommendation.item)] || undefined,
+  ) : undefined
+  const pickerBackdrop = pickerRecommendation ? cardArtworkUrl(pickerCustomArt?.backdrop || heroArt[artworkCacheKey(pickerRecommendation.item)]?.backdrop || pickerRecommendation.item.backdrop || heroArt[artworkCacheKey(pickerRecommendation.item)]?.poster || pickerRecommendation.item.poster, 'landscape', posterSize) : undefined
+  const directPosterItems = useMemo(() => {
+    const unique = new Map<string, SearchResult>()
+    for (const item of [heroRecommendation?.item, activeWeekendPlanItem, pickerRecommendation?.item, ...bingeArtworkItems, ...tastePickCandidates]) {
+      if (item) unique.set(mediaIdentity(item), item)
+    }
+    return [...unique.values()]
+  }, [activeWeekendPlanItem, bingeArtworkItems, heroRecommendation?.item, pickerRecommendation?.item, tastePickCandidates])
+  useEffect(() => {
+    let cancelled = false
+    const pending = directPosterItems.filter((item) => !(mediaIdentity(item) in cleanDiscoverPosters))
+    if (!pending.length) return
+    void Promise.all(pending.map(async (item) => {
+      try {
+        const { resolveTmdbIdFromExternalIds } = await import('../services/metadataEnrich')
+        const tmdbId = await resolveTmdbIdFromExternalIds(item, item.type)
+        if (!tmdbId) return [mediaIdentity(item), null] as const
+        return [mediaIdentity(item), await getTmdbCleanPoster(item.type, tmdbId, item.poster) || null] as const
+      } catch {
+        return [mediaIdentity(item), null] as const
+      }
+    })).then((entries) => {
+      if (!cancelled) setCleanDiscoverPosters((current) => ({ ...current, ...Object.fromEntries(entries) }))
+    })
+    return () => { cancelled = true }
+  }, [cleanDiscoverPosters, directPosterItems])
+  const discoverFadeArtwork = useMemo(() => [...new Set([
+    heroPoster,
+    pickerPoster,
+    ...bingeArtworkItems.map((item) => bingePoster(item)),
+    ...tastePickCandidates.map((item) => selectDiscoverPosterArtwork(discoveryPoster(item), discoveryBackdrop(item))),
+  ].filter((url): url is string => Boolean(url)))], [bingeArtworkItems, bingePoster, discoveryBackdrop, discoveryPoster, heroPoster, pickerPoster, selectDiscoverPosterArtwork, tastePickCandidates])
+  useEffect(() => {
+    if (posterColorMode !== 'artwork' || !discoverFadeArtwork.length) return
+    const missing = discoverFadeArtwork.filter((url) => !(url in discoverPosterColors) && !requestedDiscoverPosterColors.current.has(url))
+    if (!missing.length) return
+    // The artwork list changes as clean posters and provider art arrive. Do
+    // not abort an in-flight color sample on each list update: that left the
+    // poster reveal gate waiting forever on the same artwork URL.
+    missing.forEach((url) => requestedDiscoverPosterColors.current.add(url))
+    void Promise.all(missing.map(async (url) => [url, await loadAmbientColor(url, undefined, 'poster-bottom')] as const)).then((entries) => {
+      setDiscoverPosterColors((current) => ({ ...current, ...Object.fromEntries(entries) }))
+    })
+  }, [discoverFadeArtwork, discoverPosterColors, posterColorMode])
+  useEffect(() => {
+    const markPosterDetailsReady = () => setPosterDetailsLoadRevision((revision) => revision + 1)
+    window.addEventListener('aurales:discover-poster-status-ready', markPosterDetailsReady)
+    return () => window.removeEventListener('aurales:discover-poster-status-ready', markPosterDetailsReady)
+  }, [])
+  useEffect(() => {
+    const pendingImages = document.querySelectorAll<HTMLImageElement>('.discover-poster-fade img[data-artwork-loaded-pending="true"]')
+    pendingImages.forEach((image) => {
+      const artworkUrl = image.currentSrc || image.src
+      const posterContainer = image.closest<HTMLElement>('.discover-poster-fade')
+      const allowDetailsFallback = posterContainer?.dataset.posterDetailsFallbackReady === 'true'
+      if (!allowDetailsFallback && posterColorMode === 'artwork' && !(artworkUrl in discoverPosterColors)) return
+      const mediaKey = image.dataset.discoverMediaKey
+      if (!allowDetailsFallback && posterArtworkSetting === 'poster' && mediaKey && !(mediaKey in cleanDiscoverPosters)) return
+      const logoLookupKey = image.dataset.logoLookupKey
+      if (!allowDetailsFallback && logoLookupKey && !resolvedPosterLogoLookups[logoLookupKey]) return
+      if (posterContainer?.dataset.posterStatusReady !== 'true') return
+      const titleLogo = image.parentElement?.querySelector<HTMLImageElement>('.discover-poster-title-logo')
+      if (!allowDetailsFallback && titleLogo && titleLogo.dataset.titleLogoLoaded !== 'true' && titleLogo.dataset.titleLogoFailed !== 'true') return
+      delete image.dataset.artworkLoadedPending
+      image.dataset.artworkLoaded = 'true'
+      image.dataset.artworkLoadedUrl = artworkUrl
+      setLoadedDiscoverArtwork((current) => current[artworkUrl] ? current : { ...current, [artworkUrl]: true })
+    })
+  }, [cleanDiscoverPosters, discoverPosterColors, posterArtworkSetting, posterColorMode, posterDetailsLoadRevision, posterLogoLoadRevision, resolvedPosterLogoLookups])
   return (
     <div className="discover-page pb-12">
       <div className="discover-page__notice pt-8"><CatalogKeyNotice /></div>
@@ -1742,23 +2474,20 @@ export default function DiscoverPage() {
         </div>
 
         <div className="discover-page__controls">
-          <div className="discover-page__tabs mt-8 inline-flex max-w-full gap-1 overflow-x-auto rounded-2xl border border-white/[.08] bg-white/[.035] p-1.5" role="group" aria-label="Content type">
-            {(['movies', 'series', 'anime'] as DiscoverTab[]).map((item) => (
-              <button
-                key={item}
-                type="button"
-                aria-pressed={tab === item}
-                onClick={() => handleTabChange(item)}
-                className={`whitespace-nowrap rounded-xl px-5 py-2.5 text-sm font-semibold transition-all cursor-pointer ${
-                  tab === item
-                    ? 'bg-white text-black shadow-lg shadow-black/20'
-                    : 'text-white/55 hover:bg-white/[.06] hover:text-white'
-                }`}
-              >
-                {item === 'movies' ? 'Movies' : item === 'series' ? 'Series' : 'Anime'}
-              </button>
-            ))}
-          </div>
+          <details className="discover-page__tabs discover-content-menu mt-8">
+            <summary className="discover-content-menu__summary" aria-label={`Content types: ${contentTypes.map((item) => item === 'movies' ? 'Movies' : item === 'shows' ? 'Shows' : 'Anime').join(' & ')}`}>
+              <span>{contentTypes.map((item) => item === 'movies' ? 'Movies' : item === 'shows' ? 'Shows' : 'Anime').join(' & ')}</span>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+            </summary>
+            <div className="discover-content-menu__options" role="group" aria-label="Include content types">
+              {(['movies', 'shows', 'anime'] as DiscoverContentType[]).map((item) => (
+                <button key={item} type="button" role="checkbox" aria-checked={contentTypes.includes(item)} onClick={() => toggleContentType(item)}>
+                  <span className="discover-content-menu__check" aria-hidden="true">{contentTypes.includes(item) ? '✓' : ''}</span>
+                  {item === 'movies' ? 'Movies' : item === 'shows' ? 'Shows' : 'Anime'}
+                </button>
+              ))}
+            </div>
+          </details>
           <div className="discover-page__modes" aria-label="Discovery controls">
             <button ref={surpriseButtonRef} className="discover-surprise-trigger" type="button" onClick={triggerSurprise} disabled={pickerPool.length < 2 || surpriseSpinning} aria-busy={surpriseSpinning}><Shuffle size={16} aria-hidden="true" /> <span>{surpriseSpinning ? 'Choosing…' : 'Surprise Me'}</span></button>
             <button ref={preferencesButtonRef} className="discover-preferences-trigger" type="button" onClick={() => setPreferencesOpen(true)} aria-label="Discovery settings"><Settings size={18} aria-hidden="true" /></button>
@@ -1798,12 +2527,12 @@ export default function DiscoverPage() {
                     </div>
                   </div>
                 </div>
-                {heroPoster && <div className="discover-spotlight__poster"><img key={heroPoster} className="discover-artwork-enter" src={heroPoster} alt={`${heroRecommendation.item.title} poster`} draggable={false} loading="eager" decoding="async" onLoad={revealDiscoveryArtwork} />{heroEditorialLabel && <span className="discover-spotlight__accolade">{heroEditorialLabel}</span>}{heroRating && <span className="discover-picker__rating">★ {heroRating}</span>}</div>}
+                {heroPoster && <figure className="discover-spotlight__poster-wrap"><div className="discover-spotlight__poster discover-poster-fade" style={posterFadeStyleFor(heroPoster)}><img key={heroPoster} data-discover-media-key={mediaIdentity(heroRecommendation.item)} data-logo-lookup-key={artworkCacheKey(heroRecommendation.item)} className="discover-artwork-enter" src={heroPoster} alt={`${heroRecommendation.item.title} poster`} draggable={false} loading="eager" decoding="async" onLoad={revealDiscoverPosterWhenReady} />{heroEditorialLabel && <span className="discover-spotlight__accolade">{heroEditorialLabel}</span>}<DiscoverPosterWatchMark item={heroRecommendation.item} rating={heroRating} logo={heroLogo && !heroLogoError ? <img className="discover-poster-title-logo" src={heroLogo} alt="" aria-hidden="true" draggable={false} onLoad={markDiscoverTitleLogoLoaded} onError={(event) => { markDiscoverTitleLogoFailed(event); setHeroLogoError(true) }} /> : discoverPosterTitleFallback(heroRecommendation.item, heroPoster, heroLogo, heroLogoError)} /></div><DiscoverPosterRatingBelow rating={heroRating} /></figure>}
               </section>
             </>
           </DiscoveryReveal>}
           {viewState === 'error' && <div className="mx-6 mb-8 grid min-h-72 place-items-center rounded-3xl border border-white/10 bg-white/[.03] p-8 text-center"><div><h2 className="text-xl font-black">Recommendations are unavailable</h2><p className="mt-2 max-w-md text-sm text-white/60">Cached discovery data was not available and recommendation sources could not be loaded. Check your network or TMDB settings.</p><button onClick={() => window.location.reload()} className="mt-5 rounded-full bg-white px-5 py-2 font-bold text-black">Retry</button></div></div>}
-          {viewState === 'content' && trendingSection && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--trending"><MediaRow title="OR TRY" items={trendingSection.items.map((entry) => entry.item)} showAllItems={trendingSection.catalogItems?.map((entry) => entry.item)} showAllContinuation={{ configs: [makeConfig(contentType, 'popularity.desc', preferences, animeOverrides)], tab, excludeIds: [...(heroMediaKey ? [heroMediaKey] : []), ...visiblePersonalizedSections.flatMap((section) => section.items.map((entry) => mediaIdentity(entry.item)))] }} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-trending-this-week?title=${encodeURIComponent('OR TRY')}`} /></div></DiscoveryReveal>}
+          {viewState === 'content' && trendingSection && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--trending"><MediaRow title="OR TRY" items={trendingSection.items.map((entry) => entry.item)} showAllItems={trendingSection.catalogItems?.map((entry) => entry.item)} showAllContinuation={{ configs: makeContentTypeConfigs(contentTypes, 'popularity.desc', preferences), tab, tabs: continuationTabs, excludeIds: [...(heroMediaKey ? [heroMediaKey] : []), ...visiblePersonalizedSections.flatMap((section) => section.items.map((entry) => mediaIdentity(entry.item)))] }} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/discover-section-${tab}-trending-this-week?title=${encodeURIComponent('OR TRY')}`} /></div></DiscoveryReveal>}
           {visiblePersonalizedSections.filter((section) => section.id !== 'trending-this-week').map((section) => {
             const isTopTen = section.id === 'made-for-you'
             const isPersonalGenre = section.id.startsWith('because-genre-')
@@ -1816,7 +2545,7 @@ export default function DiscoverPage() {
             const catalogItems = sourceCatalogItems.map((entry) => entry.item).slice(0, isTopTen ? 10 : undefined)
             const personalGenreId = isPersonalGenre ? Number(section.id.slice('because-genre-'.length)) : undefined
             const continuation: DiscoveryCatalogContinuation | undefined = isTopTen ? undefined : isPersonalGenre && Number.isFinite(personalGenreId)
-              ? { configs: [makeConfig(contentType, 'popularity.desc', preferences, { ...animeOverrides, includeGenres: [...(tab === 'anime' ? ['16'] : []), String(personalGenreId)], genreMatchMode: tab === 'anime' ? 'AND' : 'OR', voteAverageMin: Math.max(6.5, minRating), voteCountMin: tab === 'anime' ? 50 : 150 })], tab, genreIds: [personalGenreId!] }
+              ? { configs: makeContentTypeConfigs(contentTypes, 'popularity.desc', preferences, { includeGenres: [String(personalGenreId)], genreMatchMode: 'OR', voteAverageMin: Math.max(6.5, minRating), voteCountMin: 100 }), tab, tabs: continuationTabs, genreIds: [personalGenreId!] }
               : undefined
             const eyebrow = isPersonalGenre ? `Because you love ${genreTitle.toLocaleLowerCase()}` : undefined
             return <DiscoveryReveal key={section.id}><div className={`row-contain discover-shelf${isPersonalGenre ? ' discover-shelf--personal-genre' : ''}`}><MediaRow title={title} headerEyebrow={eyebrow} items={items} showAllItems={catalogItems} showAllContinuation={continuation} layout={isTopTen ? 'ranked' : 'poster'} previewLimit={isTopTen ? 10 : undefined} renderAllPreviewItems={isTopTen} disableCinematic forceShowAll showAllPath={`/catalog/discover-section-${tab}-${section.id}?title=${encodeURIComponent(title)}`} /></div></DiscoveryReveal>
@@ -1837,30 +2566,28 @@ export default function DiscoverPage() {
               showAllPath={`/catalog/discover-section-${tab}-${activeSimilaritySection.id}?title=${encodeURIComponent(`Because you ${activeSimilaritySection.id.startsWith('because-favorited') ? 'favorited' : 'watched'} ${activeSimilarityTitle}`)}`}
             />
           </div></DiscoveryReveal>}
-          {viewState === 'content' && <DiscoveryReveal><div className="discover-time discover-shelf--time">
-            {timeTonightItems.length > 0
-              ? <MediaRow
-                title="How Much Time Tonight?"
-                headerEyebrow="Picked to fit"
-                headerBottomControls={<div className="discover-editorial-tabs" role="group" aria-label="Choose a watch duration">
-                  {DISCOVERY_RUNTIME_BUCKETS.map((bucket) => <button key={bucket.id} type="button" aria-pressed={selectedRuntimeBucket.id === bucket.id} onClick={() => setSelectedRuntimeBucketId(bucket.id)}>{bucket.label}</button>)}
-                </div>}
-                items={timeTonightItems}
-                showAllItems={timeTonightCatalogItems}
-                showAllContinuation={{ configs: tab === 'anime' ? [timeTonightConfig, timeTonightAnimeMovieConfig] : [timeTonightConfig], tab }}
-                layout="poster"
-                disableCinematic
-                showAllPath={`/catalog/discover-time-${tab}-${selectedRuntimeBucket.id}-${discoveryQueryKey}?title=${encodeURIComponent('How Much Time Tonight?')}`}
-              />
-              : <section className="discover-time__empty row-contain" aria-labelledby="discover-time-title">
-                <div className="discover-editorial-heading"><div><p className="discover-section-eyebrow">Picked to fit</p><h2 id="discover-time-title">How Much Time Tonight?</h2></div>
-                  <div className="discover-editorial-tabs" role="group" aria-label="Choose a watch duration">
-                    {DISCOVERY_RUNTIME_BUCKETS.map((bucket) => <button key={bucket.id} type="button" aria-pressed={selectedRuntimeBucket.id === bucket.id} onClick={() => setSelectedRuntimeBucketId(bucket.id)}>{bucket.label}</button>)}
+          {viewState === 'content' && activeWeekendPlanItem && <DiscoveryReveal>
+            <>
+              <header className="discover-spotlight-heading row-contain"><div className="discover-spotlight-heading__copy"><h2 id="discover-weekend-title">Your Weekend Plan</h2></div></header>
+              <section className="discover-spotlight discover-weekend-plan" aria-labelledby="discover-weekend-title" data-title={activeWeekendPlanItem.title}>
+                {weekendPlanBackdrop && <div key={weekendPlanBackdrop} className="discover-spotlight__ambient" aria-hidden="true"><img className={loadedWeekendBackdrop === weekendPlanBackdrop ? 'is-loaded' : undefined} src={weekendPlanBackdrop} alt="" draggable={false} decoding="async" fetchPriority="high" onLoad={() => setLoadedWeekendBackdrop(weekendPlanBackdrop)} /></div>}
+                <div key={mediaIdentity(activeWeekendPlanItem)} className="discover-spotlight__copy" data-title={activeWeekendPlanItem.title} aria-live="polite">
+                  <div className="discover-spotlight__top"><p className="discover-spotlight__eyebrow">{activeWeekendPlanItem.isAnime ? 'An anime' : activeWeekendPlanItem.type === 'movie' ? 'A movie' : 'A series'} for tonight</p>{weekendPlanRuntime != null && <p className="discover-spotlight__duration">Usually {formatWatchDuration(weekendPlanRuntime)}</p>}</div>
+                  <div className="discover-spotlight__bottom">
+                    {weekendPlanLogo ? <img src={weekendPlanLogo} alt={activeWeekendPlanItem.title} draggable={false} className="discover-spotlight__logo" /> : <h2>{activeWeekendPlanItem.title}</h2>}
+                    <div className="discover-spotlight__meta">{activeWeekendPlanItem.year && <span>{activeWeekendPlanItem.year}</span>}<span>{isAnimeLike(activeWeekendPlanItem) ? 'Anime' : activeWeekendPlanItem.type === 'series' ? 'Series' : 'Movie'}</span>{activeWeekendPlanItem.genres?.slice(0, 1).map((genre) => <span key={genre}>{genre}</span>)}{weekendPlanRating && <span>★ {weekendPlanRating}</span>}</div>
+                    {activeWeekendPlanItem.overview && <p className="discover-spotlight__overview">{activeWeekendPlanItem.overview}</p>}
+                    <div className="discover-spotlight__actions">
+                      <button type="button" className="discover-spotlight__play" onClick={() => openItemDetail(activeWeekendPlanItem, true)}>▶ <span>Play</span></button>
+                      <button type="button" className="discover-spotlight__another discover-spotlight__secondary" onClick={() => openItemDetail(activeWeekendPlanItem)} aria-label="Details"><Info size={17} aria-hidden="true"/><span>Details</span></button>
+                      <button type="button" className="discover-spotlight__another discover-spotlight__change" onClick={() => setWeekendPlanIndex((index) => (index + 1) % weekendPlanCandidates.length)} disabled={weekendPlanCandidates.length < 2}><Shuffle size={15} aria-hidden="true"/><span>Another option</span></button>
+                    </div>
                   </div>
                 </div>
-                <p className="discover-editorial-empty" role="status">{timeTonightLoading ? 'Finding popular titles that fit…' : 'No titles found for this time yet.'}</p>
-              </section>}
-          </div></DiscoveryReveal>}
+                {weekendPlanPoster && <figure className="discover-spotlight__poster-wrap"><div key={mediaIdentity(activeWeekendPlanItem)} className="discover-spotlight__poster discover-poster-fade" style={posterFadeStyleFor(weekendPlanPoster)}><img data-discover-media-key={mediaIdentity(activeWeekendPlanItem)} data-logo-lookup-key={artworkCacheKey(activeWeekendPlanItem)} className="discover-artwork-enter" src={weekendPlanPoster} alt={`${activeWeekendPlanItem.title} poster`} draggable={false} loading="lazy" decoding="async" onLoad={revealDiscoverPosterWhenReady} />{weekendPlanAccolade && <span className="discover-spotlight__accolade">{weekendPlanAccolade}</span>}<DiscoverPosterWatchMark item={activeWeekendPlanItem} rating={weekendPlanRating} logo={weekendPlanLogo ? <img className="discover-poster-title-logo" src={weekendPlanLogo} alt="" aria-hidden="true" draggable={false} onLoad={markDiscoverTitleLogoLoaded} onError={markDiscoverTitleLogoFailed} /> : discoverPosterTitleFallback(activeWeekendPlanItem, weekendPlanPoster, weekendPlanLogo)} /></div><DiscoverPosterRatingBelow rating={weekendPlanRating} /></figure>}
+              </section>
+            </>
+          </DiscoveryReveal>}
           {(tabRanked.length > 0 || currentTrendingRanked.length > 0) && <DiscoveryReveal><section className="discover-refine row-contain" aria-labelledby="discover-refine-title">
             <p className="discover-section-eyebrow">Refine your taste</p>
             <div className="discover-refine__heading">
@@ -1878,8 +2605,12 @@ export default function DiscoverPage() {
             <div className="discover-taste-picks">
               {tastePickCandidates.map((item) => {
                 const id = mediaIdentity(item)
+                const poster = selectDiscoverPosterArtwork(discoveryPoster(item), discoveryBackdrop(item), cleanDiscoverPosters[id] || undefined)
+                const logo = discoveryLogo(item)
+                const rating = formatDiscoveryRating(item.rating)
                 return <button key={id} type="button" className="discover-taste-pick" onClick={() => selectTastePick(item)} disabled={pickedIds.length >= 3} aria-label={`Choose ${item.title}`}>
-                  <span className="discover-taste-pick__poster">{item.poster && <img key={item.poster} className="discover-artwork-enter" src={item.poster} alt="" loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />}{formatDiscoveryRating(item.rating) && <span className="discover-taste-pick__rating">★ {formatDiscoveryRating(item.rating)}</span>}</span>
+                  <span className="discover-taste-pick__poster discover-poster-fade" style={posterFadeStyleFor(poster)}>{poster && <img key={poster} data-discover-media-key={id} data-logo-lookup-key={artworkCacheKey(item)} className="discover-artwork-enter" src={poster} alt="" loading="lazy" decoding="async" onLoad={revealDiscoverPosterWhenReady} />}<DiscoverPosterWatchMark item={item} rating={rating} logo={logo ? <img className="discover-poster-title-logo" src={logo} alt="" aria-hidden="true" loading="lazy" decoding="async" onLoad={markDiscoverTitleLogoLoaded} onError={markDiscoverTitleLogoFailed} /> : discoverPosterTitleFallback(item, poster, logo)} /></span>
+                  <DiscoverPosterRatingBelow rating={rating} />
                   <span className="discover-taste-pick__title">{item.title}</span>
                   <span className="discover-taste-pick__year">{item.year || (item.isAnime ? 'Anime' : item.type === 'series' ? 'Series' : 'Movie')}</span>
                 </button>
@@ -1897,12 +2628,36 @@ export default function DiscoverPage() {
               ? <div className="discover-colors__row"><MediaRow title={colorCatalogTitle} items={colorPreviewItems} showAllItems={colorSelectionItems} layout="poster" disableCinematic showAllPath={`/catalog/${colorRowId}?title=${encodeURIComponent(colorCatalogTitle)}`} /></div>
               : <p className="discover-colors__empty" role="status">No titles found in this colour yet. Choose another colour.</p>}
           </section></DiscoveryReveal>}
+          {viewState === 'content' && <DiscoveryReveal><div className="discover-time discover-shelf--time">
+            {timeTonightItems.length > 0
+              ? <MediaRow
+                title="How Much Time Tonight?"
+                headerEyebrow="Picked to fit"
+                headerBottomControls={<div className="discover-editorial-tabs" role="group" aria-label="Choose a watch duration">
+                  {DISCOVERY_RUNTIME_BUCKETS.map((bucket) => <button key={bucket.id} type="button" aria-pressed={selectedRuntimeBucket.id === bucket.id} onClick={() => setSelectedRuntimeBucketId(bucket.id)}>{bucket.label}</button>)}
+                </div>}
+                items={timeTonightItems}
+                showAllItems={timeTonightCatalogItems}
+                showAllContinuation={{ configs: makeContentTypeConfigs(contentTypes, 'popularity.desc', preferences, { runtimeMin: selectedRuntimeBucket.min, runtimeMax: selectedRuntimeBucket.max, voteAverageMin: Math.max(6, minRating), voteCountMin: 50 }), tab, tabs: continuationTabs }}
+                layout="poster"
+                disableCinematic
+                showAllPath={`/catalog/discover-time-${tab}-${selectedRuntimeBucket.id}-${discoveryQueryKey}?title=${encodeURIComponent('How Much Time Tonight?')}`}
+              />
+              : <section className="discover-time__empty row-contain" aria-labelledby="discover-time-title">
+                <div className="discover-editorial-heading"><div><p className="discover-section-eyebrow">Picked to fit</p><h2 id="discover-time-title">How Much Time Tonight?</h2></div>
+                  <div className="discover-editorial-tabs" role="group" aria-label="Choose a watch duration">
+                    {DISCOVERY_RUNTIME_BUCKETS.map((bucket) => <button key={bucket.id} type="button" aria-pressed={selectedRuntimeBucket.id === bucket.id} onClick={() => setSelectedRuntimeBucketId(bucket.id)}>{bucket.label}</button>)}
+                  </div>
+                </div>
+                <p className="discover-editorial-empty" role="status">{timeTonightLoading ? 'Finding popular titles that fit…' : 'No titles found for this time yet.'}</p>
+              </section>}
+          </div></DiscoveryReveal>}
           <DiscoveryReveal><section className="discover-genres row-contain" aria-labelledby="discover-genres-title">
             <div className="discover-genres__heading"><div><p className="discover-section-eyebrow">Browse by category</p><h2 id="discover-genres-title">Your Genres</h2></div></div>
             <div className="discover-genres__grid" role="group" aria-label="Genres">
               {genreTiles.map(({ option, items }) => {
                 const featured = items[0]
-                const artwork = featured?.backdrop || featured?.poster
+                const artwork = featured ? selectDiscoverPosterArtwork(discoveryPoster(featured), discoveryBackdrop(featured)) : undefined
                 return <button
                   type="button"
                   key={option.title}
@@ -1917,35 +2672,45 @@ export default function DiscoverPage() {
                     <small>{option.genres[0] === selectedGenreId && genreSelectionItems.length ? genreSelectionItems.length : filteredCandidates.filter((entry) => entry.item.genreIds?.includes(option.genres[0]!)).length} titles</small>
                   </span>
                   <span className="discover-genres__tile-art" aria-hidden="true">
-                    {items.map((item) => <img key={mediaIdentity(item)} src={cardArtworkUrl(applySearchResultArt(item).poster || item.poster, 'poster', posterSize)} alt="" loading="lazy" decoding="async" />)}
+                    {items.map((item) => <img key={mediaIdentity(item)} src={selectDiscoverPosterArtwork(discoveryPoster(item), discoveryBackdrop(item))} alt="" loading="lazy" decoding="async" />)}
                   </span>
                 </button>
               })}
             </div>
             <div id="discover-genre-picks" ref={genrePicksRef} className="discover-genre-picks" aria-live="polite">
               {selectedGenreId != null && genreLoading && genreSelectionItems.length === 0 && <p className="discover-genre-picks__loading" role="status">Finding {genreMap[selectedGenreId] || 'genre'} titles…</p>}
-              {selectedGenreId != null && genreSelectionItems.length > 0 && <MediaRow title={`${genreMap[selectedGenreId] || 'Genre'} Picks`} items={genreSelectionItems} showAllItems={genreSelectionItems} showAllContinuation={{ configs: [makeConfig(contentType, 'popularity.desc', preferences, { ...animeOverrides, includeGenres: [...(tab === 'anime' ? ['16'] : []), String(selectedGenreId)], genreMatchMode: tab === 'anime' ? 'AND' : 'OR', voteAverageMin: Math.max(6, minRating), voteCountMin: tab === 'anime' ? 50 : 100 })], tab, genreIds: [selectedGenreId] }} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${genreRowId}?title=${encodeURIComponent(`${genreMap[selectedGenreId] || 'Genre'} Picks`)}`} />}
+              {selectedGenreId != null && genreSelectionItems.length > 0 && <MediaRow title={`${genreMap[selectedGenreId] || 'Genre'} Picks`} items={genreSelectionItems} showAllItems={genreSelectionItems} showAllContinuation={{ configs: makeContentTypeConfigs(contentTypes, 'popularity.desc', preferences, { includeGenres: [String(selectedGenreId)], genreMatchMode: 'OR', voteAverageMin: Math.max(6, minRating), voteCountMin: 100 }), tab, tabs: continuationTabs, genreIds: [selectedGenreId] }} forceShowAll layout="poster" disableCinematic showAllPath={`/catalog/${genreRowId}?title=${encodeURIComponent(`${genreMap[selectedGenreId] || 'Genre'} Picks`)}`} />}
               {selectedGenreId != null && genreSelectionItems.length === 0 && !genreLoading && <p className="discover-genre-picks__empty">No titles found for {genreMap[selectedGenreId] || 'this genre'} yet. Try another genre.</p>}
             </div>
           </section></DiscoveryReveal>
           {bingeRecommendations.length > 0 && <DiscoveryReveal><section className="discover-binge row-contain" aria-labelledby="discover-binge-title">
-            <div className="discover-binge__heading"><div><p className="discover-section-eyebrow">{activeBingeItem?.isAnime ? 'Anime to get lost in' : 'Series to get lost in'}</p><h2 id="discover-binge-title">Your Next Binge</h2></div><span>Popular picks from current catalogs</span></div>
+            <div className="discover-binge__heading"><div><p className="discover-section-eyebrow">{activeBingeItem?.isAnime ? 'Anime to get lost in' : 'Series to get lost in'}</p><h2 id="discover-binge-title">Your Next Binge</h2></div><span>Popular picks · {bingeIndex % bingeRecommendations.length + 1} of {bingeRecommendations.length}</span></div>
             <div className="discover-binge__feature" data-active-title={activeBingeItem?.title}>
-              <div key={`art-${activeBingeItem ? mediaIdentity(activeBingeItem) : 'empty'}`} className="discover-binge__art" aria-hidden="true">{activeBingeItem?.backdrop && <img src={activeBingeItem.backdrop} alt="" loading="lazy" decoding="async"/>}</div>
+              <div key={`art-${activeBingeItem ? mediaIdentity(activeBingeItem) : 'empty'}`} className="discover-binge__art" aria-hidden="true">{activeBingeItem && bingeBackdrop(activeBingeItem) && <img src={bingeBackdrop(activeBingeItem)} alt="" loading="lazy" decoding="async"/>}</div>
               <div key={`copy-${activeBingeItem ? mediaIdentity(activeBingeItem) : 'empty'}`} className="discover-binge__copy" aria-live="polite">
                 <div><h3>{activeBingeItem?.title}</h3><p>{[activeBingeItem?.year, activeBingeItem?.genres?.[0], activeBingeItem?.isAnime ? 'Anime' : 'Series'].filter(Boolean).join(' · ')}</p></div>
                 <div className="discover-binge__actions"><button type="button" onClick={() => activeBingeItem && openItemDetail(activeBingeItem, true)}>▶ Play</button><button type="button" onClick={() => activeBingeItem && openItemDetail(activeBingeItem)}>Details</button><button type="button" onClick={() => setBingeIndex((current) => (current + 1) % bingeRecommendations.length)} disabled={bingeRecommendations.length < 2}>Another option</button></div>
               </div>
               {activeBingeItem && <div key={`gallery-${mediaIdentity(activeBingeItem)}`} className="discover-binge__gallery" aria-label="Binge recommendations">
-                <button className="discover-binge__main-poster" type="button" onClick={() => openItemDetail(activeBingeItem)} aria-label={`Details for ${activeBingeItem.title}`}>
-                  <img key={bingePoster(activeBingeItem)} className="discover-artwork-enter" src={bingePoster(activeBingeItem)} alt={`${activeBingeItem.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
-                  {activeBingeRating && <small>★ {activeBingeRating}</small>}
-                </button>
+                <div className="discover-binge__poster-wrap">
+                  <button className="discover-binge__main-poster discover-poster-fade" style={posterFadeStyleFor(bingePoster(activeBingeItem))} type="button" onClick={() => openItemDetail(activeBingeItem)} aria-label={`Details for ${activeBingeItem.title}`}>
+                    <img key={bingePoster(activeBingeItem)} data-discover-media-key={mediaIdentity(activeBingeItem)} data-logo-lookup-key={artworkCacheKey(activeBingeItem)} className="discover-artwork-enter" src={bingePoster(activeBingeItem)} alt={`${activeBingeItem.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoverPosterWhenReady} />
+                    <DiscoverPosterWatchMark item={activeBingeItem} rating={activeBingeRating} logo={activeBingeLogo ? <img className="discover-poster-title-logo" src={activeBingeLogo} alt="" aria-hidden="true" loading="lazy" decoding="async" onLoad={markDiscoverTitleLogoLoaded} onError={markDiscoverTitleLogoFailed} /> : discoverPosterTitleFallback(activeBingeItem, bingePoster(activeBingeItem), activeBingeLogo)} />
+                  </button>
+                  <DiscoverPosterRatingBelow rating={activeBingeRating} />
+                </div>
                 <div className="discover-binge__alternatives">
-                  {bingeRecommendations.filter((item) => mediaIdentity(item) !== mediaIdentity(activeBingeItem)).slice(0, 4).map((item) => <button key={mediaIdentity(item)} type="button" onClick={() => openItemDetail(item)} aria-label={`Details for ${item.title}`}>
-                    <img key={bingePoster(item)} className="discover-artwork-enter" src={bingePoster(item)} alt={`${item.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoveryArtwork} />
-                    {formatDiscoveryRating(item.rating) && <small>★ {formatDiscoveryRating(item.rating)}</small>}
-                  </button>)}
+                  {bingeGalleryItems.map((item) => {
+                    const logo = bingeLogo(item)
+                    const rating = formatDiscoveryRating(item.rating)
+                    return <div key={mediaIdentity(item)} className="discover-binge__poster-wrap">
+                      <button className="discover-poster-fade" style={posterFadeStyleFor(bingePoster(item))} type="button" onClick={() => setBingeIndex(bingeRecommendations.findIndex((candidate) => mediaIdentity(candidate) === mediaIdentity(item)))} aria-label={`Show ${item.title} in Your Next Binge`}>
+                        <img key={bingePoster(item)} data-discover-media-key={mediaIdentity(item)} data-logo-lookup-key={artworkCacheKey(item)} className="discover-artwork-enter" src={bingePoster(item)} alt={`${item.title} poster`} loading="lazy" decoding="async" onLoad={revealDiscoverPosterWhenReady} />
+                        <DiscoverPosterWatchMark item={item} rating={rating} logo={logo ? <img className="discover-poster-title-logo" src={logo} alt="" aria-hidden="true" loading="lazy" decoding="async" onLoad={markDiscoverTitleLogoLoaded} onError={markDiscoverTitleLogoFailed} /> : discoverPosterTitleFallback(item, bingePoster(item), logo)} />
+                      </button>
+                      <DiscoverPosterRatingBelow rating={rating} />
+                    </div>
+                  })}
                 </div>
               </div>}
             </div>
@@ -1955,11 +2720,11 @@ export default function DiscoverPage() {
               <div className="discover-editorial-tabs" role="group" aria-label="Choose a mood">{DISCOVERY_MOODS.map((mood) => <button key={mood.id} type="button" aria-pressed={activeDiscoveryMood.id === mood.id} onClick={() => setSelectedDiscoveryMoodId(mood.id)}>{mood.label}</button>)}</div>
             </div>
             {moodItems.length > 0
-              ? <MediaRow title={`${activeDiscoveryMood.label} Picks`} items={moodItems} showAllItems={moodCatalogItems} showAllContinuation={{ configs: [makeConfig(contentType, 'popularity.desc', preferences, { ...animeOverrides, includeGenres: [...(tab === 'anime' ? ['16'] : []), ...activeDiscoveryMood.genres.map(String)], genreMatchMode: tab === 'anime' ? 'AND' : 'OR' })], tab, genreIds: [...activeDiscoveryMood.genres] }} layout="poster" disableCinematic forceShowAll showAllPath={`/catalog/discover-mood-${tab}-${activeDiscoveryMood.id}-${discoveryQueryKey}?title=${encodeURIComponent(`${activeDiscoveryMood.label} Picks`)}`} />
+              ? <MediaRow title={`${activeDiscoveryMood.label} Picks`} items={moodItems} showAllItems={moodCatalogItems} showAllContinuation={{ configs: makeContentTypeConfigs(contentTypes, 'popularity.desc', preferences, { includeGenres: activeDiscoveryMood.genres.map(String), genreMatchMode: 'OR' }), tab, tabs: continuationTabs, genreIds: [...activeDiscoveryMood.genres] }} layout="poster" disableCinematic forceShowAll showAllPath={`/catalog/discover-mood-${tab}-${activeDiscoveryMood.id}-${discoveryQueryKey}?title=${encodeURIComponent(`${activeDiscoveryMood.label} Picks`)}`} />
               : <p className="discover-editorial-empty" role="status">No titles found for this mood yet.</p>}
           </section></DiscoveryReveal>}
-          {bigScreenItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--big-screen"><MediaRow title="Made for the Big Screen" headerEyebrow="Best in widescreen" items={bigScreenItems} showAllItems={bigScreenCatalogItems} showAllContinuation={{ configs: [makeConfig(contentType, 'popularity.desc', preferences, animeOverrides)], tab, excludeIds: [...(heroMediaKey ? [heroMediaKey] : []), ...visiblePersonalizedSections.flatMap((section) => section.items.slice(0, 10).map((entry) => mediaIdentity(entry.item))), ...(trendingSection?.items.map((entry) => mediaIdentity(entry.item)) ?? [])] }} layout="poster" disableCinematic showAllPath={`/catalog/discover-big-screen-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Made for the Big Screen')}`} /></div></DiscoveryReveal>}
-          {hiddenGemItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--gems"><MediaRow title="Hidden Gems" headerEyebrow="Highly rated, waiting for you" items={hiddenGemItems} showAllItems={hiddenGemCatalogItems} showAllContinuation={{ configs: [hiddenGemsConfig], tab, maxPopularity: 35, minRating: hiddenGemsConfig.voteAverageMin }} layout="poster" disableCinematic showAllPath={`/catalog/discover-hidden-gems-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Hidden Gems')}`} /></div></DiscoveryReveal>}
+          {bigScreenItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--big-screen"><MediaRow title="Made for the Big Screen" headerEyebrow="Best in widescreen" items={bigScreenItems} showAllItems={bigScreenCatalogItems} showAllContinuation={{ configs: makeContentTypeConfigs(contentTypes, 'popularity.desc', preferences), tab, tabs: continuationTabs, excludeIds: [...(heroMediaKey ? [heroMediaKey] : []), ...visiblePersonalizedSections.flatMap((section) => section.items.slice(0, 10).map((entry) => mediaIdentity(entry.item))), ...(trendingSection?.items.map((entry) => mediaIdentity(entry.item)) ?? [])] }} layout="poster" disableCinematic showAllPath={`/catalog/discover-big-screen-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Made for the Big Screen')}`} /></div></DiscoveryReveal>}
+          {hiddenGemItems.length > 0 && <DiscoveryReveal><div className="row-contain discover-shelf discover-shelf--gems"><MediaRow title="Hidden Gems" headerEyebrow="Highly rated, waiting for you" items={hiddenGemItems} showAllItems={hiddenGemCatalogItems} showAllContinuation={{ configs: makeContentTypeConfigs(contentTypes, 'vote_average.desc', preferences, { voteAverageMin: Math.max(7.2, minRating), voteCountMin: 100 }), tab, tabs: continuationTabs, maxPopularity: 35, minRating: Math.max(7.2, minRating) }} layout="poster" disableCinematic showAllPath={`/catalog/discover-hidden-gems-${tab}-${discoveryQueryKey}?title=${encodeURIComponent('Hidden Gems')}`} /></div></DiscoveryReveal>}
           {viewState === 'content' && <DiscoveryReveal><section className="discover-more row-contain" aria-labelledby="discover-more-title">
             <div className="discover-more__heading"><div><p className="discover-section-eyebrow">More popular picks</p><h2 id="discover-more-title">Keep Exploring</h2></div><span>{moreToDiscover.length ? `${moreToDiscover.length} titles loaded` : 'Fresh titles load as you scroll'}</span></div>
             {moreToDiscover.length > 0 && <div className="media-grid discover-more__grid">
@@ -1988,10 +2753,11 @@ export default function DiscoverPage() {
           <button type="button" autoFocus className="discover-picker__close" onClick={closePicker} aria-label="Close picker"><X size={19} aria-hidden="true" /></button>
           <div className="discover-picker__body">
             <div className="discover-picker__visual">
-              <div className="discover-picker__poster" style={{ '--discover-picker-roll-duration': `${pickerRollDurationMs}ms` } as import('react').CSSProperties}>
-                {pickerPoster && <img src={pickerPoster} alt={`${pickerRecommendation.item.title} poster`} draggable={false} />}
-                {pickerRating && <span className="discover-picker__rating">★ {pickerRating}</span>}
+              <div className="discover-picker__poster discover-poster-fade" style={{ ...posterFadeStyleFor(pickerPoster), '--discover-picker-roll-duration': `${pickerRollDurationMs}ms` } as import('react').CSSProperties}>
+                {pickerPoster && <img data-discover-media-key={mediaIdentity(pickerRecommendation.item)} data-logo-lookup-key={artworkCacheKey(pickerRecommendation.item)} className="discover-artwork-enter" src={pickerPoster} alt={`${pickerRecommendation.item.title} poster`} draggable={false} onLoad={revealDiscoverPosterWhenReady} />}
+                <DiscoverPosterWatchMark item={pickerRecommendation.item} rating={pickerRating} logo={pickerLogo && !pickerLogoError ? <img className="discover-poster-title-logo" src={pickerLogo} alt="" aria-hidden="true" draggable={false} onLoad={markDiscoverTitleLogoLoaded} onError={(event) => { markDiscoverTitleLogoFailed(event); setPickerLogoError(true) }} /> : discoverPosterTitleFallback(pickerRecommendation.item, pickerPoster, pickerLogo, pickerLogoError)} />
               </div>
+              <DiscoverPosterRatingBelow rating={pickerRating} />
               {surpriseSpinning && <p className="discover-picker__status" role="status" aria-live="polite"><Shuffle size={15} aria-hidden="true" />Finding something for you</p>}
             </div>
             <div className="discover-picker__copy" data-title={pickerRecommendation.item.title}>

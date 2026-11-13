@@ -7,6 +7,16 @@ import { retainDiscoverySnapshot } from '../services/cache/discoverySnapshot'
 import type { DailySnapshotMeta } from '../services/discovery/dailySnapshot'
 
 export type DiscoverTab = 'movies' | 'series' | 'anime'
+export type DiscoverContentType = 'movies' | 'shows' | 'anime'
+const DISCOVER_CONTENT_TYPES: DiscoverContentType[] = ['movies', 'shows', 'anime']
+
+export function toggleDiscoverContentType(selected: DiscoverContentType[], type: DiscoverContentType): DiscoverContentType[] {
+  if (selected.includes(type)) {
+    const next = selected.filter((entry) => entry !== type)
+    return next.length ? next : selected
+  }
+  return DISCOVER_CONTENT_TYPES.filter((entry) => selected.includes(entry) || entry === type)
+}
 
 const DISCOVERY_CACHE_STORAGE_KEY = 'aurales-discovery-generated-v1'
 const MAX_DISCOVERY_STORAGE_BYTES = 1_500_000
@@ -61,6 +71,7 @@ function compactRankedSnapshots(snapshots: Record<string, RankedRecommendation[]
 
 interface DiscoverStore {
   tab: DiscoverTab
+  contentTypes: DiscoverContentType[]
   selectedGenre: number | null
   genreResults: SearchResult[]
   genreLoading: boolean
@@ -72,6 +83,7 @@ interface DiscoverStore {
   dailySnapshotMeta: Record<string, DailySnapshotMeta>
 
   setTab: (tab: DiscoverTab) => void
+  setContentTypes: (contentTypes: DiscoverContentType[]) => void
   setSelectedGenre: (genre: number | null) => void
   setGenreResults: (results: SearchResult[]) => void
   setGenreLoading: (loading: boolean) => void
@@ -83,6 +95,7 @@ interface DiscoverStore {
 
 export const useDiscoverStore = create<DiscoverStore>()(persist((set) => ({
   tab: 'movies',
+  contentTypes: ['movies', 'shows'],
   selectedGenre: null,
   genreResults: [],
   genreLoading: false,
@@ -92,6 +105,7 @@ export const useDiscoverStore = create<DiscoverStore>()(persist((set) => ({
   dailySnapshotMeta: {},
 
   setTab: (tab) => set({ tab, activeProvider: null }),
+  setContentTypes: (contentTypes) => set({ contentTypes, activeProvider: null }),
   setSelectedGenre: (selectedGenre) => set({ selectedGenre }),
   setGenreResults: (genreResults) => set({ genreResults }),
   setGenreLoading: (genreLoading) => set({ genreLoading }),
@@ -122,10 +136,11 @@ export const useDiscoverStore = create<DiscoverStore>()(persist((set) => ({
   clearCache: () => set({ cachedRows: {}, rankedSnapshots: {}, dailySnapshotMeta: {} }),
 }), {
   name: DISCOVERY_CACHE_STORAGE_KEY,
-  version: 2,
+  version: 3,
   migrate: (persisted) => persisted as DiscoverStore,
   storage: createJSONStorage(() => resilientDiscoveryStorage),
   partialize: (state) => ({
+    contentTypes: state.contentTypes,
     // Rows are already cached in SQLite and were the main source of quota
     // exhaustion. Keep only a bounded set of final rankings for fast startup.
     cachedRows: {},
@@ -135,6 +150,10 @@ export const useDiscoverStore = create<DiscoverStore>()(persist((set) => ({
   merge: (persisted, current) => {
     const saved = persisted as Partial<DiscoverStore> | undefined
     const { cachedRows, rankedSnapshots, dailySnapshotMeta } = retainDiscoverySnapshot(saved)
-    return { ...current, cachedRows, rankedSnapshots, dailySnapshotMeta }
+    const availableTypes = DISCOVER_CONTENT_TYPES
+    const contentTypes = Array.isArray(saved?.contentTypes)
+      ? saved.contentTypes.filter((type): type is DiscoverContentType => availableTypes.includes(type))
+      : current.contentTypes
+    return { ...current, contentTypes: contentTypes.length ? contentTypes : current.contentTypes, cachedRows, rankedSnapshots, dailySnapshotMeta }
   },
 }))

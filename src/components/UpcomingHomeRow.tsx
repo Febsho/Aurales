@@ -105,12 +105,18 @@ export default function UpcomingHomeRow() {
   const visible = events.filter((event) => !prefs.hidden[event.id] && (event.source === 'jellyfin' || isReleaseInHorizon(event, prefs.horizonDays))).slice(0, 12)
   const scroll = (direction: number) => scrollRef.current?.scrollBy({ left: direction * Math.max(640, Math.floor(scrollRef.current.clientWidth * 0.85)), behavior: 'smooth' })
 
+  // An empty upcoming message consumed a full shelf above Home's poster rows,
+  // making the posters look absent on the initial screen. Keep the section
+  // for real release cards and let the dedicated Upcoming page explain an
+  // empty schedule.
+  if (visible.length === 0) return null
+
   return <section data-home-row="upcoming" className="home-upcoming-row mb-8">
     <div className="home-upcoming-header mb-4 flex items-center justify-between px-6">
       <div><h2 className="text-xl font-bold tracking-tight text-white">Upcoming</h2><p className="mt-0.5 text-xs text-white/45">Your tracked releases and Jellyfin Upcoming</p></div>
       <div className="flex items-center gap-3"><button onClick={() => navigate('/upcoming')} className="text-sm font-semibold text-white/65 hover:text-white">View all</button><button aria-label="Scroll upcoming left" onClick={() => scroll(-1)} className="rounded-full bg-white/[.08] p-2 text-white/75 hover:bg-white/[.14]">‹</button><button aria-label="Scroll upcoming right" onClick={() => scroll(1)} className="rounded-full bg-white/[.08] p-2 text-white/75 hover:bg-white/[.14]">›</button></div>
     </div>
-    {visible.length === 0 ? <div data-home-upcoming-empty className="mx-6 rounded-xl border border-dashed border-white/[.12] bg-white/[.025] px-5 py-6 text-sm text-white/55">No releases are scheduled in the next {prefs.horizonDays} days for your tracked titles yet.</div> : <div ref={scrollRef} className="home-upcoming-track flex items-start gap-4 overflow-x-auto px-6 pb-2" style={{ scrollbarWidth: 'none' }}>
+    <div ref={scrollRef} className="home-upcoming-track flex items-start gap-4 overflow-x-auto px-6 pb-2" style={{ scrollbarWidth: 'none' }}>
       {visible.map((event) => <button key={event.id} onClick={() => {
         const routeId = event.media.tmdbId ? `tmdb-${String(event.media.tmdbId).replace(/^tmdb[-:]/i, '')}` : event.media.id
         navigate(`/${event.media.type === 'movie' ? 'movie' : 'series'}/${routeId}`, { state: { ...event.media, backdrop: event.media.backdrop || event.artwork, poster: event.media.poster || event.artwork } })
@@ -119,6 +125,6 @@ export default function UpcomingHomeRow() {
           <div className="absolute inset-x-0 bottom-0 z-10 p-3 transition-transform duration-300 group-hover:-translate-y-1 group-focus-within:-translate-y-1"><p className="truncate text-sm font-bold text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{event.media.title}</p><div className="mt-1 flex items-center gap-1.5 text-xs opacity-80 transition-opacity duration-300 group-hover:opacity-100 group-focus-within:opacity-100"><span className="rounded bg-white/20 px-1.5 py-0.5 font-bold text-white/85">{event.type === 'season' ? `SEASON ${event.seasonNumber}` : event.type === 'episode' ? `S${event.seasonNumber} E${event.episodeNumber}` : 'MOVIE'}</span><span className="font-semibold text-white/80">{releaseTiming(event.releaseDate)}</span></div></div>
         </div>
       </button>)}
-    </div>}
+    </div>
   </section>
 }

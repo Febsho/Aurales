@@ -22,6 +22,10 @@ import {
 } from '../services/simkl/auth'
 import { syncSimkl, getLastSimklSyncTime } from '../services/simkl/sync'
 import { syncProviderNow } from '../services/providerSync'
+import { getPosterArtworkCandidate, getPosterFadeAppearance, getPosterVisibleDetails, POSTER_EPISODE_SEGMENT_LIMIT, POSTER_RATING_CAPTION_CLASS, POSTER_RATING_CAPTION_STAR_CLASS } from '../services/posterLayout'
+import { PosterBottomStack } from '../components/media/PosterBottomStack'
+import { PosterFooterCaption } from '../components/media/PosterFooterCaption'
+import { getTmdbImageVariant } from '../services/tmdb'
 import { getAddonConfigureUrl, loadAddonManifest, installAddon } from '../services/addons'
 import { clearAppMetadataCache } from '../services/metadata'
 import { stremioLogin, getStremioAddons, getStremioLibrary, saveStremioAuth, getStremioAuth, clearStremioAuth } from '../services/stremio'
@@ -49,10 +53,10 @@ import ServerIntegrationsSettings from '../components/settings/ServerIntegration
 import AuralesSyncSettings from '../components/settings/AuralesSyncSettings'
 import AccountsHub from '../components/settings/AccountsHub'
 import { getUpcomingPreferences, setUpcomingPreferences } from '../services/upcoming'
-import { clearPreferredExternalPlayer, getExternalPlayerSettingsPlatform, getPreferredExternalPlayer, setExternalPlayerSettingsPlatform, setPreferredExternalPlayer, type ExternalPlayer, type ExternalPlayerPlatform } from '../services/player/externalPlayers'
-import { getBetterPostersUrl, type BetterPostersRatingSource } from '../services/betterPosters'
-import { getSimklDerivedCatalogItems } from '../services/simkl/lists'
+import { clearPreferredExternalPlayer, getAutoOpenExternalPlayer, getExternalPlayerSettingsPlatform, getPreferredExternalPlayer, setAutoOpenExternalPlayer, setExternalPlayerSettingsPlatform, setPreferredExternalPlayer, type ExternalPlayer, type ExternalPlayerPlatform } from '../services/player/externalPlayers'
 import { getActiveProfileId, getProfileBackupEntries, isProfileBackupStorageKey, profileBackupStorageKeyForImport, profileStorageKey, PROFILE_BACKUP_KEYS } from '../services/profiles'
+import { getTmdbCardMetadata, getTmdbCleanPoster } from '../services/tmdb'
+import { loadAmbientColor, type AmbientColor } from '../services/ambientColor'
 
 const BACKUP_KEYS = [
   'tmdb_api_key',
@@ -95,7 +99,6 @@ const BACKUP_KEYS = [
   'aurales_poster_trailer_previews',
   'aurales_poster_trailer_hover_delay_ms',
   'aurales_poster_trailer_sound',
-  'aurales_better_posters',
   'aurales_trailer_volume',
   'orynt_next_episode_prompt',
   'orynt_accent_color',
@@ -158,6 +161,7 @@ function SettingSection({ title, description, children }: { title?: string; desc
 // label through context lets every control inside it adopt that name as a
 // fallback, without having to repeat the string at 39 call sites.
 const SettingRowLabelContext = createContext<string | undefined>(undefined)
+const SettingRowPosterToneContext = createContext(false)
 
 // Wraps the shared menu so selects inside a SettingRow inherit that row's
 // label as their accessible name, matching SettingToggle. None of the 23 call
@@ -167,15 +171,17 @@ function SelectMenu(props: React.ComponentProps<typeof BaseSelectMenu>) {
   return <BaseSelectMenu {...props} aria-label={props['aria-label'] ?? rowLabel} />
 }
 
-function SettingRow({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
+function SettingRow({ label, description, children, mobileInline = false }: { label: string; description?: string; children: React.ReactNode; mobileInline?: boolean }) {
   return (
-    <div className="flex items-center justify-between gap-4 px-6 py-4">
+    <div className={`flex items-center gap-3 px-4 py-4 sm:justify-between sm:gap-4 sm:px-6 ${mobileInline ? 'flex-row justify-between' : 'flex-col items-stretch sm:flex-row'}`}>
       <div className="min-w-0">
         <p className="text-sm text-white">{label}</p>
-        {description && <p className="text-xs text-white/60 mt-0.5 leading-relaxed">{description}</p>}
+        {description && <p className={`${mobileInline ? 'text-sm sm:text-xs' : 'text-xs'} mt-0.5 leading-relaxed text-white/60`}>{description}</p>}
       </div>
-      <div className="flex-shrink-0">
-        <SettingRowLabelContext.Provider value={label}>{children}</SettingRowLabelContext.Provider>
+      <div className={`flex flex-shrink-0 justify-end sm:block ${mobileInline ? 'w-auto' : 'w-full sm:w-auto'}`}>
+        <SettingRowLabelContext.Provider value={label}>
+          <SettingRowPosterToneContext.Provider value={mobileInline}>{children}</SettingRowPosterToneContext.Provider>
+        </SettingRowLabelContext.Provider>
       </div>
     </div>
   )
@@ -186,7 +192,8 @@ function SettingRow({ label, description, children }: { label: string; descripti
 // this file's setting rows.
 function SettingToggle({ checked, onChange, label, disabled = false }: { checked: boolean; onChange: (v: boolean) => void; label?: string; disabled?: boolean }) {
   const rowLabel = useContext(SettingRowLabelContext)
-  return <Switch checked={checked} onChange={onChange} label={label ?? rowLabel} disabled={disabled} />
+  const posterTone = useContext(SettingRowPosterToneContext)
+  return <Switch checked={checked} onChange={onChange} label={label ?? rowLabel} disabled={disabled} tone={posterTone ? 'success' : 'accent'} />
 }
 
 type SettingSelectOption = { value: string | number; label: string }
@@ -215,6 +222,24 @@ function SettingSelect({
       {options.map((option) => <option key={String(option.value)} value={option.value}>{option.label}</option>)}
     </BaseSelectMenu>
   )
+}
+
+function PosterSegmentedSelect({ value, options, onChange, label, mobileInline = false }: {
+  value: string | number
+  options: SettingSelectOption[]
+  onChange: (value: string) => void
+  label: string
+  mobileInline?: boolean
+}) {
+  return <div className={`max-w-full rounded-xl border border-white/10 bg-white/[0.06] p-1 scrollbar-none ${mobileInline ? 'flex w-auto overflow-x-auto overscroll-x-contain' : 'flex w-full gap-1 overflow-x-auto overscroll-x-contain sm:w-auto'}`} role="group" aria-label={label}>
+    {options.map((option) => {
+      const selected = String(option.value) === String(value)
+      return <button key={String(option.value)} type="button" aria-pressed={selected} onClick={() => onChange(String(option.value))}
+        className={`min-h-10 w-auto min-w-max flex-1 whitespace-nowrap rounded-lg px-2 py-2 text-center text-[13px] font-semibold leading-tight transition-colors sm:min-h-9 sm:flex-none sm:px-3 sm:text-sm ${mobileInline ? 'flex-none' : ''} ${selected ? 'bg-white/20 text-white shadow-sm' : 'text-white/65 hover:bg-white/10 hover:text-white'}`}>
+        {option.label}
+      </button>
+    })}
+  </div>
 }
 
 function DangerButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
@@ -696,112 +721,253 @@ function ImageCacheSection({ onClearBackdropCache }: { onClearBackdropCache: () 
   )
 }
 
-interface BetterPostersPreview {
-  catalogId: 'trending-shows' | 'trending-movies' | 'trending-anime'
-  label: string
-  id: string
-  title: string
-}
-
-const DEFAULT_BETTER_POSTERS_PREVIEWS: BetterPostersPreview[] = [
-  { catalogId: 'trending-shows', label: 'Trending show', id: 'tt9288030', title: 'Reacher' },
-  { catalogId: 'trending-movies', label: 'Trending movie', id: 'tt28014327', title: 'Mayday' },
-  { catalogId: 'trending-anime', label: 'Trending anime', id: 'tt0434665', title: 'Bleach' },
-]
-
 function ArtworkSettingsSection() {
-  const betterPosters = useAppStore((s) => s.betterPosters)
-  const setBetterPosters = useAppStore((s) => s.setBetterPosters)
-  const previewRef = useRef<HTMLDivElement>(null)
-  const [posterPreviews, setPosterPreviews] = useState<BetterPostersPreview[]>(DEFAULT_BETTER_POSTERS_PREVIEWS)
+  const posterOverlay = useAppStore((s) => s.posterOverlay)
+  const setPosterOverlay = useAppStore((s) => s.setPosterOverlay)
+  const progressPlacement = posterOverlay.showProgress ? posterOverlay.progressPlacement : 'off'
+  const progressPlacementDescription = progressPlacement === 'around-status'
+    ? 'A progress ring around the status symbol.'
+    : progressPlacement === 'under-details'
+      ? 'A slim progress line below the poster details.'
+      : progressPlacement === 'along-bottom'
+        ? 'A thin bar along the bottom edge.'
+        : 'Hide the progress indicator from posters.'
+  const previewExamples: Array<{ title: string; type: 'movie' | 'series'; tmdbId: number; genre: string; rating: number; poster: string; backdrop: string }> = [
+    {
+      title: 'The Dark Knight', type: 'movie', tmdbId: 155, genre: 'Action', rating: 9.0,
+      poster: 'https://image.tmdb.org/t/p/w500/qJ2tW6WMUDux911BTUgMe1F608y.jpg',
+      backdrop: 'https://image.tmdb.org/t/p/w780/hkBaDkMWbLaf8B1lsWsKX7Ew3Xq.jpg',
+    },
+    {
+      title: 'Stranger Things', type: 'series', tmdbId: 66732, genre: 'Sci-Fi', rating: 8.7,
+      poster: 'https://image.tmdb.org/t/p/w342/49WJfeN0moxb9IPfGn8AIqMGskD.jpg',
+      backdrop: 'https://image.tmdb.org/t/p/w780/56v2KjBlYj3Hy0bHkdKI8FWL4fZ.jpg',
+    },
+    {
+      title: 'The Last of Us', type: 'series', tmdbId: 100088, genre: 'Drama', rating: 8.6,
+      poster: 'https://image.tmdb.org/t/p/w342/uKvVjHNqB5VmOrdxqAt2F7J78ED.jpg',
+      backdrop: 'https://image.tmdb.org/t/p/w780/uDgy6hyPd82kOHh6I95FLtLnj6p.jpg',
+    },
+  ]
+  // Keep recognizable art on screen immediately. Empty image-free fallbacks
+  // looked like missing Home posters while the metadata request was pending.
+  const [auralesPreviews, setAuralesPreviews] = useState<Array<{ title: string; poster?: string; cleanPoster?: string; backdrop?: string; logo?: string; genre?: string; rating?: number }>>(previewExamples)
+  const [previewArtworkLoaded, setPreviewArtworkLoaded] = useState<Record<number, string>>({})
+  const [previewArtworkFailed, setPreviewArtworkFailed] = useState<Record<number, string>>({})
+  const [previewColors, setPreviewColors] = useState<Record<number, AmbientColor>>({})
+  const [previewLogoLoaded, setPreviewLogoLoaded] = useState<Record<number, string>>({})
+  const [previewLogoFailed, setPreviewLogoFailed] = useState<Record<number, string>>({})
 
   useEffect(() => {
     let cancelled = false
-    Promise.allSettled(DEFAULT_BETTER_POSTERS_PREVIEWS.map(async (preview) => {
-      const items = await getSimklDerivedCatalogItems(preview.catalogId)
-      const item = items.find((candidate) => candidate.imdbId?.startsWith('tt'))
-      return item?.imdbId ? { ...preview, id: item.imdbId, title: item.title } : preview
-    })).then((results) => {
-      if (!cancelled) {
-        setPosterPreviews(results.map((result, index) => result.status === 'fulfilled' ? result.value : DEFAULT_BETTER_POSTERS_PREVIEWS[index]))
+    Promise.allSettled(previewExamples.map(async (example) => {
+      const metadata = await getTmdbCardMetadata(example.type, example.tmdbId)
+        .catch(() => ({} as Awaited<ReturnType<typeof getTmdbCardMetadata>>))
+      const cleanPoster = await getTmdbCleanPoster(example.type, example.tmdbId, metadata.poster || example.poster)
+        .catch(() => undefined)
+      return {
+        ...example,
+        poster: metadata.poster || example.poster,
+        cleanPoster,
+        backdrop: metadata.backdrop || example.backdrop,
+        logo: metadata.englishLogo || metadata.logo,
+        genre: metadata.genre || example.genre,
       }
+    })).then((results) => {
+      if (!cancelled) setAuralesPreviews(results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []))
     })
     return () => { cancelled = true }
   }, [])
-
-  const updateBetterPosters = (settings: Partial<typeof betterPosters>) => {
-    setBetterPosters({ ...betterPosters, ...settings })
-    window.requestAnimationFrame(() => previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
-  }
-  const previewPosterPattern = getBetterPostersUrl(betterPosters)
+  const displayAuralesPreviews = auralesPreviews
 
   return (
     <>
-      <h3 className="text-sm font-bold text-emerald-400/80 mb-3">Better Posters</h3>
       <SettingSection>
-        <SettingRow label="Better Posters" description="Bake smart labels into posters from btttr.cc. Made and hosted by mousa.a on Discord. It takes priority over a custom poster URL while enabled.">
-          <SettingToggle checked={betterPosters.enabled} onChange={(enabled) => updateBetterPosters({ enabled })} />
-        </SettingRow>
-        {betterPosters.enabled && <>
-          <SettingRow label="Trend tags" description="Show Trending, New, and ranking labels.">
-            <SettingToggle checked={betterPosters.trendTags} onChange={(trendTags) => updateBetterPosters({ trendTags })} />
-          </SettingRow>
-          <SettingRow label="Quality tags" description="Show 4K, Dolby Vision, and Atmos badges when available.">
-            <SettingToggle checked={betterPosters.qualityTags} onChange={(qualityTags) => updateBetterPosters({ qualityTags })} />
-          </SettingRow>
-          <SettingRow label="Genre" description="Show the genre label at the bottom of the poster.">
-            <SettingToggle checked={betterPosters.showGenre} onChange={(showGenre) => updateBetterPosters({ showGenre })} />
-          </SettingRow>
-          <SettingRow label="Rating" description="Show a rating label at the bottom of the poster.">
-            <SettingToggle checked={betterPosters.showRating} onChange={(showRating) => updateBetterPosters({ showRating })} />
-          </SettingRow>
-          {betterPosters.showRating && <SettingRow label="Rating source" description="Choose which score BetterPosters prints.">
-            <SettingSelect
-              value={betterPosters.ratingSource}
-              onChange={(ratingSource) => updateBetterPosters({ ratingSource: ratingSource as BetterPostersRatingSource })}
-              options={[
-                { value: 'avg', label: 'Average' }, { value: 'IM', label: 'IMDb (/10)' },
-                { value: 'TM', label: 'TMDB (/10)' }, { value: 'RT', label: 'Rotten Tomatoes (%)' },
-                { value: 'MC', label: 'Metacritic (/100)' }, { value: 'TR', label: 'Trakt (/10)' },
-                { value: 'LB', label: 'Letterboxd (/5)' }, { value: 'RE', label: 'Roger Ebert (/4)' },
-              ]}
-            />
-          </SettingRow>}
-          <SettingRow label="Age rating" description="Show labels such as PG-13, TV-MA, or R.">
-            <SettingToggle checked={betterPosters.ageRating} onChange={(ageRating) => updateBetterPosters({ ageRating })} />
-          </SettingRow>
-          <SettingRow label="Poster language" description="Language used for BetterPosters labels and metadata.">
-            <SettingSelect
-              value={betterPosters.language}
-              onChange={(language) => updateBetterPosters({ language })}
-              options={[
-                { value: 'en', label: 'English' }, { value: 'de', label: 'Deutsch' },
-                { value: 'es-ES', label: 'Español (España)' }, { value: 'es-MX', label: 'Español (Latinoamérica)' },
-                { value: 'fr', label: 'Français' }, { value: 'pt-BR', label: 'Português (Brasil)' },
-              ]}
-            />
-          </SettingRow>
-          <div ref={previewRef} className="px-6 py-6 bg-black/10">
-            <p className="text-sm font-medium text-white">Live preview</p>
-            <p className="text-xs text-white/60 mt-0.5">Current trending picks. Changes update as you adjust the options above.</p>
-            <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-3">
-              {posterPreviews.map((preview) => {
-                const posterUrl = previewPosterPattern.replace('{imdb_id}', preview.id)
-                return <figure key={preview.catalogId} className="min-w-0 text-center">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-emerald-300/75">{preview.label}</p>
-                  <img
-                    key={posterUrl}
-                    src={posterUrl}
-                    alt={`Better Posters preview for ${preview.title}`}
-                    className="mx-auto mt-2 w-full max-w-40 rounded-xl border border-white/10 shadow-[0_14px_34px_rgba(0,0,0,0.38)]"
-                  />
-                  <figcaption className="mt-2 truncate text-xs font-medium text-white/70" title={preview.title}>{preview.title}</figcaption>
-                </figure>
-              })}
-            </div>
+        <div className="px-4 py-5 sm:px-6 sm:py-6">
+          <p className="text-sm font-medium text-white">Aurales poster preview</p>
+          <p className="mt-0.5 text-xs text-white/60">Poster information is composed in the app and stays independent of external poster services.</p>
+          <div className="mt-4 -mx-1 flex snap-x snap-mandatory gap-2 overflow-x-auto overscroll-x-contain pb-3 scrollbar-none sm:mx-0 sm:gap-5 sm:px-0">
+            {displayAuralesPreviews.slice(0, 3).map((preview, index) => {
+              const previewArtworkCandidate = getPosterArtworkCandidate(posterOverlay.artwork, preview.poster, preview.cleanPoster, preview.backdrop)
+              const failedPreviewArtwork = previewArtworkFailed[index]
+              const previewArtwork = failedPreviewArtwork === previewArtworkCandidate
+                ? preview.poster !== previewArtworkCandidate ? preview.poster : undefined
+                : failedPreviewArtwork === preview.poster ? undefined : previewArtworkCandidate
+              const previewLogoCandidate = getTmdbImageVariant(preview.logo, 'w500')
+              const failedPreviewLogo = previewLogoFailed[index]
+              const previewLogo = failedPreviewLogo === previewLogoCandidate
+                ? preview.logo && preview.logo !== previewLogoCandidate ? preview.logo : undefined
+                : failedPreviewLogo === preview.logo ? undefined : previewLogoCandidate
+              const previewFade = getPosterFadeAppearance(posterOverlay.fade, posterOverlay.colorMode, previewColors[index])
+              const previewHasWatched = posterOverlay.enabled && posterOverlay.showWatched && index === 2
+                && (posterOverlay.style !== 'line' || posterOverlay.showAsCheckmark)
+              const previewWatchedCheckmark = posterOverlay.showAsCheckmark
+                ? posterOverlay.style === 'symbol'
+                  ? <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="white" /><path d="m7.5 12.2 3 3L17 8.8" fill="none" stroke="#111" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                  : <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><circle cx="12" cy="12" r="9.5" /><path d="m8 12 2.5 2.5L16.5 9" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                : null
+              const previewWatchedSymbol = previewWatchedCheckmark || (posterOverlay.style === 'symbol'
+                ? <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><circle cx="12" cy="12" r="9.5" /></svg>
+                : null)
+              const previewWatchedClass = `flex shrink-0 items-center justify-center gap-1 text-white drop-shadow-md ${posterOverlay.style === 'tag' ? 'text-[10px] font-semibold' : posterOverlay.style === 'badge' ? 'rounded-full border border-white/80 px-1.5 py-0.5 text-[10px] font-semibold' : ''}`
+              const previewHasFavorite = posterOverlay.enabled && posterOverlay.showFavorite && index === 2
+              const previewHasAroundStatus = posterOverlay.enabled && posterOverlay.progressPlacement === 'around-status' && posterOverlay.showProgress && index === 0
+              const previewHasInlineStatus = previewHasWatched || previewHasAroundStatus
+              const previewDetails = getPosterVisibleDetails({
+                genre: posterOverlay.showGenre && Boolean(preview.genre),
+                rating: posterOverlay.showRating && preview.rating != null,
+                ageRating: posterOverlay.showCertification && index === 2,
+              })
+              const previewHasRating = posterOverlay.enabled && previewDetails.rating && preview.rating != null
+              const previewHasFooter = posterOverlay.enabled && Boolean(previewHasWatched || previewHasFavorite || previewHasAroundStatus
+                || previewHasRating
+                || previewDetails.genre && preview.genre
+                || previewDetails.ageRating && index === 2)
+              const previewHasBottomProgress = posterOverlay.enabled && posterOverlay.showProgress && posterOverlay.progressPlacement === 'along-bottom'
+                && (index === 0 || index === 1 && posterOverlay.splitEpisodeProgress && posterOverlay.showEpisodes)
+              const previewHasUnderDetailsProgress = posterOverlay.enabled && posterOverlay.showProgress && posterOverlay.progressPlacement === 'under-details' && index < 2
+              // Never present the initials fallback as a finished poster. The
+              // example stays covered until its selected artwork and separate
+              // logo have actually loaded. The neutral fade remains valid
+              // while its decorative artwork tint is being sampled.
+              const previewReady = Boolean(previewArtwork)
+                && previewArtworkLoaded[index] === previewArtwork
+                && (!previewLogo || previewLogoLoaded[index] === previewLogo)
+              const previewFooter = previewHasFooter ? <PosterFooterCaption
+                alignment={posterOverlay.contentAlignment}
+                className="relative text-[11px] font-semibold sm:text-[13px]"
+                status={previewHasAroundStatus
+                  ? <span className="relative inline-flex h-5 w-5 shrink-0 items-center justify-center">{previewHasWatched ? previewWatchedCheckmark || <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="9.5" /></svg> : <svg className="h-3 w-3 fill-white" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>}<svg className="absolute inset-0 h-full w-full -rotate-90" viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" fill="none" stroke="rgba(255,255,255,.45)" strokeWidth="2.5" /><circle cx="18" cy="18" r="15" fill="none" stroke="#fff" strokeWidth="2.5" strokeDasharray="39.6 94.25" strokeLinecap="round" /></svg></span>
+                  : previewHasWatched ? <span className={previewWatchedClass}>{previewWatchedSymbol}{posterOverlay.style !== 'symbol' && <span className={posterOverlay.showAsCheckmark ? 'hidden sm:inline' : ''}>Watched</span>}</span> : undefined}
+                favorite={posterOverlay.showFavorite && index === 2 ? <span>♥</span> : undefined}
+                genre={previewDetails.genre ? preview.genre : undefined}
+                ageRating={previewDetails.ageRating && index === 2 ? <span className="shrink-0 text-[10px] font-semibold leading-none text-white [text-shadow:0_1px_0_rgba(0,0,0,.85)] sm:text-[13px]">TV-MA</span> : undefined}
+                showSeparator={!previewHasInlineStatus}
+                rating={previewDetails.rating && preview.rating != null ? <><svg className="h-3 w-3 shrink-0 fill-current" viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" /></svg>{new Intl.NumberFormat(navigator.language, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(preview.rating)}</> : undefined}
+              /> : undefined
+              const previewBottomProgress = previewHasBottomProgress ? index === 1
+                ? <div className="mx-1 flex h-1 w-[calc(100%-0.5rem)] gap-px">{Array.from({ length: POSTER_EPISODE_SEGMENT_LIMIT }, (_, segment) => <span key={segment} className={`flex-1 rounded-full ${segment < 7 ? 'bg-white' : 'bg-white/35'}`} />)}</div>
+                : <div className="mx-1 h-1 w-[calc(100%-0.5rem)] rounded-full bg-white/35"><div className="h-full w-[42%] rounded-full bg-white" /></div>
+                : undefined
+              const previewUnderDetailsProgress = previewHasUnderDetailsProgress
+                ? <div className="relative h-[3px] w-8 overflow-hidden rounded-full bg-white/40"><div className={`h-full ${index === 0 ? 'w-[42%]' : 'w-[70%]'} bg-white`} /></div>
+                : undefined
+              return <figure key={`${preview.title}-${index}`} className="w-[8.75rem] min-w-0 flex-none snap-start text-center sm:w-[clamp(9rem,43vw,14rem)]">
+              <div className="poster-artwork-viewport relative aspect-[2/3] w-full overflow-hidden rounded-xl border border-white/15 bg-black shadow-[0_14px_34px_rgba(0,0,0,0.38)]">
+                {previewArtwork
+                  ? <img src={previewArtwork} alt={`${preview.title} ${posterOverlay.artwork}`} className="absolute inset-0 h-full w-full object-cover" loading="eager" onLoad={(event) => { setPreviewArtworkLoaded((current) => ({ ...current, [index]: previewArtwork })); const source = event.currentTarget.currentSrc || previewArtwork; void loadAmbientColor(source, undefined, 'poster-bottom').then((color) => { if (color) setPreviewColors((current) => ({ ...current, [index]: color })) }).catch(() => undefined) }} onError={() => setPreviewArtworkFailed((current) => ({ ...current, [index]: previewArtwork }))} />
+                  : <div aria-hidden="true" className="absolute inset-0 bg-black" />}
+                {(posterOverlay.enabled || previewLogo) && <div className={`poster-artwork-fade absolute inset-x-0 bottom-0 ${previewFade.heightClass} ${previewFade.colorClass}`} style={{ background: previewFade.background }} />}
+                {posterOverlay.enabled && (posterOverlay.showTimeLeft && index === 0 || posterOverlay.showEpisodes && index === 1 || posterOverlay.showEpisodesWatched && index === 1 || posterOverlay.showNextEpisode && index === 1) && <div className={`absolute inset-x-2 top-2 z-20 flex flex-wrap gap-1 ${posterOverlay.contentAlignment === 'left' ? 'justify-start' : posterOverlay.contentAlignment === 'right' ? 'justify-end' : 'justify-center'}`}>
+                  {posterOverlay.showTimeLeft && index === 0 && <span className="whitespace-nowrap rounded-md bg-black/75 px-1.5 py-0.5 text-[9px] font-semibold text-white">42m left</span>}
+                  {posterOverlay.showEpisodes && index === 1 && <span className="whitespace-nowrap rounded-md bg-black/75 px-1.5 py-0.5 text-[9px] font-semibold text-white">3 episodes left</span>}
+                  {posterOverlay.showEpisodesWatched && index === 1 && <span className="whitespace-nowrap rounded-md bg-black/75 px-1.5 py-0.5 text-[9px] font-semibold text-white">5/8 watched</span>}
+                  {posterOverlay.showNextEpisode && index === 1 && <span className="whitespace-nowrap rounded-md bg-black/75 px-1.5 py-0.5 text-[9px] font-semibold text-white">Next S2E4</span>}
+                </div>}
+                {posterOverlay.enabled && posterOverlay.showWatched && index === 2 && posterOverlay.style === 'line' && <span className="absolute inset-x-0 bottom-0 z-10 h-[3px] bg-white" />}
+                <PosterBottomStack
+                  className={`poster-bottom-stack--${posterOverlay.contentAlignment}`}
+                  logo={previewLogo
+                    ? <img src={previewLogo} alt="" aria-hidden="true" className="max-h-10 max-w-[72%] object-contain drop-shadow-lg sm:max-h-16" loading="eager" onLoad={() => setPreviewLogoLoaded((current) => ({ ...current, [index]: previewLogo }))} onError={() => setPreviewLogoFailed((current) => ({ ...current, [index]: previewLogo }))} />
+                    : <span className="max-w-[88%] text-center text-[10px] font-extrabold uppercase leading-tight tracking-[.12em] text-white drop-shadow-[0_2px_8px_rgba(0,0,0,.95)] sm:text-sm">{preview.title}</span>}
+                  footer={previewFooter}
+                  underDetailsProgress={previewUnderDetailsProgress}
+                  bottomProgress={previewBottomProgress}
+                />
+                {!previewReady && <div aria-hidden="true" className="absolute inset-0 z-50 bg-black" />}
+              </div>
+              {posterOverlay.showRatingBelow && preview.rating != null && <p className={`${POSTER_RATING_CAPTION_CLASS} pl-1`}><svg className={POSTER_RATING_CAPTION_STAR_CLASS} viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" /></svg>{new Intl.NumberFormat(navigator.language, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(preview.rating)}</p>}
+              <figcaption className="mt-2 min-h-8 break-words line-clamp-2 text-xs font-medium leading-4 text-white/75" title={preview.title}>{preview.title}</figcaption>
+            </figure>})}
           </div>
+        </div>
+      </SettingSection>
+      <h3 className="mb-3 text-sm font-bold text-emerald-400/80">Aurales Poster</h3>
+      <SettingSection>
+        <SettingRow label="Artwork" mobileInline>
+          <PosterSegmentedSelect value={posterOverlay.artwork} onChange={(artwork) => setPosterOverlay({ ...posterOverlay, artwork: artwork as typeof posterOverlay.artwork })} label="Poster artwork" options={[{ value: 'poster', label: 'Poster' }, { value: 'backdrop', label: 'Backdrop' }]} mobileInline />
+        </SettingRow>
+        <SettingRow label="Show info on posters" description="Progress and details over the artwork." mobileInline>
+          <SettingToggle checked={posterOverlay.enabled} onChange={(enabled) => setPosterOverlay({ ...posterOverlay, enabled })} />
+        </SettingRow>
+        {posterOverlay.enabled && <>
+          <SettingRow label="Colors" description="Tinted from each poster.">
+            <PosterSegmentedSelect value={posterOverlay.colorMode} onChange={(colorMode) => setPosterOverlay({ ...posterOverlay, colorMode: colorMode as typeof posterOverlay.colorMode })} label="Poster colors" options={[{ value: 'artwork', label: 'From Artwork' }, { value: 'dark', label: 'Dark' }, { value: 'neutral', label: 'Neutral' }]} />
+          </SettingRow>
+          <SettingRow label="Fade" description="How far up the poster the tint reaches.">
+            <PosterSegmentedSelect value={posterOverlay.fade} onChange={(fade) => setPosterOverlay({ ...posterOverlay, fade: fade as typeof posterOverlay.fade })} label="Poster fade" options={[{ value: 'short', label: 'Short' }, { value: 'standard', label: 'Standard' }, { value: 'tall', label: 'Tall' }]} />
+          </SettingRow>
+          <p className="px-4 pb-3 text-xs text-white/55 sm:px-6">Backdrop uses a scene and the title logo.</p>
         </>}
       </SettingSection>
+      {posterOverlay.enabled && <>
+        <h4 className="mb-3 mt-6 px-1 text-xs font-semibold text-white/60">Status</h4>
+        <SettingSection>
+          <SettingRow label="Style">
+            <PosterSegmentedSelect value={posterOverlay.style} onChange={(style) => setPosterOverlay({ ...posterOverlay, style: style as typeof posterOverlay.style })} label="Status style" options={[{ value: 'tag', label: 'Tag' }, { value: 'badge', label: 'Badge' }, { value: 'symbol', label: 'Symbol' }, { value: 'line', label: 'Line' }]} />
+          </SettingRow>
+          <SettingRow label="Position">
+            <PosterSegmentedSelect value={posterOverlay.contentAlignment} onChange={(contentAlignment) => setPosterOverlay({ ...posterOverlay, contentAlignment: contentAlignment as typeof posterOverlay.contentAlignment })} label="Poster content position" options={[{ value: 'left', label: 'Left' }, { value: 'center', label: 'Center' }, { value: 'right', label: 'Right' }]} />
+          </SettingRow>
+        </SettingSection>
+        <h4 className="mb-3 mt-6 px-1 text-xs font-semibold text-white/60">Show on posters</h4>
+        <SettingSection>
+          <SettingRow label="Episodes left" mobileInline>
+            <SettingToggle checked={posterOverlay.showEpisodes} onChange={(showEpisodes) => setPosterOverlay({ ...posterOverlay, showEpisodes })} />
+          </SettingRow>
+          <SettingRow label="Episodes watched" mobileInline>
+            <SettingToggle checked={posterOverlay.showEpisodesWatched} onChange={(showEpisodesWatched) => setPosterOverlay({ ...posterOverlay, showEpisodesWatched })} />
+          </SettingRow>
+          <SettingRow label="Show as next episode" mobileInline>
+            <SettingToggle checked={posterOverlay.showNextEpisode} onChange={(showNextEpisode) => setPosterOverlay({ ...posterOverlay, showNextEpisode })} />
+          </SettingRow>
+          <SettingRow label="Time left" mobileInline>
+            <SettingToggle checked={posterOverlay.showTimeLeft} onChange={(showTimeLeft) => setPosterOverlay({ ...posterOverlay, showTimeLeft })} />
+          </SettingRow>
+          <SettingRow label="Watched" mobileInline>
+            <SettingToggle checked={posterOverlay.showWatched} onChange={(showWatched) => setPosterOverlay({ ...posterOverlay, showWatched })} />
+          </SettingRow>
+          <SettingRow label="Show as checkmark" mobileInline>
+            <SettingToggle checked={posterOverlay.showAsCheckmark} onChange={(showAsCheckmark) => setPosterOverlay({ ...posterOverlay, showAsCheckmark })} />
+          </SettingRow>
+          <SettingRow label="In favorites" mobileInline>
+            <SettingToggle checked={posterOverlay.showFavorite} onChange={(showFavorite) => setPosterOverlay({ ...posterOverlay, showFavorite })} />
+          </SettingRow>
+        </SettingSection>
+        <h4 className="mb-3 mt-6 px-1 text-xs font-semibold text-white/60">Progress</h4>
+        <SettingSection>
+        <SettingRow label="Placement">
+            <PosterSegmentedSelect value={progressPlacement} onChange={(nextPlacement) => setPosterOverlay({ ...posterOverlay, showProgress: nextPlacement !== 'off', progressPlacement: nextPlacement as typeof posterOverlay.progressPlacement })} label="Progress placement" options={[{ value: 'around-status', label: 'Around the Symbol' }, { value: 'under-details', label: 'Under the Details' }, { value: 'along-bottom', label: 'Along the Bottom' }, { value: 'off', label: 'Off' }]} />
+          </SettingRow>
+          <SettingRow label="Split by episode" mobileInline>
+            <SettingToggle checked={posterOverlay.splitEpisodeProgress} onChange={(splitEpisodeProgress) => setPosterOverlay({ ...posterOverlay, splitEpisodeProgress })} />
+          </SettingRow>
+        </SettingSection>
+        <p className="px-1 pt-2 text-xs text-white/55">{progressPlacementDescription}</p>
+      </>}
+      <h4 className="mb-3 mt-6 px-1 text-xs font-semibold text-white/60">Poster captions</h4>
+      <SettingSection>
+        <SettingRow label="Ratings below posters" mobileInline>
+          <SettingToggle checked={posterOverlay.showRatingBelow} onChange={(showRatingBelow) => setPosterOverlay({ ...posterOverlay, showRatingBelow })} />
+        </SettingRow>
+      </SettingSection>
+      <p className="px-1 pt-2 text-xs text-white/55">Show available ratings below movie and show posters in libraries, Home, Search, and related rows.</p>
+      {posterOverlay.enabled && <>
+        <h4 className="mb-3 mt-6 px-1 text-xs font-semibold text-white/60">Details</h4>
+        <p className="px-1 pb-2 text-xs text-white/55">Up to two show at once.</p>
+        <SettingSection>
+          <SettingRow label="Genre" mobileInline>
+            <SettingToggle checked={posterOverlay.showGenre} onChange={(showGenre) => setPosterOverlay({ ...posterOverlay, showGenre })} />
+          </SettingRow>
+          <SettingRow label="Rating" mobileInline>
+            <SettingToggle checked={posterOverlay.showRating} onChange={(showRating) => setPosterOverlay({ ...posterOverlay, showRating })} />
+          </SettingRow>
+          <SettingRow label="Age rating" mobileInline>
+            <SettingToggle checked={posterOverlay.showCertification} onChange={(showCertification) => setPosterOverlay({ ...posterOverlay, showCertification })} />
+          </SettingRow>
+        </SettingSection>
+
+      </>}
     </>
   )
 }
@@ -823,6 +989,7 @@ export default function SettingsPage() {
   const [settingsSearch, setSettingsSearch] = useState('')
   const [externalPlayerPlatform, setExternalPlayerPlatform] = useState<ExternalPlayerPlatform>(() => getExternalPlayerSettingsPlatform())
   const [externalPlayer, setExternalPlayer] = useState<ExternalPlayer | ''>(() => getPreferredExternalPlayer(externalPlayerPlatform) ?? '')
+  const [autoOpenExternalPlayer, setAutoOpenExternalPlayerState] = useState(() => getAutoOpenExternalPlayer(externalPlayerPlatform))
   // Jellyfin is available through the browser integration as well as Tauri.
   // Keep the server settings category visible on every platform; WebDAV remains
   // hidden inside the connection editor when the native backend is unavailable.
@@ -1830,7 +1997,7 @@ export default function SettingsPage() {
         {
           id: 'artwork',
           label: 'Poster',
-          description: 'Customize poster labels, ratings, and language with Better Posters.',
+          description: 'Compose watch status, progress, and details directly onto posters in Aurales.',
           icon: (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
               <rect x="3" y="3" width="18" height="18" rx="2" strokeLinecap="round" strokeLinejoin="round" />
@@ -2495,10 +2662,6 @@ export default function SettingsPage() {
                     <option value={50}>50 items</option>
                   </SelectMenu>
                 </SettingRow>
-                <SettingRow label="Watch status on posters" description="Show Continue Watching progress and watched checkmarks on poster cards.">
-                  <SettingToggle checked={store.showPosterWatchStatus} onChange={(enabled) => store.setShowPosterWatchStatus(enabled)} />
-                </SettingRow>
-
               </SettingSection>
 
               {/* ─── Per-Service Settings ─── */}
@@ -3264,6 +3427,7 @@ export default function SettingsPage() {
                     setExternalPlayerPlatform(platform)
                     setExternalPlayerSettingsPlatform(platform)
                     setExternalPlayer(getPreferredExternalPlayer(platform) ?? '')
+                    setAutoOpenExternalPlayerState(getAutoOpenExternalPlayer(platform))
                   }}
                   className="w-44"
                 >
@@ -3294,6 +3458,16 @@ export default function SettingsPage() {
                     <option value="aether">Aether</option>
                   </>}
                 </SelectMenu>
+              </SettingRow>
+              <SettingRow label="Open automatically" description="When enabled, playback opens in the preferred player as soon as the stream is ready.">
+                <SettingToggle
+                  checked={autoOpenExternalPlayer}
+                  onChange={(enabled) => {
+                    setAutoOpenExternalPlayerState(enabled)
+                    setAutoOpenExternalPlayer(enabled, externalPlayerPlatform)
+                  }}
+                  disabled={!externalPlayer}
+                />
               </SettingRow>
             </SettingSection>
           )}
@@ -3421,7 +3595,7 @@ export default function SettingsPage() {
                 <SettingRow label="Smart Play" description="Skip stream selection and automatically play the best ranked stream. If it fails, Aurales tries the next best source.">
                   <SettingToggle checked={store.autoPlayFirstStream} onChange={(v) => store.setAutoPlayFirstStream(v)} />
                 </SettingRow>
-                <SettingRow label="Automatic Stream Recovery" description="When a Smart Play source fails, preserve your playback session and continue with the next compatible source.">
+                <SettingRow label="Automatic Stream Recovery" description="When Smart Play fails or the worker cannot access a manually selected source, preserve playback and continue with the next compatible source.">
                   <SettingToggle checked={store.automaticStreamRecovery} onChange={(v) => store.setAutomaticStreamRecovery(v)} />
                 </SettingRow>
                 <SettingRow label="Playback source preload" description="Smart checks one Continue Watching title and up to three healthy addons. Aggressive keeps five titles warm.">

@@ -332,7 +332,6 @@ function artworkSettingsKey(): string {
     providers: settings.artProviders,
     fanart: Boolean(settings.fanartApiKey),
     custom: settings.customArtUrls,
-    betterPosters: settings.betterPosters,
     // Metadata source affects the resolved title/overview/artwork, so it must be
     // part of the cache key — otherwise switching sources returns a stale detail page
     meta: [settings.seriesMetadataSource, settings.seriesMetadataFallback, settings.animeMetadataSource, settings.animeMetadataFallback, settings.animeTitleLanguage],
@@ -1068,7 +1067,6 @@ export default function SeriesDetailPage() {
   const artProviders = useAppStore((s) => s.artProviders)
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
-  const betterPosters = useAppStore((s) => s.betterPosters)
   const seriesMetadataSource = useAppStore((s) => s.seriesMetadataSource)
   const seriesMetadataFallback = useAppStore((s) => s.seriesMetadataFallback)
   const animeMetadataSource = useAppStore((s) => s.animeMetadataSource)
@@ -1079,9 +1077,8 @@ export default function SeriesDetailPage() {
     providers: artProviders,
     fanart: Boolean(fanartApiKey),
     custom: customArtUrls,
-    betterPosters,
     meta: [seriesMetadataSource, seriesMetadataFallback, animeMetadataSource, animeMetadataFallback, animeTitleLanguage],
-  }), [artProviders, fanartApiKey, customArtUrls, betterPosters, seriesMetadataSource, seriesMetadataFallback, animeMetadataSource, animeMetadataFallback, animeTitleLanguage])
+  }), [artProviders, fanartApiKey, customArtUrls, seriesMetadataSource, seriesMetadataFallback, animeMetadataSource, animeMetadataFallback, animeTitleLanguage])
 
   const routeIsAnime = Boolean(
     state.isAnime || state.anilistId || state.malId || state.provider === 'anilist' ||

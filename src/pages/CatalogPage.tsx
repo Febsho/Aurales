@@ -12,21 +12,7 @@ import { SERVICE_PROVIDER_MAP } from './DiscoverPage'
 import WatchlistButton from '../components/WatchlistButton'
 import { dedupeMediaItems, mediaIdentity } from '../services/mediaPresentation'
 import { metadataTaskQueue, scheduleTask } from '../services/cache/backgroundTaskQueue'
-
-function matchesDiscoveryContinuation(item: SearchResult, continuation: DiscoveryCatalogContinuation): boolean {
-  const isAnime = Boolean(item.isAnime || (item.genreIds?.includes(16) && ['ja', 'zh', 'ko'].includes(item.originalLanguage || '')))
-  const matchesTab = continuation.tab === 'anime'
-    ? isAnime
-    : continuation.tab === 'movies'
-      ? item.type === 'movie' && !isAnime
-      : item.type === 'series' && !isAnime
-  if (!matchesTab || !item.poster) return false
-  if (continuation.genreIds?.length && !item.genreIds?.some((genreId) => continuation.genreIds!.includes(genreId))) return false
-  if (continuation.maxPopularity != null && (item.popularity == null || item.popularity >= continuation.maxPopularity)) return false
-  if (continuation.minRating != null && (item.rating == null || item.rating < continuation.minRating)) return false
-  if (continuation.excludeIds?.includes(mediaIdentity(item))) return false
-  return true
-}
+import { matchesDiscoveryContinuation } from '../services/discovery/catalogContinuation'
 
 export default function CatalogPage() {
   const navigate = useNavigate()

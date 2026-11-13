@@ -123,6 +123,102 @@ test('Discovery stays visible and stops motion when the system requests reduced 
   expect(motion.transitionDurationSeconds).toBeLessThanOrEqual(0.0001)
 })
 
+test('Discovery content tags include any selected Movies, Shows, and Anime combination', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/')
+  await page.getByRole('button', { name: /select profile/i }).click()
+  await page.getByRole('link', { name: 'Discover' }).click()
+
+  const menu = page.locator('.discover-content-menu')
+  await menu.locator('summary').click()
+  const filters = menu.getByRole('group', { name: 'Include content types' })
+  const movies = filters.getByRole('checkbox', { name: 'Movies' })
+  const shows = filters.getByRole('checkbox', { name: 'Shows' })
+  const anime = filters.getByRole('checkbox', { name: 'Anime' })
+  await expect(movies).toHaveAttribute('aria-checked', 'true')
+  await expect(shows).toHaveAttribute('aria-checked', 'true')
+  await expect(anime).toHaveAttribute('aria-checked', 'false')
+
+  await anime.click()
+  await expect(anime).toHaveAttribute('aria-checked', 'true')
+  await movies.click()
+  await expect(movies).toHaveAttribute('aria-checked', 'false')
+  await expect(shows).toHaveAttribute('aria-checked', 'true')
+  await expect(anime).toHaveAttribute('aria-checked', 'true')
+  await page.reload()
+  await page.getByRole('button', { name: /select profile/i }).click()
+  await page.getByRole('link', { name: 'Discover' }).click()
+  const reloadedMenu = page.locator('.discover-content-menu')
+  await reloadedMenu.locator('summary').click()
+  const reloadedFilters = reloadedMenu.getByRole('group', { name: 'Include content types' })
+  await expect(reloadedFilters.getByRole('checkbox', { name: 'Movies' })).toHaveAttribute('aria-checked', 'false')
+  await expect(reloadedFilters.getByRole('checkbox', { name: 'Shows' })).toHaveAttribute('aria-checked', 'true')
+  await expect(reloadedFilters.getByRole('checkbox', { name: 'Anime' })).toHaveAttribute('aria-checked', 'true')
+})
+
+test('the default Movies & Shows feed includes weekly trends from both charts', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.addInitScript(() => {
+    const profileId = 'playwright-mixed-weekly-discovery'
+    localStorage.setItem('aurales_profiles_v1', JSON.stringify([{
+      id: profileId, name: 'Default', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', isDefault: true,
+    }]))
+    localStorage.setItem('aurales_active_profile_v1', profileId)
+    localStorage.setItem(`aurales_skip_profile_picker:profile:${profileId}`, 'true')
+    localStorage.setItem('aurales_app_managed_metadata', 'false')
+    localStorage.setItem('tmdb_api_key', 'playwright-public-test-key')
+  })
+  await page.route('https://api.ids.moe/**', (route) => route.fulfill({ json: {} }))
+  await page.route('https://api.themoviedb.org/**', async (route) => {
+    const url = new URL(route.request().url())
+    const isWeekly = /^\/3\/trending\/(movie|tv)\/week$/.test(url.pathname)
+    const isContinuation = /^\/3\/discover\/(movie|tv)$/.test(url.pathname) && url.searchParams.get('page') === '4'
+    const isSeries = url.pathname.includes('/tv/') || url.pathname.endsWith('/discover/tv')
+    const type = isSeries ? 'series' : 'movie'
+    const results = Array.from({ length: isWeekly ? 6 : isContinuation ? 20 : 0 }, (_, index) => ({
+      id: (isContinuation ? 98600 : 98500) + index,
+      title: isContinuation ? `${isSeries ? 'Series' : 'Movie'} continuation ${index + 1}` : `${isSeries ? 'Series' : 'Movie'} weekly trend ${index + 1}`,
+      name: isContinuation ? `${isSeries ? 'Series' : 'Movie'} continuation ${index + 1}` : `${isSeries ? 'Series' : 'Movie'} weekly trend ${index + 1}`,
+      poster_path: `/mixed-weekly-${type}-${index + 1}.jpg`,
+      backdrop_path: `/mixed-weekly-backdrop-${type}-${index + 1}.jpg`,
+      release_date: '2026-10-01', first_air_date: '2026-10-01',
+      // Deliberately make popularity disagree with the provider chart order:
+      // live trend shelves must keep their verified weekly rank, while the
+      // separately ranked fallback catalog can still use popularity.
+      vote_average: 8.2, vote_count: 1200, popularity: isWeekly ? 10 + index * 10 : 50 - index,
+      genre_ids: isSeries ? [18, 10759] : [18, 878], original_language: 'en',
+    }))
+    await route.fulfill({ json: { page: 1, total_pages: 1, total_results: results.length, results } })
+  })
+  await page.route('https://image.tmdb.org/**', (route) => route.fulfill({
+    contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 6"><rect width="4" height="6" fill="#334455"/></svg>',
+  }))
+
+  await page.goto('/discover')
+  await expect(page.locator('.discover-content-menu__summary')).toContainText('Movies & Shows')
+  const trending = page.locator('.discover-shelf--trending')
+  await expect(trending.getByAltText(/^Movie weekly trend \d+$/).first()).toBeVisible({ timeout: 15_000 })
+  await expect(trending.getByAltText(/^Series weekly trend \d+$/).first()).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('.discover-binge__main-poster img')).toHaveAttribute('alt', 'Series weekly trend 1 poster')
+  const spotlight = page.locator('.discover-next-hero')
+  const spotlightTitle = await spotlight.getAttribute('data-title')
+  const weekendPlan = page.locator('.discover-weekend-plan')
+  await expect(weekendPlan).toBeVisible()
+  await expect(weekendPlan.getByRole('button', { name: 'Another option' })).toBeEnabled()
+  const weekendPlanTitle = await weekendPlan.getAttribute('data-title')
+  expect(weekendPlanTitle).toBeTruthy()
+  await expect.poll(() => page.locator('.discover-shelf--trending button').evaluateAll((buttons, title) => buttons.some((button) => button.textContent?.includes(String(title))), weekendPlanTitle)).toBe(false)
+  await expect.poll(() => page.locator('.media-row--ranked button').evaluateAll((buttons, title) => buttons.some((button) => button.textContent?.includes(String(title))), weekendPlanTitle)).toBe(false)
+  await weekendPlan.getByRole('button', { name: 'Another option' }).click()
+  await expect(weekendPlan).not.toHaveAttribute('data-title', weekendPlanTitle || '')
+  await expect(spotlight).toHaveAttribute('data-title', spotlightTitle || '')
+  await expect(page.getByRole('dialog', { name: /Tonight, try/ })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Open OR TRY catalog' }).click()
+  await expect(page.getByRole('heading', { name: 'OR TRY' })).toBeVisible()
+  await expect(page.getByRole('button', { name: /^Movie continuation 1(?:\s|$)/ })).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByRole('button', { name: /^Series continuation 1(?:\s|$)/ })).toBeVisible({ timeout: 15_000 })
+})
+
 test('Discovery uses public catalogs when the active profile has no library entries', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.addInitScript(() => {
@@ -244,8 +340,8 @@ test('Discovery keeps the taste picker available when only weekly public trends 
     const type = url.pathname.includes('/movie/') ? 'movie' : 'series'
     const results = Array.from({ length: 8 }, (_, index) => ({
       id: 98500 + index,
-      title: `Trend-only title ${index + 1}`,
-      name: `Trend-only title ${index + 1}`,
+      title: `Trend-only ${type} title ${index + 1}`,
+      name: `Trend-only ${type} title ${index + 1}`,
       poster_path: `/trend-only-${index + 1}.jpg`,
       backdrop_path: `/trend-only-backdrop-${index + 1}.jpg`,
       overview: 'A current weekly-trending title used to verify browser-only fallback behavior.',
@@ -266,11 +362,11 @@ test('Discovery keeps the taste picker available when only weekly public trends 
   }))
 
   await page.goto('/discover')
-  await expect(page.locator('.discover-next-hero')).toHaveAttribute('data-title', 'Trend-only title 1', { timeout: 15_000 })
+  await expect(page.locator('.discover-next-hero')).toHaveAttribute('data-title', 'Trend-only movie title 1', { timeout: 15_000 })
   const tastePicker = page.locator('.discover-refine')
   await expect(tastePicker).toBeVisible()
-  await expect(tastePicker.locator('.discover-taste-pick')).toHaveCount(7)
-  await expect(tastePicker.locator('.discover-taste-pick__title').first()).toHaveText('Trend-only title 2')
+  await expect(tastePicker.locator('.discover-taste-pick')).toHaveCount(10)
+  await expect(tastePicker.locator('.discover-taste-pick__title').first()).toHaveText('Trend-only series title 1')
   await expect(page.getByRole('heading', { name: 'Top 10 For You', exact: true })).toHaveCount(0)
 })
 
@@ -321,7 +417,7 @@ test('Discovery genre tiles open the matching provider results and full catalog'
   }))
 
   await page.goto('/discover')
-  const genreTile = page.locator('.discover-genres__grid button').filter({ hasText: /^Action/ })
+  const genreTile = page.getByRole('button', { name: /^Action \d+ titles$/ })
   await expect(genreTile).toBeVisible()
   await expect(genreTile.locator('.discover-genres__tile-art img')).toHaveCount(3)
   await page.setViewportSize({ width: 390, height: 844 })
@@ -336,7 +432,7 @@ test('Discovery genre tiles open the matching provider results and full catalog'
   await genreTile.click()
   const genreRow = page.locator('#discover-genre-picks')
   await expect(genreRow.getByRole('heading', { name: 'Action Picks', exact: true })).toBeVisible()
-  await expect(genreRow.locator('.media-row-card-slot img[alt^="Action catalog"]')).toHaveCount(8)
+  await expect(genreRow.locator('.media-row-card-slot img[alt^="Action catalog"]')).toHaveCount(7)
   await genreRow.getByRole('button', { name: 'Open Action Picks catalog' }).click()
   const catalog = page.locator('.catalog-page')
   await expect(catalog.getByRole('heading', { name: 'Action Picks', exact: true })).toBeVisible()
@@ -1742,7 +1838,7 @@ test('mobile Discover and movie details keep text, hero and controls within the 
   }
   await expect.poll(() => animeContinuationResponses).toContain('movie:4:failed')
   const animeContinuationGrid = page.locator('.discover-more__grid')
-  await expect(animeContinuationGrid.getByText('Anime series continuation page 4 title 1', { exact: true })).toBeVisible()
+  await expect(animeContinuationGrid.locator('h3').getByText('Anime series continuation page 4 title 1', { exact: true })).toBeVisible()
   const retryAnimeContinuation = page.getByRole('button', { name: 'Retry loading titles' })
   await expect(retryAnimeContinuation).toBeVisible({ timeout: 20_000 })
   await retryAnimeContinuation.click()
@@ -1955,7 +2051,9 @@ test('Discovery remains correctly composed across Web and Tauri screen sizes', a
           timeCardsInside: timeCards.every((bounds) => bounds.top >= timeRowBounds.top - 2 && bounds.bottom <= timeRowBounds.bottom + 2),
           headingFontSize: Number.parseFloat(getComputedStyle(root.querySelector<HTMLElement>('.discover-page__heading h1')!).fontSize),
           heroFontFamily: getComputedStyle(heroTitle).fontFamily,
-          heroColumnsSeparated: heroPoster.right <= heroCopy.left + 1,
+          heroColumnsSeparated: window.matchMedia('(max-width: 700px)').matches
+            ? heroCopy.right <= heroPoster.left + 1
+            : heroPoster.right <= heroCopy.left + 1,
           heroTextContained: textBlocks.every((bounds) => bounds.left >= heroCopy.left - 1 && bounds.right <= heroCopy.right + 1 && bounds.top >= heroCopy.top - 1 && bounds.bottom <= heroCopy.bottom + 1),
           heroTextStacked: textBlocks.every((bounds, index) => index === 0 || textBlocks[index - 1]!.bottom <= bounds.top + 2),
           sectionsInside: sections.every((bounds) => bounds.left >= -1 && bounds.right <= document.documentElement.clientWidth + 1),

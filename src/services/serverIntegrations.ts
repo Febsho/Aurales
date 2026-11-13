@@ -40,6 +40,23 @@ export interface ServerConnectionInput {
   enabled: boolean
 }
 
+/** Only serialized inside Aurales Sync's password-encrypted settings vault. */
+export interface SyncedServerConnection {
+  id: string
+  kind: ServerIntegrationKind
+  name: string
+  serverUrl: string
+  username?: string
+  authMode: ServerAuthMode
+  baseDirectory?: string
+  enabled: boolean
+  credential?: string
+  accessToken?: string
+  userId?: string
+  serverName?: string
+  userName?: string
+}
+
 export interface ServerConnectionTestResult {
   ok: boolean
   message?: string
@@ -192,30 +209,49 @@ export async function listServerConnections(): Promise<ServerConnectionSummary[]
   return invoke<ServerConnectionSummary[]>('list_server_connections')
 }
 
+export async function exportServerConnectionsForSync(): Promise<SyncedServerConnection[]> {
+  if (!nativeAvailable()) return web.webExportServerConnectionsForSync()
+  return invoke<SyncedServerConnection[]>('export_server_connections_for_sync')
+}
+
+export async function importServerConnectionsFromSync(connections: SyncedServerConnection[]): Promise<void> {
+  if (!nativeAvailable()) return web.webImportServerConnectionsFromSync(connections)
+  await invoke('import_server_connections_from_sync', { connections })
+  announceCatalogChange()
+}
+
 export async function saveServerConnection(input: ServerConnectionInput): Promise<ServerConnectionSummary> {
   if (!SERVER_INTEGRATIONS_ENABLED) throw new Error('Server integrations are currently disabled.')
+  let result: ServerConnectionSummary
   if (!nativeAvailable()) {
     if (input.kind !== 'jellyfin') throw new Error('WebDAV connections are supported in Aurales Desktop; browser mode currently supports Jellyfin.')
-    return web.webSaveServerConnection(input)
+    result = await web.webSaveServerConnection(input)
+  } else {
+    result = await invoke<ServerConnectionSummary>('save_server_connection', { request: input })
+    announceCatalogChange()
   }
-  const result = await invoke<ServerConnectionSummary>('save_server_connection', { request: input })
-  announceCatalogChange()
+  scheduleServerSettingsSync()
   return result
 }
 
 export async function removeServerConnection(connectionId: string): Promise<void> {
   if (!SERVER_INTEGRATIONS_ENABLED) throw new Error('Server integrations are currently disabled.')
-  if (!nativeAvailable()) return web.webRemoveServerConnection(connectionId)
-  await invoke('remove_server_connection', { connectionId })
-  announceCatalogChange()
+  if (!nativeAvailable()) await web.webRemoveServerConnection(connectionId)
+  else { await invoke('remove_server_connection', { connectionId }); announceCatalogChange() }
+  scheduleServerSettingsSync()
 }
 
 export async function setServerConnectionEnabled(connectionId: string, enabled: boolean): Promise<ServerConnectionSummary> {
   if (!SERVER_INTEGRATIONS_ENABLED) throw new Error('Server integrations are currently disabled.')
-  if (!nativeAvailable()) return web.webSetServerConnectionEnabled(connectionId, enabled)
-  const result = await invoke<ServerConnectionSummary>('set_server_connection_enabled', { connectionId, enabled })
-  announceCatalogChange()
+  let result: ServerConnectionSummary
+  if (!nativeAvailable()) result = await web.webSetServerConnectionEnabled(connectionId, enabled)
+  else { result = await invoke<ServerConnectionSummary>('set_server_connection_enabled', { connectionId, enabled }); announceCatalogChange() }
+  scheduleServerSettingsSync()
   return result
+}
+
+function scheduleServerSettingsSync(): void {
+  void import('./sync/syncQueue').then(({ scheduleAutomaticSync }) => scheduleAutomaticSync()).catch(() => {})
 }
 
 export async function testServerConnection(input: ServerConnectionInput): Promise<ServerConnectionTestResult> {
@@ -302,28 +338,13 @@ export async function getServerCatalogItems(connectionId: string, catalogId: str
 /** Resolve an exact Jellyfin item for details/playback, including browser mode. */
 export async function getServerItem(connectionId: string, itemId: string): Promise<ServerCatalogItem | undefined> {
   if (!nativeAvailable()) return (await web.webGetServerCatalogItems(connectionId, `item:${itemId}`, 1))[0]
-  const catalogs = await listServerCatalogs()
-  const ids = catalogs.filter((catalog) => catalog.connectionId === connectionId).map((catalog) => catalog.catalogId)
-  for (const catalogId of ids) {
-    const item = (await getServerCatalogItems(connectionId, catalogId, 50_000)).find((entry) => entry.sourceItemId === itemId)
-    if (item) return item
-  }
-  return undefined
+  return invoke<ServerCatalogItem | undefined>('get_server_item', { connectionId, itemId })
 }
 
 /** Resolve episodes by the source series id for details/playback. */
 export async function getServerEpisodes(connectionId: string, seriesId: string, maxItems = 50_000): Promise<ServerCatalogItem[]> {
   if (!nativeAvailable()) return web.webGetServerCatalogItems(connectionId, `episodes:${seriesId}`, maxItems)
-  const catalogs = await listServerCatalogs()
-  const unique = new Map<string, ServerCatalogItem>()
-  for (const catalog of catalogs.filter((entry) => entry.connectionId === connectionId)) {
-    const items = await getServerCatalogItems(connectionId, catalog.catalogId, maxItems)
-    for (const item of items) {
-      const parentId = item.parentSourceItemId || (typeof item.raw.SeriesId === 'string' ? item.raw.SeriesId : undefined)
-      if (item.mediaType === 'episode' && parentId === seriesId) unique.set(item.sourceItemId, item)
-    }
-  }
-  return [...unique.values()].slice(0, maxItems)
+  return invoke<ServerCatalogItem[]>('get_server_episodes', { connectionId, seriesId, maxItems })
 }
 
 export async function searchServerCatalogs(query: string): Promise<SearchResult[]> {

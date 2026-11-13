@@ -31,6 +31,13 @@ async function searchTmdbByTitle(title: string, year: number | undefined, kind: 
   }
 }
 
+/** Resolve title-only media when a connected catalog has neither art nor IDs. */
+export async function resolveTmdbIdByTitle(title: string, year: number | undefined, kind: MediaKind): Promise<number | undefined> {
+  if (!title.trim()) return undefined
+  const result = await searchTmdbByTitle(title, year, kind).catch(() => null)
+  return result?.tmdbId
+}
+
 export async function resolveExternalIds(input: AddonMediaInput, kind: MediaKind): Promise<ResolvedExternalIds> {
   const isMovie = kind === 'movie' || (kind === 'anime' && input.addonType?.toLowerCase() === 'movie')
   const ids: ResolvedExternalIds = { imdbId: input.imdbId, tmdbId: input.tmdbId, tvdbId: input.tvdbId,

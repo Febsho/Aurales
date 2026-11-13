@@ -1545,6 +1545,8 @@ function FullNativeMpvPlayer({
     void reportJellyfinPlayback({
       connectionId: item.serverConnectionId,
       itemId: item.serverItemId,
+      season: item.serverSeason,
+      episode: item.serverEpisode,
       mediaSourceId: item.serverMediaSourceId,
       playSessionId: item.serverPlaySessionId,
       positionTicks: Math.max(0, Math.round(time * 10_000_000)),

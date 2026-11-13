@@ -224,7 +224,7 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
   const posterSize = useAppStore((s) => s.posterSize)
   // Landscape cards scale with the global poster-size setting so the Continue
   // Watching row fits the same way the poster rows do.
-  const cwWidthClass = posterSize === 'compact' ? 'w-[248px]' : posterSize === 'large' ? 'w-[336px]' : posterSize === 'huge' ? 'w-[400px]' : 'w-72'
+  const cwWidthClass = posterSize === 'compact' ? 'w-[min(82vw,248px)] sm:w-[248px]' : posterSize === 'large' ? 'w-[min(82vw,336px)] sm:w-[336px]' : posterSize === 'huge' ? 'w-[min(82vw,400px)] sm:w-[400px]' : 'w-[min(82vw,288px)] sm:w-72'
   const scrollRef = useRef<HTMLDivElement>(null)
   const currentCachedItems = getCachedCwItems(cwKey) || startupSnapshot || []
   // On a source/account change, never expose items captured for the previous
@@ -721,17 +721,26 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     ? 'text-sm font-light tracking-wider uppercase text-white/60'
     : 'text-xl font-bold tracking-tight text-white/95'
   const sourceTitle = (
-    <h2
-      className={`${titleClassName} cursor-context-menu`}
-      title="Right-click to select the progress source"
-      onContextMenu={(event) => {
-        event.preventDefault()
-        event.stopPropagation()
-        setCwMenu(null)
-        setSourceMenu({ x: event.clientX, y: event.clientY })
-      }}
-    >
-      {displayTitle}
+    <h2 className="m-0">
+      <button
+        type="button"
+        className={`${titleClassName} min-h-11 appearance-none border-0 bg-transparent p-0 cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 rounded-sm`}
+        title="Select the progress source"
+        aria-label={`${displayTitle}: select progress source`}
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect()
+          setCwMenu(null)
+          setSourceMenu({ x: event.clientX || rect.left, y: event.clientY || rect.bottom })
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          setCwMenu(null)
+          setSourceMenu({ x: event.clientX, y: event.clientY })
+        }}
+      >
+        {displayTitle}
+      </button>
     </h2>
   )
   const sourceMenuPortal = sourceMenu ? (
@@ -818,10 +827,16 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
     )
   }
 
+  // An empty profile has no Continue Watching posters to render. Keep the
+  // settled shelf out of Home rather than leaving a lone heading that looks
+  // like its poster cards failed to load; the source remains configurable in
+  // Settings > Progress.
+  if (displayItems.length === 0 && !error && !streamSelectorData) return null
+
   if (((itemsCacheKey === cwKey || streamSelectorData) && error) || displayItems.length === 0) {
     return (
-      <div data-home-row="continue-empty" className="cw-empty-home-row mb-8 select-none">
-        <div className="flex items-center justify-between px-6 mb-4">
+      <div data-home-row="continue-empty" className="cw-empty-home-row mb-3 select-none">
+        <div className="flex items-center justify-between px-6">
           <div className="flex items-center gap-2.5">
             {headerLeftControls}
             {sourceTitle}
@@ -829,9 +844,6 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
           <div className="flex items-center gap-3">
             {headerRightControls}
           </div>
-        </div>
-        <div className="cw-empty-state mx-6 rounded-xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-3 text-sm text-white/60">
-          <span className="select-none">Nothing in progress</span>
         </div>
         {sourceMenuPortal}
       </div>
@@ -927,25 +939,16 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 </div>
 
                 {/* Info overlay */}
-                <div className="absolute bottom-3.5 left-4 right-4 z-10 transition-transform duration-300 group-hover:-translate-y-1 group-focus-within:-translate-y-1">
-                  <h3 className="text-sm font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{item.title}</h3>
-                  <div className="flex items-center gap-2 mt-1 opacity-80 group-hover:opacity-100 transition-opacity duration-300">
-                    {item.subtitle ? (
-                      <span className="text-tag bg-accent/20 border border-accent/30 text-accent font-semibold px-1 py-0.5 rounded uppercase tracking-wider">{item.subtitle}</span>
-                    ) : (
-                      <span className="text-tag bg-white/10 text-gray-300 font-semibold px-1 py-0.5 rounded uppercase tracking-wider">Movie</span>
-                    )}
-                    <span className="text-label text-white/70 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">{remaining} left</span>
+                <div className="absolute inset-x-3 bottom-2 z-10 flex items-center gap-2 drop-shadow-[0_1px_3px_rgba(0,0,0,.9)]">
+                  <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-white/40" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progressPercent)}>
+                    <div className="h-full rounded-full bg-white" style={{ width: `${progressPercent}%` }} />
                   </div>
-                </div>
-
-                {/* Progress bar. Scaled rather than resized on hover: animating
-                    height re-lays out the bar every frame, whereas a transform
-                    stays on the compositor. */}
-                <div className="cw-progress-indicator" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progressPercent)}>
-                  <div className="cw-progress-indicator__value" style={{ width: `${progressPercent}%` }} />
+                  {item.subtitle && <span className="shrink-0 text-[11px] font-bold text-white sm:text-xs">{item.subtitle.replace(/\s+/g, '')}</span>}
+                  {item.subtitle && <span className="shrink-0 text-white/75">·</span>}
+                  <span className="shrink-0 text-[11px] font-semibold text-white sm:text-xs">{remaining} left</span>
                 </div>
               </div>
+              <h3 className="mt-2 truncate text-xs font-semibold text-white/85 sm:text-sm">{item.title}</h3>
             </button>
           )
         })}
@@ -990,25 +993,16 @@ export default function ContinueWatchingRow({ row, headerLeftControls, headerRig
                 </div>
 
                 {/* Info overlay */}
-                <div className="absolute bottom-3.5 left-4 right-4 z-10 transition-transform duration-300 group-hover:-translate-y-1 group-focus-within:-translate-y-1">
-                  <h3 className="text-sm font-bold text-white tracking-wide truncate drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{item.title}</h3>
-                  <div className="flex items-center gap-2 mt-1 opacity-80 group-hover:opacity-100 transition-opacity duration-300">
-                    {item.subtitle ? (
-                      <span className="text-tag bg-accent/20 border border-accent/30 text-accent font-semibold px-1 py-0.5 rounded uppercase tracking-wider">{item.subtitle}</span>
-                    ) : (
-                      <span className="text-tag bg-white/10 text-gray-300 font-semibold px-1 py-0.5 rounded uppercase tracking-wider">Movie</span>
-                    )}
-                    <span className="text-meta text-white/70 font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">{remaining} left</span>
+                <div className="absolute inset-x-3 bottom-2 z-10 flex items-center gap-2 drop-shadow-[0_1px_3px_rgba(0,0,0,.9)]">
+                  <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-white/40" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progressPercent)}>
+                    <div className="h-full rounded-full bg-white" style={{ width: `${progressPercent}%` }} />
                   </div>
-                </div>
-
-                {/* Progress bar. Scaled rather than resized on hover: animating
-                    height re-lays out the bar every frame, whereas a transform
-                    stays on the compositor. */}
-                <div className="cw-progress-indicator" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progressPercent)}>
-                  <div className="cw-progress-indicator__value" style={{ width: `${progressPercent}%` }} />
+                  {item.subtitle && <span className="shrink-0 text-[11px] font-bold text-white sm:text-xs">{item.subtitle.replace(/\s+/g, '')}</span>}
+                  {item.subtitle && <span className="shrink-0 text-white/75">·</span>}
+                  <span className="shrink-0 text-[11px] font-semibold text-white sm:text-xs">{remaining} left</span>
                 </div>
               </div>
+              <h3 className="mt-2 truncate text-xs font-semibold text-white/85 sm:text-sm">{item.title}</h3>
             </button>
           )
         })}

@@ -1,4 +1,4 @@
-import { applySyncedProfile, clearPendingProfileDeletions, getActiveProfileId, getPendingProfileDeletions, getProfiles, profileStorageKey, type AuralesProfile } from '../profiles'
+import { applySyncedProfile, clearPendingProfileDeletions, getActiveProfileId, getPendingProfileDeletions, getProfiles, profileStorageKey, replaceBootstrapProfileWithSyncedProfile, type AuralesProfile } from '../profiles'
 import { acknowledgeEncryptedVault, isSyncVaultUnlocked, restoreEncryptedVault, type EncryptedVault } from './encryptedVault'
 import { outboxReady, removeOutboxRecords, takeOutboxBatch } from './outbox'
 import { runSyncBatch } from './syncBatch'
@@ -26,10 +26,10 @@ export type { SyncRecord }
 const CONFIG_KEY = 'aurales_sync_config_v1'
 export const DEFAULT_SYNC_ENDPOINT = 'https://sync.febsho.me'
 
-export interface AuralesSyncConfig { endpoint?: string; accessToken?: string; email?: string; deviceName?: string; cursor?: string; lastSyncAt?: string; lastError?: string; autoSync?: boolean }
+export interface AuralesSyncConfig { endpoint?: string; accessToken?: string; email?: string; deviceName?: string; cursor?: string; lastSyncAt?: string; lastError?: string; autoSync?: boolean; syncMediaServers?: boolean }
 export function getSyncConfig(): AuralesSyncConfig {
-  try { return { ...JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}'), endpoint: DEFAULT_SYNC_ENDPOINT } }
-  catch { return { endpoint: DEFAULT_SYNC_ENDPOINT } }
+  try { const stored = JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}'); return { ...stored, endpoint: DEFAULT_SYNC_ENDPOINT, syncMediaServers: stored.syncMediaServers !== false } }
+  catch { return { endpoint: DEFAULT_SYNC_ENDPOINT, syncMediaServers: true } }
 }
 export function setSyncConfig(config: AuralesSyncConfig): void {
   // A failed write here would abort a sync that had already succeeded on the
@@ -111,6 +111,20 @@ function queueInitialSnapshot(): void {
       profile.id,
     )
   }
+}
+/** Pull existing account profiles before the first local snapshot is queued. */
+async function prepareInitialSync(fetcher: typeof fetch): Promise<number> {
+  if (getSyncConfig().cursor != null) return 0
+  const before = getProfiles()
+  const beforeIds = new Set(before.map((profile) => profile.id))
+  const pull = await downloadSyncNowUnlocked(fetcher)
+  const imported = getProfiles().filter((profile) => !beforeIds.has(profile.id))
+  const bootstrap = before.length === 1 && before[0].isDefault && before[0].name === 'Default' ? before[0] : null
+  if (bootstrap && imported.length) {
+    await replaceBootstrapProfileWithSyncedProfile(bootstrap.id, imported[0].id)
+  }
+  queueInitialSnapshot()
+  return pull.downloaded
 }
 /** Applies known durable record types without emitting a new outbox mutation. */
 export async function applyRemoteRecords(records: SyncRecord[]): Promise<boolean> {
@@ -274,9 +288,14 @@ export async function applyRemoteRecords(records: SyncRecord[]): Promise<boolean
 }
 async function syncNowUnlocked(fetcher: typeof fetch): Promise<{ uploaded: number; downloaded: number; activeVaultRestored: boolean }> {
   await outboxReady()
-  const config = getSyncConfig()
+  let config = getSyncConfig()
   if (!config.endpoint || !config.accessToken) throw new Error('Aurales Sync is not configured')
-  if (config.cursor == null) queueInitialSnapshot()
+  let initialDownloadCount = 0
+  if (config.cursor == null) {
+    initialDownloadCount = await prepareInitialSync(fetcher)
+    config = getSyncConfig()
+    if (!config.endpoint || !config.accessToken) throw new Error('Aurales Sync is not configured')
+  }
   // On later syncs, the password-derived vault is available only for the
   // current signed-in session. Do not create a new vault before the first
   // pull, which could replace an existing device's backup.
@@ -300,7 +319,7 @@ async function syncNowUnlocked(fetcher: typeof fetch): Promise<{ uploaded: numbe
   removeOutboxRecords(outbox)
   await acknowledgeEncryptedVault(outbox)
   setSyncConfig({ cursor: body.cursor, lastSyncAt: new Date().toISOString(), lastError: undefined })
-  return { uploaded: outbox.length, downloaded: body.records?.length || 0, activeVaultRestored }
+  return { uploaded: outbox.length, downloaded: initialDownloadCount + (body.records?.length || 0), activeVaultRestored }
 }
 
 /** Serialize batches so auto-sync and explicit Push/Pull cannot race cursors. */
@@ -316,13 +335,14 @@ export function syncNow(fetcher: typeof fetch = fetch): Promise<{ uploaded: numb
  * profiles that existed before this device first enabled Sync. */
 async function uploadSyncNowUnlocked(fetcher: typeof fetch): Promise<{ uploaded: number; downloaded: number }> {
   await outboxReady()
+  const initialDownloadCount = getSyncConfig().cursor == null ? await prepareInitialSync(fetcher) : 0
   const pendingDeletions = getPendingProfileDeletions()
   for (const deletion of pendingDeletions) enqueueSyncRecord('profile', deletion.id, { id: deletion.id, deleted: true }, deletion.id)
   queueInitialSnapshot()
   const queuedRecordIds = new Set(getSyncOutbox().map((record) => record.recordId))
   const missingDeletion = pendingDeletions.find((deletion) => !queuedRecordIds.has(`${deletion.id}:profile:${deletion.id}`))
   if (missingDeletion) throw new Error('A profile deletion could not fit in the sync queue. It will remain pending for the next upload.')
-  let uploaded = 0; let downloaded = 0
+  let uploaded = 0; let downloaded = initialDownloadCount
   let activeVaultRestored = false
   const drain = async () => {
     let result: { uploaded: number; downloaded: number; activeVaultRestored: boolean }

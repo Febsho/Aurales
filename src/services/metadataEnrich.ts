@@ -56,6 +56,43 @@ export async function tmdbFindByExternalId(
   }
 }
 
+/** Resolve TMDB identity from IDs supplied by connected catalogs for poster metadata. */
+export async function resolveTmdbIdFromExternalIds(ids: {
+  id?: string
+  tmdbId?: string | number
+  imdbId?: string
+  tvdbId?: string | number
+  anilistId?: string | number
+  malId?: string | number
+}, mediaType: 'movie' | 'series'): Promise<string | undefined> {
+  const id = String(ids.id || '')
+  const directTmdbId = ids.tmdbId ?? (/^tmdb[-:]/i.test(id) ? id : undefined)
+  if (directTmdbId != null) {
+    const value = String(directTmdbId).replace(/^tmdb[-:]/i, '')
+    if (/^\d+$/.test(value)) return value
+  }
+
+  const externalImdbId = ids.imdbId || (/^tt\d+$/i.test(id) ? id : undefined)
+  if (externalImdbId) {
+    const found = await tmdbFindByExternalId(externalImdbId, 'imdb_id')
+    if (found.tmdbId) return String(found.tmdbId)
+  }
+
+  const externalTvdbId = ids.tvdbId ?? (/^tvdb[-:]/i.test(id) ? id : undefined)
+  if (externalTvdbId != null) {
+    const found = await tmdbFindByExternalId(String(externalTvdbId).replace(/^tvdb[-:]/i, ''), 'tvdb_id')
+    if (found.tmdbId) return String(found.tmdbId)
+  }
+
+  const anilistId = ids.anilistId ?? (/^anilist[-:]/i.test(id) ? id.replace(/^anilist[-:]/i, '') : undefined)
+  const malId = ids.malId ?? (/^mal[-:]/i.test(id) ? id.replace(/^mal[-:]/i, '') : undefined)
+  if (anilistId != null || malId != null) {
+    const resolved = await resolveAnimeIds({ anilistId, malId, contentType: mediaType })
+    if (resolved?.tmdbId) return String(resolved.tmdbId)
+  }
+  return undefined
+}
+
 export async function resolveImdbId(
   ids: {
     imdbId?: string

@@ -106,6 +106,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
   const navigate = useNavigate()
   const location = useLocation()
   const rowEntryCount = useAppStore((s) => s.rowEntryCount)
+  const posterArtworkChoice = useAppStore((s) => s.posterOverlay.artwork)
   const cinematic = useAppStore((s) => s.interfaceTheme) === 'cinematic' && !disableCinematic
   const homeCardAnimations = useAppStore((s) => s.homeCardAnimations)
   const fixedHome = useAppStore((s) => s.homeHeroMode) === 'fixed' && location.pathname === '/' && !isMobileWebViewport()
@@ -207,7 +208,16 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
   }
 
   const visibleItems = useMemo(
-    () => dedupeMediaItems(items.filter((item) => item.poster || item.backdrop || item.tmdbId || item.imdbId)),
+    // Keep server and anime catalog entries even when they only carry a
+    // provider ID at first. MediaCard can resolve artwork from TVDB, AniList,
+    // or MAL; filtering them here made those titles disappear from Home
+    // before the poster composer ever got a chance to load their artwork.
+    () => dedupeMediaItems(items.filter((item) => item.poster || item.backdrop || item.tmdbId || item.imdbId || item.tvdbId || item.anilistId || item.malId
+      // Connected catalogs can provide a perfectly valid title before poster
+      // metadata has been attached. Keep those entries in Home so MediaCard
+      // can resolve/use the source artwork instead of dropping the title here.
+      || (item.sourceConnectionId && item.sourceItemId)
+      || (item.sourceAddonId && item.sourceAddonItemId))),
     [items],
   )
   const rowLimit = previewLimit ?? rowEntryCount
@@ -257,13 +267,22 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
       // Never prefetch the complete artwork set for a shelf. A single card
       // can have poster, backdrop and logo files at original resolution;
       // warming all three for two batches made scrolling decode hundreds of
-      // megabytes that were never visible. The rendered cards load their own
-      // poster lazily, so warm only the next visible card image.
-      const warmItems = rowItems.slice(0, INITIAL_RENDERED_CARDS)
+      // megabytes that were never visible. Mobile Home shelves mount ahead of
+      // the viewport, so warm their first four selected artworks immediately;
+      // otherwise the fully composed card stays black while the user scrolls
+      // into a row. Desktop keeps the idle-time eight-card warmup.
+      const mobileWeb = isMobileWebViewport()
+      const warmItems = rowItems.slice(0, mobileWeb ? 4 : INITIAL_RENDERED_CARDS)
       void warmCachedImages(warmItems.map((item) => {
         const displayed = disableArtOverride ? item : applySearchResultArt(item)
-        return displayed.poster || displayed.backdrop
+        return posterArtworkChoice === 'backdrop'
+          ? displayed.backdrop || displayed.poster
+          : displayed.poster || displayed.backdrop
       }))
+    }
+    if (isMobileWebViewport()) {
+      warm()
+      return
     }
     const idleWindow = window as Window & {
       requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number
@@ -275,7 +294,7 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
     }
     const timer = window.setTimeout(warm, 1_000)
     return () => window.clearTimeout(timer)
-  }, [rowItems, disableArtOverride])
+  }, [rowItems, disableArtOverride, posterArtworkChoice])
   // Pass the full row along so catalogs without a backing config (e.g. Discover
   // sections) can render everything even when the seeded cache is unavailable
   const openShowAll = () => {
@@ -411,6 +430,12 @@ function MediaRow({ title, items, layout = 'poster', showAllPath, showAllItems, 
               <div className="media-row-card-slot relative flex-none" style={{ '--discover-card-delay': `${(idx % 10) * 32}ms` } as React.CSSProperties}>
               <MediaCard
                 item={item}
+                // Home shelves clip cards inside a horizontal scroller, so
+                // the viewport observer cannot reliably start composition
+                // for cards that are just outside the visible edge. Start
+                // composition for every mounted Home card so no shelf item
+                // remains hidden behind its readiness cover when scrolled to.
+                preloadComposition={location.pathname === '/'}
                 layout={specialLayout ? effectiveLayout as 'ranked' | 'feature' : (cinematic && !fixedHome) || effectiveLayout === 'landscape' ? 'landscape' : 'poster'}
                 disableArtOverride={disableArtOverride}
                 // Fixed-home shelves sit beneath the featured hero. Keep their

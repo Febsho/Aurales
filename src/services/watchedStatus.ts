@@ -34,6 +34,12 @@ export interface WatchedLookupItem {
   appSeasonEpCounts?: { season: number; count: number }[]
 }
 
+export interface ProviderWatchedEpisodeSummary {
+  watched: number
+  total?: number
+  nextEpisode?: string
+}
+
 interface TraktCacheData { movies: TraktWatchedItem[]; shows: TraktWatchedItem[] }
 interface TraktDataIndex {
   movieIds: Map<string, TraktWatchedItem[]>
@@ -1032,7 +1038,7 @@ async function getTraktCache(): Promise<TraktCacheData> {
 }
 
 async function getSimklCache(): Promise<SimklCacheData> {
-  return cachedFetch<SimklCacheData>(profileProviderCacheKey('watched:simkl:v2', 'simkl'), async () => {
+  return cachedFetch<SimklCacheData>(profileProviderCacheKey('watched:simkl:v3', 'simkl'), async () => {
     const [movies, episodes] = await Promise.all([getSimklWatchedMovies(), getSimklWatchedEpisodes()])
     return { items: [...movies, ...episodes] }
   }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
@@ -1050,6 +1056,103 @@ async function getMdblistCache(): Promise<MdblistCacheData> {
     const items = await getMdblistWatched()
     return { items }
   }, { category: CACHE_CATEGORIES.WATCHED_STATUS, ttlSeconds: CACHE_TTLS.WATCHED_STATUS })
+}
+
+/**
+ * Return the strongest exact episode count available from connected history
+ * providers. PMDB and MDBList expose show-level watched state, so they are
+ * intentionally excluded from episode counts.
+ */
+export async function getProviderWatchedEpisodeSummary(
+  item: WatchedLookupItem,
+  sources: WatchedSource[],
+): Promise<ProviderWatchedEpisodeSummary | undefined> {
+  if (item.type !== 'series' || item.season != null) return undefined
+  const summaries: ProviderWatchedEpisodeSummary[] = []
+
+  if (sources.includes('trakt')) {
+    try {
+      const data = await getTraktCache()
+      const index = buildTraktDataIndex(data)
+      const match = firstTraktMatch(item, index.showIds, index.order, (entry) => entry.show?.ids)
+      if (match) {
+        const ids = match.show?.ids
+        const showId = ids?.imdb || ids?.trakt || ids?.tmdb
+        let seasons = match.seasons || []
+        if (seasons.length === 0) {
+          if (showId) seasons = await fetchShowProgress(showId).catch(() => [])
+        }
+        const episodes = new Set<string>()
+        for (const season of seasons) {
+          if (Number(season.number) <= 0) continue
+          for (const episode of season.episodes) {
+            if (Number(episode.plays) > 0) episodes.add(`${season.number}:${episode.number}`)
+          }
+        }
+        let nextEpisode: string | undefined
+        let total: number | undefined
+        if (showId) {
+          const seasonCounts = await getTraktShowSeasons(String(showId)).catch(() => [])
+          const includedSeasons = seasonCounts.filter((season) => season.number > 0 && season.episodeCount > 0)
+          const totalEpisodes = includedSeasons.reduce((sum, season) => sum + season.episodeCount, 0)
+          if (totalEpisodes > 0) total = totalEpisodes
+          for (const season of includedSeasons) {
+            const next = Array.from({ length: season.episodeCount }, (_, index) => index + 1)
+              .find((episode) => !episodes.has(`${season.number}:${episode}`))
+            if (next != null) {
+              nextEpisode = `S${season.number}E${next}`
+              break
+            }
+          }
+        }
+        if (episodes.size > 0 || nextEpisode || total) {
+          summaries.push({ watched: episodes.size, ...(total ? { total } : {}), ...(nextEpisode ? { nextEpisode } : {}) })
+        }
+      }
+    } catch (_) { /* other connected histories can still provide the count */ }
+  }
+
+  if (sources.includes('simkl')) {
+    try {
+      const data = await getSimklCache()
+      const match = data.items.find((entry) => entry.type !== 'movie' && matchesFlatIds(item, entry))
+      if (match) {
+        const episodes = new Set((match.watchedEpisodes || []).map((episode) => {
+          const season = episode.tvdbSeason ?? episode.season
+          const number = episode.tvdbEpisode ?? episode.episode
+          return `${season}:${number}`
+        }))
+        const watched = Math.max(episodes.size, Number(match.watchedEpisodesCount) || 0,
+          match.status === 'completed' ? Number(match.totalEpisodesCount) || 0 : 0)
+        if (watched > 0 || match.totalEpisodesCount || match.nextEpisode) {
+          summaries.push({
+            watched,
+            ...(match.totalEpisodesCount ? { total: match.totalEpisodesCount } : {}),
+            ...(match.nextEpisode ? { nextEpisode: match.nextEpisode } : {}),
+          })
+        }
+      }
+    } catch (_) { /* other connected histories can still provide the count */ }
+  }
+
+  if (sources.includes('anilist') && item.isAnime) {
+    try {
+      const mediaId = await resolveAniListIdForLookup(item)
+      if (mediaId) {
+        const entry = (await getAniListTrackedProgress()).find((progress) => progress.mediaId === mediaId)
+        if (entry && (entry.progress > 0 || entry.episodes)) {
+          summaries.push({ watched: Math.max(0, entry.progress), ...(entry.episodes ? { total: entry.episodes } : {}) })
+        }
+      }
+    } catch (_) { /* other connected histories can still provide the count */ }
+  }
+
+  if (summaries.length === 0) return undefined
+  return summaries.reduce((best, summary) => ({
+    watched: Math.max(best.watched, summary.watched),
+    total: Math.max(best.total || 0, summary.total || 0) || undefined,
+    nextEpisode: best.nextEpisode || summary.nextEpisode,
+  }))
 }
 
 function normalizedIds(item: WatchedLookupItem): string[] {

@@ -34,7 +34,7 @@ export default function ProfileSwitchTransition() {
 
   if (!profile || complete) return null
   return (
-    <div aria-live="polite" aria-label={`Switching to ${profile.name}`} className={`profile-switch-transition ${visible ? 'is-visible' : ''}`}>
+    <div aria-live="polite" aria-label={`Switching to ${profile.name}`} aria-hidden={!visible} className={`profile-switch-transition ${visible ? 'is-visible pointer-events-auto' : 'pointer-events-none'}`}>
       <div className="profile-switch-transition__veil" />
       <div className="profile-switch-transition__identity">
         <div className="profile-switch-transition__avatar"><ProfileAvatar {...profile} size="lg" className="!h-24 !w-24 !rounded-[30%]" /></div>

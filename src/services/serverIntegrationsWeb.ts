@@ -9,19 +9,21 @@ import type {
   ServerConnectionTestResult,
   ServerStream,
   ServerStreamRequest,
+  SyncedServerConnection,
 } from './serverIntegrations'
 
 const DB_NAME = 'aurales-jellyfin-web'
 const DB_VERSION = 1
 const STORE = 'records'
 const CONNECTIONS_KEY = 'connections'
+const playbackEpisodeIds = new Map<string, string>()
 type WebConnection = ServerConnectionSummary & { userId?: string; cursor?: string }
 type WebCatalogMode = 'view' | 'boxset' | 'continue-watching' | 'next-up' | 'upcoming' | 'favorites' | 'history' | 'recently-added'
 type WebCatalogSource = Pick<ServerCatalogDescriptor, 'catalogId' | 'title' | 'kind' | 'contentType'> & { group?: string; mode: WebCatalogMode; sourceId?: string; itemCount?: number }
 type WebCatalogRecord = { connectionId: string; items: ServerCatalogItem[]; sources?: WebCatalogSource[]; sourcesRefreshedAt?: number }
 type AuthResult = { token: string; userId?: string; userName?: string; serverName?: string }
 
-const ITEM_FIELDS = 'ProviderIds,Genres,Overview,DateCreated,DateLastSaved,ParentId,SeriesId,AncestorIds,SeriesName,SeasonName,IndexNumber,ParentIndexNumber,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentLogoItemId,ParentLogoImageTag,PremiereDate,EndDate,ProductionYear,CommunityRating,CriticRating,OfficialRating,RunTimeTicks,OriginalTitle,OriginalLanguage,SortName,Taglines,Tags,Studios,People,ProductionLocations,RemoteTrailers,ExternalUrls,ImageTags,BackdropImageTags,ImageBlurHashes,UserData'
+const ITEM_FIELDS = 'ProviderIds,Genres,Overview,DateCreated,DateLastSaved,ParentId,SeriesId,AncestorIds,SeriesName,SeasonName,IndexNumber,ParentIndexNumber,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentLogoItemId,ParentLogoImageTag,PremiereDate,EndDate,ProductionYear,CommunityRating,CriticRating,OfficialRating,RunTimeTicks,OriginalTitle,OriginalLanguage,SortName,Taglines,Tags,Studios,People,ProductionLocations,RemoteTrailers,ExternalUrls,ImageTags,BackdropImageTags,ImageBlurHashes,MediaStreams,UserData'
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -221,7 +223,7 @@ function catalogSourceFromView(view: Record<string, unknown>, group?: string): W
   const sourceId = stringValue(view.Id)
   const title = stringValue(view.Name)
   if (!sourceId || !title) return null
-  const collectionType = stringValue(view.CollectionType)
+  const collectionType = (stringValue(view.CollectionType) || '').toLowerCase()
   const contentType: ServerCatalogDescriptor['contentType'] = collectionType === 'movies'
     ? 'movie'
     : collectionType === 'tvshows'
@@ -231,13 +233,24 @@ function catalogSourceFromView(view: Record<string, unknown>, group?: string): W
 }
 
 async function discoverCatalogSources(connection: WebConnection, token: string): Promise<WebCatalogSource[]> {
-  const params = new URLSearchParams()
-  if (connection.userId) params.set('UserId', connection.userId)
-  const response = await requestJson<Record<string, unknown>>(connection.serverUrl, `/UserViews?${params}`, token)
-  const views = asArray(response.Items).filter((view): view is Record<string, unknown> => Boolean(view && typeof view === 'object'))
+  const views: Record<string, unknown>[] = []
+  let viewStart = 0
+  let viewTotal: number | undefined
+  // Jellyfin servers can expose many virtual libraries. UserViews is paged;
+  // reading only its default page silently drops later catalogs.
+  while (viewTotal === undefined || viewStart < viewTotal) {
+    const params = new URLSearchParams({ StartIndex: String(viewStart), Limit: '100' })
+    if (connection.userId) params.set('UserId', connection.userId)
+    const response = await requestJson<Record<string, unknown>>(connection.serverUrl, `/UserViews?${params}`, token)
+    const page = asArray(response.Items).filter((view): view is Record<string, unknown> => Boolean(view && typeof view === 'object'))
+    views.push(...page)
+    viewTotal = typeof response.TotalRecordCount === 'number' ? response.TotalRecordCount : undefined
+    viewStart += page.length
+    if (!page.length || page.length < 100) break
+  }
   const sources: WebCatalogSource[] = []
   for (const view of views) {
-    if (stringValue(view.CollectionType) !== 'boxsets') {
+    if ((stringValue(view.CollectionType) || '').toLowerCase() !== 'boxsets') {
       const source = catalogSourceFromView(view)
       if (source) sources.push(source)
       continue
@@ -245,11 +258,19 @@ async function discoverCatalogSources(connection: WebConnection, token: string):
     const parentId = stringValue(view.Id)
     const groupName = stringValue(view.Name) || 'Collections'
     if (!parentId) continue
-    const childrenParams = new URLSearchParams({ ParentId: parentId, Limit: '100', StartIndex: '0' })
-    if (connection.userId) childrenParams.set('UserId', connection.userId)
-    const children = await requestJson<Record<string, unknown>>(connection.serverUrl, `/Items?${childrenParams}`, token)
-      .catch(() => ({} as Record<string, unknown>))
-    const folders = asArray(children.Items).filter((child): child is Record<string, unknown> => Boolean(child && typeof child === 'object' && 'Type' in child && child.Type === 'BoxSet'))
+    const folders: Record<string, unknown>[] = []
+    let childStart = 0
+    let childTotal: number | undefined
+    while (childTotal === undefined || childStart < childTotal) {
+      const childrenParams = new URLSearchParams({ ParentId: parentId, Limit: '100', StartIndex: String(childStart) })
+      if (connection.userId) childrenParams.set('UserId', connection.userId)
+      const children = await requestJson<Record<string, unknown>>(connection.serverUrl, `/Items?${childrenParams}`, token)
+      const page = asArray(children.Items).filter((child): child is Record<string, unknown> => Boolean(child && typeof child === 'object'))
+      folders.push(...page.filter((child) => (stringValue(child.Type) || '').toLowerCase() === 'boxset'))
+      childTotal = typeof children.TotalRecordCount === 'number' ? children.TotalRecordCount : undefined
+      childStart += page.length
+      if (!page.length || page.length < 100) break
+    }
     for (const folder of folders) {
       const sourceId = stringValue(folder.Id)
       const title = stringValue(folder.Name)
@@ -394,6 +415,51 @@ export async function webListServerConnections(): Promise<ServerConnectionSummar
     const hasSecret = Boolean(sessionStorage.getItem(tokenKey(connection.id)))
     return { ...connection, hasSecret, status: hasSecret ? connection.status : 'disconnected' }
   })
+}
+
+export async function webExportServerConnectionsForSync(): Promise<SyncedServerConnection[]> {
+  const connections = await listConnections()
+  return connections.map((connection) => {
+    const credential = sessionStorage.getItem(tokenKey(connection.id)) || undefined
+    // A browser has a Jellyfin user access token, not the password entered at
+    // connection time. Sync that revocable token as a token-auth connection.
+    return {
+      id: connection.id, kind: connection.kind, name: connection.name,
+      serverUrl: connection.serverUrl, username: connection.username,
+      authMode: credential ? 'token' : connection.authMode, baseDirectory: connection.baseDirectory,
+      enabled: connection.enabled, credential, accessToken: credential,
+      userId: connection.userId, serverName: connection.serverName,
+      userName: connection.userName,
+    }
+  })
+}
+
+export async function webImportServerConnectionsFromSync(entries: SyncedServerConnection[]): Promise<void> {
+  const connections = await listConnections()
+  const imported = entries.filter((entry) => entry.kind === 'jellyfin')
+  const importedIds = new Set(imported.map((entry) => entry.id))
+  for (const connection of connections) {
+    if (!importedIds.has(connection.id)) sessionStorage.removeItem(tokenKey(connection.id))
+  }
+  await saveConnections(imported.map((entry) => {
+    const credential = entry.credential || sessionStorage.getItem(tokenKey(entry.id)) || undefined
+    return {
+    id: entry.id, kind: 'jellyfin' as const, name: entry.name,
+    serverUrl: cleanBase(entry.serverUrl), username: entry.username,
+    authMode: credential ? 'token' as const : entry.authMode, enabled: entry.enabled,
+    hasSecret: Boolean(credential), status: credential ? 'connected' as const : 'disconnected' as const, serverName: entry.serverName,
+    userName: entry.userName, userId: entry.userId,
+    lastCheckedAt: new Date().toISOString(),
+    }
+  }))
+  for (const entry of imported) {
+    const credential = entry.accessToken || entry.credential
+    if (credential) sessionStorage.setItem(tokenKey(entry.id), credential)
+  }
+  for (const connection of connections) {
+    if (!importedIds.has(connection.id)) await deleteRecord(catalogKey(connection.id))
+  }
+  announce()
 }
 export async function webSaveServerConnection(input: ServerConnectionInput): Promise<ServerConnectionSummary> {
   const connections = await listConnections()
@@ -663,8 +729,14 @@ export async function webReportJellyfinPlayback(request: JellyfinPlaybackReport)
   const connection = connections.find((entry) => entry.id === request.connectionId)
   if (!connection) throw new Error('Jellyfin connection not found.')
   const token = await getToken(connection.id)
+  let itemId = request.itemId
+  if (request.season != null && request.episode != null) {
+    const key = `${connection.id}:${request.itemId}:${request.season}:${request.episode}`
+    itemId = playbackEpisodeIds.get(key) || await resolvePlaybackItemId(connection, token, request.itemId, request.season, request.episode)
+    playbackEpisodeIds.set(key, itemId)
+  }
   const path = request.event === 'start' ? '/Sessions/Playing' : request.event === 'stop' ? '/Sessions/Playing/Stopped' : '/Sessions/Playing/Progress'
-  const payload: Record<string, unknown> = { ItemId: request.itemId, MediaSourceId: request.mediaSourceId, PlaySessionId: request.playSessionId, PositionTicks: request.positionTicks }
+  const payload: Record<string, unknown> = { ItemId: itemId, MediaSourceId: request.mediaSourceId, PlaySessionId: request.playSessionId, PositionTicks: request.positionTicks }
   if (request.event !== 'stop') Object.assign(payload, { CanSeek: true, IsPaused: request.isPaused, PlayMethod: request.playMethod })
   try {
     await requestJson(connection.serverUrl, path, token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
@@ -673,7 +745,7 @@ export async function webReportJellyfinPlayback(request: JellyfinPlaybackReport)
     // registered as a server session (common with AIOMetadata virtual media).
     // Its user-scoped playstate endpoints still persist resume positions.
     if (!connection.userId) throw sessionError
-    const userItemPath = `/Users/${encodeURIComponent(connection.userId)}/PlayingItems/${encodeURIComponent(request.itemId)}`
+    const userItemPath = `/Users/${encodeURIComponent(connection.userId)}/PlayingItems/${encodeURIComponent(itemId)}`
     const query = new URLSearchParams({
       positionTicks: String(request.positionTicks),
       playMethod: request.playMethod,
@@ -692,14 +764,14 @@ export async function webReportJellyfinPlayback(request: JellyfinPlaybackReport)
     && request.positionTicks / Number(request.runtimeTicks) >= 0.80
   if (completed) {
     const previous = await getCatalogRecord(connection.id)
-    const previousItem = previous?.items.find((entry) => entry.sourceItemId === request.itemId)
+    const previousItem = previous?.items.find((entry) => entry.sourceItemId === itemId)
     const previousUserData = previousItem?.raw.UserData
     const alreadyPlayed = Boolean(previousUserData && typeof previousUserData === 'object'
       && (previousUserData as Record<string, unknown>).Played === true)
-    if (!alreadyPlayed) await webSetJellyfinItemWatched(request.connectionId, request.itemId, true)
+    if (!alreadyPlayed) await webSetJellyfinItemWatched(request.connectionId, itemId, true)
   }
   const record = await getCatalogRecord(connection.id)
-  const item = record?.items.find((entry) => entry.sourceItemId === request.itemId)
+  const item = record?.items.find((entry) => entry.sourceItemId === itemId)
   if (record && item) {
     const user = item.raw.UserData && typeof item.raw.UserData === 'object' ? item.raw.UserData as Record<string, unknown> : {}
     user.PlaybackPositionTicks = request.positionTicks

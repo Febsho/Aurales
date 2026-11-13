@@ -618,11 +618,6 @@ function toWatchlistItems(raw: any): SimklWatchlistItem[] {
         poster = `https://simkl.in/posters/${cleaned}_ca.jpg`
       }
     }
-    // Fallback: construct poster from IMDB id via a public poster service
-    if (!poster && ids.imdb) {
-      poster = `https://images.metahub.space/poster/small/${ids.imdb}/img`
-    }
-
     let backdrop: string | undefined = undefined
     if (media.fanart) {
       if (media.fanart.startsWith('http')) {

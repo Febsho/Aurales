@@ -159,7 +159,7 @@ async function fetchSimklWatchedEpisodes(): Promise<SimklWatchlistItem[]> {
         // Simkl exposes the TVDB season/episode for anime only with
         // full_anime_seasons. Without it, cours and specials frequently use
         // different numbering and a watched anime episode appears unwatched.
-        `/sync/all-items/${type}/${status}?extended=${type === 'anime' ? 'full_anime_seasons' : 'full'}&include_all_episodes=yes&episode_watched_at=yes&date_from=1970-01-01`
+        `/sync/all-items/${type}/${status}?extended=${type === 'anime' ? 'full_anime_seasons' : 'full'}&include_all_episodes=yes&episode_watched_at=yes&next_watch_info=yes&date_from=1970-01-01`
       ).then((response) => normalizeSimklHistoryItems(response, status as SimklWatchlistItem['status'])).catch(() => [])
     ))
   )
@@ -173,7 +173,13 @@ async function fetchSimklWatchedEpisodes(): Promise<SimklWatchlistItem[]> {
     }
     const episodes = [...(existing.watchedEpisodes || []), ...(item.watchedEpisodes || [])]
     const uniqueEpisodes = new Map(episodes.map((episode) => [`${episode.season}:${episode.episode}`, episode]))
-    merged.set(key, { ...existing, watchedEpisodes: [...uniqueEpisodes.values()] })
+    merged.set(key, {
+      ...existing,
+      watchedEpisodes: [...uniqueEpisodes.values()],
+      watchedEpisodesCount: Math.max(existing.watchedEpisodesCount || 0, item.watchedEpisodesCount || 0),
+      totalEpisodesCount: Math.max(existing.totalEpisodesCount || 0, item.totalEpisodesCount || 0) || undefined,
+      nextEpisode: existing.nextEpisode || item.nextEpisode,
+    })
   }
   return [...merged.values()]
 }
@@ -181,9 +187,9 @@ async function fetchSimklWatchedEpisodes(): Promise<SimklWatchlistItem[]> {
 export async function getSimklWatchedEpisodes(forceRefresh = false): Promise<SimklWatchlistItem[]> {
   if (forceRefresh) return fetchSimklWatchedEpisodes()
   return cachedFetch<SimklWatchlistItem[]>(
-    // Version the key so cached responses fetched before TVDB episode mapping
-    // was requested cannot keep anime episodes falsely unchecked.
-    profileProviderCacheKey('simkl_history:episodes:v2', 'simkl'),
+    // Version the key because the result now includes next-watch data and
+    // excludes all-episode entries without an episode-level watched_at.
+    profileProviderCacheKey('simkl_history:episodes:v3', 'simkl'),
     fetchSimklWatchedEpisodes,
     { category: 'SIMKL_LISTS', ttlSeconds: 300 },
   )
@@ -421,6 +427,7 @@ export function normalizeSimklHistoryItems(
       watchedEpisodes: extractWatchedEpisodes(r),
       watchedEpisodesCount: r.watched_episodes_count,
       totalEpisodesCount: r.total_episodes_count,
+      nextEpisode: normalizeNextEpisode(r.next_to_watch, r.next_to_watch_info),
     } satisfies SimklWatchlistItem
   }).filter(Boolean) as SimklWatchlistItem[]
 }
@@ -433,6 +440,8 @@ export function extractWatchedEpisodes(raw: any) {
     if (!Number.isFinite(seasonNumber)) continue
     const seasonEpisodes = Array.isArray(season.episodes) ? season.episodes : []
     for (const episode of seasonEpisodes) {
+      const watchedAt = episode.watched_at ?? episode.watchedAt
+      if (typeof watchedAt !== 'string' || watchedAt.length === 0) continue
       const episodeNumber = Number(episode.number ?? episode.episode)
       if (!Number.isFinite(episodeNumber)) continue
       const tvdbSeason = Number(episode.tvdb?.season ?? episode.tvdb_season)
@@ -440,13 +449,28 @@ export function extractWatchedEpisodes(raw: any) {
       episodes.push({
         season: seasonNumber,
         episode: episodeNumber,
-        watchedAt: episode.watched_at ?? episode.watchedAt ?? raw.last_watched_at,
+        watchedAt,
         tvdbSeason: Number.isFinite(tvdbSeason) ? tvdbSeason : undefined,
         tvdbEpisode: Number.isFinite(tvdbEpisode) ? tvdbEpisode : undefined,
       })
     }
   }
   return episodes.length ? episodes : undefined
+}
+
+function normalizeNextEpisode(value: unknown, info: unknown): string | undefined {
+  if (info && typeof info === 'object') {
+    const detail = info as { season?: unknown; episode?: unknown }
+    const season = Number(detail.season)
+    const episode = Number(detail.episode)
+    if (Number.isInteger(season) && season > 0 && Number.isInteger(episode) && episode > 0) {
+      return `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
+    }
+  }
+  if (typeof value !== 'string') return undefined
+  const match = value.match(/^S(\d+)E(\d+)$/i)
+  if (!match) return undefined
+  return `S${match[1].padStart(2, '0')}E${match[2].padStart(2, '0')}`
 }
 
 function normalizeHistoryTitle(value: string): string {

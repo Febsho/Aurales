@@ -9,6 +9,19 @@ import { isValidDateKey, localDateKey } from './localDate'
 const BASE_URL = 'https://api.themoviedb.org/3'
 const IMG_BASE = 'https://image.tmdb.org/t/p'
 
+/** Use a bounded TMDB image variant for small composited logo layers. */
+export function getTmdbImageVariant(url: string | undefined, size: 'w500' | 'w780'): string | undefined {
+  if (!url) return undefined
+  try {
+    const parsed = new URL(url)
+    if (parsed.hostname !== 'image.tmdb.org') return url
+    parsed.pathname = parsed.pathname.replace(/\/t\/p\/(?:original|w\d+)\//, `/t/p/${size}/`)
+    return parsed.toString()
+  } catch {
+    return url
+  }
+}
+
 // Image Quality setting (Settings → Image Cache). Read lazily from
 // localStorage so tmdb.ts needs no store subscription; URLs already baked
 // into sqlite-cached metadata keep their old size until they expire.
@@ -171,39 +184,99 @@ function pickBestPoster(images: Record<string, unknown>, defaultPosterPath?: str
   return undefined
 }
 
-function pickCleanPoster(images: Record<string, unknown>, defaultPosterPath?: string): string | undefined {
+function tmdbPosterFileName(url?: string): string | undefined {
+  if (!url) return undefined
+  try {
+    const parsed = new URL(url)
+    if (parsed.hostname !== 'image.tmdb.org') return undefined
+    return decodeURIComponent(parsed.pathname.split('/').pop() || '') || undefined
+  } catch {
+    return undefined
+  }
+}
+
+function pickCleanPoster(images: Record<string, unknown>, excludedPosterFileName?: string): string | undefined {
   const cleanPosters = ((images.posters as Record<string, unknown>[]) || [])
-    .filter((image) => typeof image.file_path === 'string' && image.iso_639_1 == null)
+    .filter((image) => typeof image.file_path === 'string'
+      && image.iso_639_1 == null
+      // TMDB's primary poster can also be untagged despite containing its
+      // title artwork. Don't reselect it as the supposedly clean layer that
+      // sits underneath Aurales' separately rendered logo.
+      && image.file_path !== (excludedPosterFileName ? `/${excludedPosterFileName}` : undefined))
+    // TMDB does not flag images as textless. An unset image language is the
+    // closest available signal. Prefer less-popular alternates: the former
+    // rating-first sort repeatedly selected well-known title-heavy posters,
+    // even when an untagged alternate was available for the separate logo.
     .sort((a, b) => {
-      const aVotes = Number(a.vote_count || 0)
-      const bVotes = Number(b.vote_count || 0)
-      if (aVotes !== bVotes) return bVotes - aVotes
-      return Number(b.vote_average || 0) - Number(a.vote_average || 0)
+      const aVotes = Math.max(0, Number(a.vote_count) || 0)
+      const bVotes = Math.max(0, Number(b.vote_count) || 0)
+      if (aVotes !== bVotes) return aVotes - bVotes
+      return Math.max(0, Math.min(10, Number(b.vote_average) || 0))
+        - Math.max(0, Math.min(10, Number(a.vote_average) || 0))
     })
   const selected = cleanPosters[0]
   if (selected) return `${IMG_BASE}/${posterSize()}${selected.file_path}`
-  return pickBestPoster(images, defaultPosterPath)
+  // Do not treat the catalog's primary poster as textless when no untagged
+  // image is available. The caller can then keep the primary poster as-is.
+  return undefined
 }
 
-/** Textless TMDB poster for artwork-led cards. Ignores custom/provider art. */
-export async function getTmdbCleanPoster(type: 'movie' | 'series' | 'show' | 'anime', tmdbId: string | number): Promise<string | undefined> {
+/** Best untagged-language TMDB poster candidate for artwork-led cards. */
+export async function getTmdbCleanPoster(type: 'movie' | 'series' | 'show' | 'anime', tmdbId: string | number, currentPosterUrl?: string): Promise<string | undefined> {
   if (!tmdbId || typeof tmdbId === 'object' || String(tmdbId).trim() === '[object Object]') return undefined
   const mediaType = type === 'movie' ? 'movie' : 'tv'
   const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
   if (!id) return undefined
-  const result = await cachedFetch<string | null>(`tmdb_clean_poster_v1:${mediaType}:${id}`, async (cacheContext) => {
+  // v6 reselects the less-popular untagged alternate. The prior rating-first
+  // ranking cached title-heavy posters beneath the separately rendered logo.
+  const excludedPosterFileName = tmdbPosterFileName(currentPosterUrl)
+  const result = await cachedFetch<string | null>(`tmdb_clean_poster_v6:${mediaType}:${id}:${excludedPosterFileName || 'none'}`, async (cacheContext) => {
     const priority: RequestPriority = cacheContext?.background ? 'background' : 'visible'
     try {
-      const [details, images] = await Promise.all([
-        tmdbFetch(`/${mediaType}/${id}`, {}, { priority }) as Promise<Record<string, unknown>>,
-        tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'null,en' }, { priority }) as Promise<Record<string, unknown>>,
-      ])
-      return pickCleanPoster(images, details.poster_path as string) || null
+      const images = await tmdbFetch(`/${mediaType}/${id}/images`, { include_image_language: 'null,en' }, { priority }) as Record<string, unknown>
+      return pickCleanPoster(images, excludedPosterFileName) || null
     } catch (_) {
       return null
     }
   }, { category: CACHE_CATEGORIES.ARTWORK, ttlSeconds: CACHE_TTLS.ARTWORK })
   return result ?? undefined
+}
+
+/** Resolve a title's regional age rating for poster overlays. */
+export async function getTmdbCertification(
+  type: 'movie' | 'series' | 'show' | 'anime',
+  tmdbId: string | number,
+  country?: string,
+): Promise<string | undefined> {
+  if (!tmdbId || typeof tmdbId === 'object' || String(tmdbId).trim() === '[object Object]') return undefined
+  const mediaType = type === 'movie' ? 'movie' : 'tv'
+  const id = String(tmdbId).replace(/^tmdb[-:]/i, '')
+  if (!/^\d+$/.test(id)) return undefined
+  const region = (country || (typeof navigator !== 'undefined' ? navigator.language.split('-')[1] : '') || 'US').toUpperCase()
+  const cacheKey = `tmdb_certification_v1:${mediaType}:${id}:${region}`
+  try {
+    const result = await cachedFetch<string | null>(cacheKey, async (cacheContext) => {
+      const priority: RequestPriority = cacheContext?.background ? 'background' : 'visible'
+      if (mediaType === 'movie') {
+        const data = await tmdbFetch(`/movie/${id}/release_dates`, {}, { priority }) as { results?: Array<{ iso_3166_1?: string; release_dates?: Array<{ certification?: string; type?: number }> }> }
+        const results = data.results || []
+        const regional = results.filter((entry) => entry.iso_3166_1 === region)
+        const fallback = region === 'US' ? [] : results.filter((entry) => entry.iso_3166_1 === 'US')
+        const candidates = [...regional, ...fallback, ...results].flatMap((entry) => entry.release_dates || [])
+          .sort((a, b) => Number(b.type === 3 || b.type === 4 || b.type === 5 || b.type === 6) - Number(a.type === 3 || a.type === 4 || a.type === 5 || a.type === 6))
+        return candidates.find((entry) => entry.certification?.trim())?.certification?.trim() || null
+      }
+      const data = await tmdbFetch(`/tv/${id}/content_ratings`, {}, { priority }) as { results?: Array<{ iso_3166_1?: string; rating?: string }> }
+      const results = data.results || []
+      const regional = results.filter((entry) => entry.iso_3166_1 === region)
+      const fallback = region === 'US' ? [] : results.filter((entry) => entry.iso_3166_1 === 'US')
+      const candidates = [...regional, ...fallback, ...results]
+      return candidates.find((entry) => entry.rating?.trim())?.rating?.trim() || null
+    }, { category: CACHE_CATEGORIES.TMDB_CARD, ttlSeconds: CACHE_TTLS.TMDB_CARD })
+    return result || undefined
+  } catch (_) {
+    return undefined
+  }
 }
 
 export async function getTmdbLandscapeBackdrop(

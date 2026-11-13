@@ -12,7 +12,7 @@ interface WatchedCacheStore {
   setJellyfinWatchedKeys: (keys: Iterable<WatchedKey>) => void
   removeWatchedKeys: (keys: Iterable<WatchedKey>) => void
   setLoading: (loading: boolean) => void
-  isWatched: (ids: WatchedIdInput) => boolean
+  isWatched: (ids: WatchedIdInput, includeJellyfin?: boolean) => boolean
 }
 
 export interface WatchedIdInput {
@@ -69,10 +69,10 @@ export const useWatchedCacheStore = create<WatchedCacheStore>((set, get) => ({
     return { watchedKeys: next }
   }),
   setLoading: (loading) => set({ loading }),
-  isWatched: (ids) => {
+  isWatched: (ids, includeJellyfin = true) => {
     const keys = keysForItem(ids)
     const store = get().watchedKeys
     const jellyfin = get().jellyfinWatchedKeys
-    return keys.some((k) => store.has(k) || jellyfin.has(k))
+    return keys.some((k) => store.has(k) || (includeJellyfin && jellyfin.has(k)))
   },
 }))

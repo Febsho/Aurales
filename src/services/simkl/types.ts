@@ -89,6 +89,7 @@ export interface SimklWatchlistItem {
   userRating?: number
   watchedEpisodesCount?: number
   totalEpisodesCount?: number
+  nextEpisode?: string
 }
 
 export interface SimklMapping {

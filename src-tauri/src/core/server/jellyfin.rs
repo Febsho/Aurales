@@ -81,7 +81,7 @@ pub fn scan(
         return Err("Jellyfin credentials are missing".into());
     }
     const PAGE_SIZE: usize = 1000;
-    let mut path=format!("/Items?Recursive=true&IncludeItemTypes=Movie,Series,Season,Episode,BoxSet&Fields=ProviderIds,Path,Genres,Overview,DateCreated,DateLastSaved,DateLastMediaAdded,ParentId,AncestorIds,SeriesName,SeasonName,IndexNumber,ParentIndexNumber,PremiereDate,EndDate,ProductionYear,CommunityRating,CriticRating,OfficialRating,RunTimeTicks,OriginalTitle,OriginalLanguage,SortName,Taglines,Tags,Studios,People,ProductionLocations,RemoteTrailers,ExternalUrls,ImageTags,BackdropImageTags,ImageBlurHashes,UserData&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop&Limit={PAGE_SIZE}");
+    let mut path=format!("/Items?Recursive=true&IncludeItemTypes=Movie,Series,Season,Episode,BoxSet&Fields=ProviderIds,Path,Genres,Overview,DateCreated,DateLastSaved,DateLastMediaAdded,ParentId,AncestorIds,SeriesName,SeasonName,IndexNumber,ParentIndexNumber,PremiereDate,EndDate,ProductionYear,CommunityRating,CriticRating,OfficialRating,RunTimeTicks,OriginalTitle,OriginalLanguage,SortName,Taglines,Tags,Studios,People,ProductionLocations,RemoteTrailers,ExternalUrls,ImageTags,BackdropImageTags,ImageBlurHashes,MediaStreams,UserData&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop&Limit={PAGE_SIZE}");
     if let Some(user) = user_id {
         path.push_str("&UserId=");
         path.push_str(&encoded(user));
@@ -217,7 +217,7 @@ pub fn scan(
 fn collection_member_ids(base: &str, token: &str, user_id: Option<&str>, collection_id: &str) -> Option<Vec<String>> {
     const PAGE_SIZE: usize = 1000;
     let mut path = format!(
-        "/Items?ParentId={}&Recursive=true&Limit={PAGE_SIZE}&EnableTotalRecordCount=true&Fields=ProviderIds,Path,Genres,Overview,DateCreated,DateLastSaved,ParentId,AncestorIds,PremiereDate,ProductionYear,CommunityRating,CriticRating,OfficialRating,RunTimeTicks,OriginalTitle,OriginalLanguage,SortName,Taglines,Tags,Studios,People,ProductionLocations,RemoteTrailers,ExternalUrls,ImageTags,BackdropImageTags,ImageBlurHashes,UserData",
+        "/Items?ParentId={}&Recursive=true&Limit={PAGE_SIZE}&EnableTotalRecordCount=true&Fields=ProviderIds,Path,Genres,Overview,DateCreated,DateLastSaved,ParentId,AncestorIds,PremiereDate,ProductionYear,CommunityRating,CriticRating,OfficialRating,RunTimeTicks,OriginalTitle,OriginalLanguage,SortName,Taglines,Tags,Studios,People,ProductionLocations,RemoteTrailers,ExternalUrls,ImageTags,BackdropImageTags,ImageBlurHashes,MediaStreams,UserData",
         encoded(collection_id),
     );
     if let Some(user_id) = user_id {
@@ -554,11 +554,22 @@ fn catalog_item(connection: &ServerConnection, raw: Value) -> Option<ServerCatal
     if is_anime && !catalogs.iter().any(|catalog| catalog == "anime") {
         catalogs.push("anime".into());
     }
-    let poster = Some(format!(
+    // Only advertise Jellyfin image endpoints when the item actually has that
+    // image. Fabricating these URLs for missing ImageTags made Home cards treat
+    // a 404 as valid artwork and prevented their provider/backdrop fallbacks.
+    let has_primary_image = raw
+        .pointer("/ImageTags/Primary")
+        .and_then(Value::as_str)
+        .is_some_and(|tag| !tag.is_empty());
+    let has_backdrop_image = raw
+        .get("BackdropImageTags")
+        .and_then(Value::as_array)
+        .is_some_and(|tags| tags.iter().any(|tag| tag.as_str().is_some_and(|tag| !tag.is_empty())));
+    let poster = has_primary_image.then(|| format!(
         "/Items/{}/Images/Primary?fillHeight=900&quality=90",
         encoded_path_segment(&id)
     ));
-    let backdrop = Some(format!(
+    let backdrop = has_backdrop_image.then(|| format!(
         "/Items/{}/Images/Backdrop?fillHeight=900&quality=90",
         encoded_path_segment(&id)
     ));

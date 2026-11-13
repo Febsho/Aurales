@@ -3,6 +3,7 @@ import { getActiveProfileId, getActiveProfile, getStoredProfileOwnedState, isPro
 
 const vaultId = (profileId: string) => `profile-settings-v1:${profileId}`
 const VAULT_FINGERPRINTS_KEY = 'aurales_sync_vault_fingerprints_v1'
+const SERVER_CONNECTIONS_VAULT_KEY = '__aurales_sync_server_connections_v1__'
 const ITERATIONS = 600_000
 let vaultPassphrase: string | null = null
 
@@ -15,6 +16,13 @@ export interface EncryptedVault {
   salt: string
   iv: string
   ciphertext: string
+}
+
+function syncMediaServersEnabled(): boolean {
+  try {
+    const config = JSON.parse(localStorage.getItem('aurales_sync_config_v1') || '{}') as { syncMediaServers?: boolean }
+    return config.syncMediaServers !== false
+  } catch { return true }
 }
 
 interface VaultSyncFingerprints {
@@ -97,6 +105,13 @@ export async function queueEncryptedVault(profileId = getActiveProfileId()): Pro
     // overlay explicitly profile-scoped settings from localStorage.
     const belongsToTarget = runtimeBelongsToTarget ? included(key, profileId) : key.endsWith(`:profile:${profileId}`)
     if (belongsToTarget) entries[key] = localStorage.getItem(key) || ''
+  }
+  // Server credentials are retrieved from the platform's secure store and
+  // added only to the in-memory vault payload. They never enter localStorage
+  // or ordinary, unencrypted Sync records.
+  if (runtimeBelongsToTarget && syncMediaServersEnabled()) {
+    const { exportServerConnectionsForSync } = await import('../serverIntegrations')
+    entries[SERVER_CONNECTIONS_VAULT_KEY] = JSON.stringify(await exportServerConnectionsForSync())
   }
   const stableEntries = JSON.stringify(Object.fromEntries(Object.entries(entries).sort(([left], [right]) => left.localeCompare(right))))
   const fingerprint = await hashString(stableEntries)
@@ -182,12 +197,19 @@ export async function restoreEncryptedVault(payload: EncryptedVault, profileId =
   const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bufferSource(base64ToBytes(payload.iv)), ...(additionalData ? { additionalData } : {}) }, key, bufferSource(base64ToBytes(payload.ciphertext)))
   const entries = JSON.parse(new TextDecoder().decode(plain)) as Record<string, unknown>
   if (!entries || typeof entries !== 'object' || Array.isArray(entries)) throw new Error('Invalid encrypted vault contents.')
+  const serverConnectionsEntry = entries[SERVER_CONNECTIONS_VAULT_KEY]
+  delete entries[SERVER_CONNECTIONS_VAULT_KEY]
   const restoredEntries: Record<string, string> = {}
   for (const [name, value] of Object.entries(entries)) {
     if (included(name, profileId) && typeof value === 'string') restoredEntries[name] = value
   }
   if (profileId === getActiveProfile().id) {
     for (const [name, value] of Object.entries(restoredEntries)) localStorage.setItem(name, value)
+    if (syncMediaServersEnabled() && typeof serverConnectionsEntry === 'string') {
+      const connections = JSON.parse(serverConnectionsEntry) as import('../serverIntegrations').SyncedServerConnection[]
+      const { importServerConnectionsFromSync } = await import('../serverIntegrations')
+      await importServerConnectionsFromSync(connections)
+    }
   } else {
     await storeProfileOwnedValues(profileId, restoredEntries)
   }

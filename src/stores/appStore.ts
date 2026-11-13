@@ -11,7 +11,6 @@ import { CACHE_CATEGORIES } from '../services/cache/constants'
 import { loadInterfaceTheme, persistInterfaceTheme, type InterfaceTheme } from '../services/interfaceTheme'
 import { getActiveProfileId, getProfileSetting, profileStorageKey, PROFILE_CHANGED_EVENT, setProfileSetting } from '../services/profiles'
 import { enqueueSyncRecord, enqueueSyncRecords } from '../services/sync/syncQueue'
-import { DEFAULT_BETTER_POSTERS_SETTINGS, type BetterPostersSettings } from '../services/betterPosters'
 
 function invalidateCatalogData(): void {
   ;[
@@ -190,23 +189,6 @@ function loadCustomArtUrls(): CustomArtUrls {
   }
 }
 
-function loadBetterPosterSettings(): BetterPostersSettings {
-  const saved = readStoredObject('aurales_better_posters')
-  const ratingSources: BetterPostersSettings['ratingSource'][] = ['avg', 'IM', 'TM', 'RT', 'MC', 'TR', 'LB', 'RE']
-  return {
-    enabled: typeof saved.enabled === 'boolean' ? saved.enabled : DEFAULT_BETTER_POSTERS_SETTINGS.enabled,
-    trendTags: typeof saved.trendTags === 'boolean' ? saved.trendTags : DEFAULT_BETTER_POSTERS_SETTINGS.trendTags,
-    qualityTags: typeof saved.qualityTags === 'boolean' ? saved.qualityTags : DEFAULT_BETTER_POSTERS_SETTINGS.qualityTags,
-    showGenre: typeof saved.showGenre === 'boolean' ? saved.showGenre : DEFAULT_BETTER_POSTERS_SETTINGS.showGenre,
-    showRating: typeof saved.showRating === 'boolean' ? saved.showRating : DEFAULT_BETTER_POSTERS_SETTINGS.showRating,
-    ratingSource: ratingSources.includes(saved.ratingSource as BetterPostersSettings['ratingSource'])
-      ? saved.ratingSource as BetterPostersSettings['ratingSource']
-      : DEFAULT_BETTER_POSTERS_SETTINGS.ratingSource,
-    ageRating: typeof saved.ageRating === 'boolean' ? saved.ageRating : DEFAULT_BETTER_POSTERS_SETTINGS.ageRating,
-    language: typeof saved.language === 'string' && saved.language ? saved.language : DEFAULT_BETTER_POSTERS_SETTINGS.language,
-  }
-}
-
 interface AppState {
   sidebarCollapsed: boolean
   toggleSidebar: () => void
@@ -290,7 +272,14 @@ interface AppState {
   continueWatchingLimit: number
   /** Cached resume percentages from the selected Continue Watching sources. */
   continueWatchingProgress: Map<string, number>
-  showPosterWatchStatus: boolean
+  posterOverlay: {
+    enabled: boolean; showProgress: boolean; showWatched: boolean; showAsCheckmark: boolean; showFavorite: boolean; showRating: boolean; showGenre: boolean;
+    showTimeLeft: boolean; showEpisodes: boolean; showEpisodesWatched: boolean; showNextEpisode: boolean; showCertification: boolean; splitEpisodeProgress: boolean; showRatingBelow: boolean;
+    artwork: 'poster' | 'backdrop'; colorMode: 'artwork' | 'dark' | 'neutral'; contentAlignment: 'left' | 'center' | 'right';
+    fade: 'short' | 'standard' | 'tall'; progressPlacement: 'around-status' | 'under-details' | 'along-bottom' | 'off';
+    style: 'tag' | 'badge' | 'symbol' | 'line'
+  }
+  setPosterOverlay: (settings: AppState['posterOverlay']) => void
   watchedCheckmarkSources: ProgressProvider[]
   pmdbApiKey: string
   pmdbSaveResumePosition: boolean
@@ -312,7 +301,6 @@ interface AppState {
   setPrimaryProgressProvider: (src: ProgressSelection) => void
   setContinueWatchingLimit: (limit: number) => void
   setContinueWatchingProgress: (items: ContinueWatchingProgressItem[]) => void
-  setShowPosterWatchStatus: (enabled: boolean) => void
   setResumePriorityOrder: (order: ProgressProvider[]) => void
   setWatchedCheckmarkSources: (sources: ProgressProvider[]) => void
   setPmdBApiKey: (key: string) => void
@@ -421,8 +409,6 @@ interface AppState {
   setArtProviders: (providers: ArtProviderSettings) => void
   customArtUrls: CustomArtUrls
   setCustomArtUrls: (urls: CustomArtUrls) => void
-  betterPosters: BetterPostersSettings
-  setBetterPosters: (settings: BetterPostersSettings) => void
   // Metadata sources
   movieMetadataSource: 'tmdb' | 'tvdb'
   seriesMetadataSource: 'tvdb' | 'tmdb'
@@ -577,17 +563,34 @@ function loadPersistedHomeRows(): HomeRowConfig[] | null {
     if (raw) {
       const rows = JSON.parse(raw) as HomeRowConfig[]
       const sanitized = rows.filter((row) => row.addonId !== 'com.example.mockaddon' && !String(row.catalogId || '').startsWith('mock-'))
+      // The built-in Trending shelves used to default to oversized ranking
+      // cards. Odin presents these as ordinary posters, so migrate only those
+      // two built-in shelves once; user-created ranked shelves stay untouched.
+      const posterShelfMigrationKey = profileStorageKey('aurales_home_poster_layout_migrated')
+      const shouldMigrateTrendingShelves = localStorage.getItem(posterShelfMigrationKey) !== 'true'
+      const withPosterShelves = shouldMigrateTrendingShelves
+        ? sanitized.map((row) => {
+          if (row.id === 'default-trending-movies' || row.id === 'default-trending-series') {
+            return row.layout === 'ranked' ? { ...row, layout: 'poster' as const, showRank: false } : row
+          }
+          if (row.id === 'default-new-releases' && row.layout === 'feature') {
+            return { ...row, layout: 'poster' as const }
+          }
+          return row
+        })
+        : sanitized
+      if (shouldMigrateTrendingShelves) localStorage.setItem(posterShelfMigrationKey, 'true')
       // Upcoming is a core built-in shelf, like Continue Watching. Existing
       // profiles receive it once without replacing or reordering their layout.
-      const migrated = sanitized.some((row) => row.layout === 'upcoming')
-        ? sanitized
+      const migrated = withPosterShelves.some((row) => row.layout === 'upcoming')
+        ? withPosterShelves
         : (() => {
-            const ordered = [...sanitized].sort((a, b) => a.order - b.order)
+            const ordered = [...withPosterShelves].sort((a, b) => a.order - b.order)
             const continueIndex = ordered.findIndex((row) => row.layout === 'continue')
             ordered.splice(continueIndex >= 0 ? continueIndex + 1 : 0, 0, { id: 'upcoming', title: 'Upcoming', layout: 'upcoming' as const, enabled: true, order: 0, sourceType: 'local' as const })
             return ordered.map((row, index) => ({ ...row, order: index }))
           })()
-      if (migrated.length !== rows.length || migrated !== sanitized) persistHomeRows(migrated)
+      if (migrated.length !== rows.length || shouldMigrateTrendingShelves || migrated !== sanitized) persistHomeRows(migrated)
       return migrated
     }
   } catch (_) { /* ignore */ }
@@ -1026,7 +1029,33 @@ export const useAppStore = create<AppState>((set, get) => ({
     mdblistApiKey: localStorage.getItem('mdblist_api_key') || '',
   }) : [loadProgressSelection() as ProgressProvider],
   continueWatchingProgress: loadContinueWatchingProgress(),
-  showPosterWatchStatus: localStorage.getItem('aurales_show_poster_watch_status') !== 'false',
+  posterOverlay: (() => {
+    const saved = readStoredObject('aurales_poster_overlay')
+    const legacyWatchStatus = localStorage.getItem('aurales_show_poster_watch_status')
+    const previousPosterStyle = 'background' in saved || 'colorMode' in saved
+    const needsOdinPosterMigration = !('showRatingBelow' in saved)
+    const settings: AppState['posterOverlay'] = {
+      enabled: saved.enabled !== false, showProgress: saved.showProgress !== false,
+      // Fold the former Progress-tab switch into the Poster setting. Its old
+      // false value suppressed this switch even when the Poster setting was on.
+      showWatched: saved.showWatched !== false && legacyWatchStatus !== 'false',
+      showAsCheckmark: saved.showAsCheckmark !== false, showFavorite: saved.showFavorite === true,
+      showRating: previousPosterStyle || saved.showRating !== false, showGenre: saved.showGenre === true, showTimeLeft: saved.showTimeLeft === true, showEpisodes: needsOdinPosterMigration || saved.showEpisodes !== false, showEpisodesWatched: saved.showEpisodesWatched === true,
+      showNextEpisode: saved.showNextEpisode === true, showCertification: saved.showCertification === true, splitEpisodeProgress: saved.splitEpisodeProgress !== false,
+      showRatingBelow: saved.showRatingBelow === true,
+      artwork: saved.artwork === 'backdrop' ? 'backdrop' : 'poster',
+      colorMode: (['artwork', 'dark', 'neutral'].includes(String(saved.colorMode)) ? saved.colorMode : 'artwork') as 'artwork' | 'dark' | 'neutral',
+      contentAlignment: (['left', 'center', 'right'].includes(String(saved.contentAlignment)) ? saved.contentAlignment : 'center') as 'left' | 'center' | 'right',
+      fade: (['short', 'standard', 'tall'].includes(String(saved.fade)) ? saved.fade : 'short') as 'short' | 'standard' | 'tall',
+      progressPlacement: (['around-status', 'under-details', 'along-bottom', 'off'].includes(String(saved.progressPlacement)) ? saved.progressPlacement : 'along-bottom') as 'around-status' | 'under-details' | 'along-bottom' | 'off',
+      style: (typeof saved.style === 'string' && ['tag', 'badge', 'symbol', 'line'].includes(saved.style) ? saved.style : 'symbol') as 'tag' | 'badge' | 'symbol' | 'line',
+    }
+    if (legacyWatchStatus != null) {
+      localStorage.setItem('aurales_poster_overlay', JSON.stringify(settings))
+      localStorage.removeItem('aurales_show_poster_watch_status')
+    }
+    return settings
+  })(),
   pmdbApiKey: localStorage.getItem('pmdb_api_key') || '',
   pmdbSaveResumePosition: localStorage.getItem('pmdb_save_resume') !== 'false',
   mdblistSaveResumePosition: localStorage.getItem('mdblist_save_resume') !== 'false',
@@ -1174,7 +1203,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setContinueWatchingLimit: (limit) => { const safe = CONTINUE_WATCHING_LIMITS.includes(limit as typeof CONTINUE_WATCHING_LIMITS[number]) ? limit : 10; localStorage.setItem('aurales_cw_limit', String(safe)); set({ continueWatchingLimit: safe }) },
   setContinueWatchingProgress: (items) => set({ continueWatchingProgress: buildContinueWatchingProgress(items) }),
-  setShowPosterWatchStatus: (enabled) => { localStorage.setItem('aurales_show_poster_watch_status', String(enabled)); set({ showPosterWatchStatus: enabled }) },
+  setPosterOverlay: (settings) => { localStorage.setItem('aurales_poster_overlay', JSON.stringify(settings)); localStorage.removeItem('aurales_show_poster_watch_status'); set({ posterOverlay: settings }) },
   setWatchedCheckmarkSources: (sources) => {
     localStorage.setItem('aurales_watched_checkmark_sources', JSON.stringify(sources))
     set({ watchedCheckmarkSources: sources })
@@ -1514,10 +1543,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       homeCardAnimations: getProfileSetting('aurales_home_card_animations') !== 'false',
       fixedHeroSource: (getProfileSetting('aurales_fixed_hero_source') || 'automatic') as FixedHeroSource,
       fixedHeroManualItem: (() => { try { return JSON.parse(getProfileSetting('aurales_fixed_hero_manual_item') || 'null') as SearchResult | null } catch { return null } })(),
-      // These settings are profile-owned too. Refresh them in the same store
-      // update as the rest of the incoming profile so existing Home cards
-      // never render one frame with the outgoing profile's poster choices.
-      betterPosters: loadBetterPosterSettings(),
       customArtUrls: loadCustomArtUrls(),
       artProviders: normalizeArtProviderSettings(readStoredObject('aurales_art_providers')),
     })
@@ -1532,12 +1557,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   customArtUrls: loadCustomArtUrls(),
   setCustomArtUrls: (urls) => { localStorage.setItem('aurales_custom_art_urls', JSON.stringify(urls)); invalidateCatalogData(); set({ customArtUrls: urls }) },
-  betterPosters: loadBetterPosterSettings(),
-  setBetterPosters: (settings) => {
-    localStorage.setItem('aurales_better_posters', JSON.stringify(settings))
-    invalidateCatalogData()
-    set({ betterPosters: settings })
-  },
   // Primary providers are fixed to keep metadata behavior predictable.
   movieMetadataSource: 'tmdb',
   seriesMetadataSource: 'tvdb',

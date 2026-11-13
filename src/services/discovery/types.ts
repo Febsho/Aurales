@@ -33,7 +33,7 @@ export interface TasteProfile {
 export interface RecommendationFeedback {
   mediaKey: string
   kind: RecommendationFeedbackKind
-  item: Pick<SearchResult, 'id' | 'title' | 'type' | 'tmdbId' | 'genreIds'> & Partial<Pick<SearchResult, 'year' | 'runtime' | 'originalLanguage' | 'isAnime'>>
+  item: Pick<SearchResult, 'id' | 'title' | 'type' | 'tmdbId' | 'genreIds'> & Partial<Pick<SearchResult, 'provider' | 'imdbId' | 'tvdbId' | 'anilistId' | 'malId' | 'genres' | 'overview' | 'originCountry' | 'year' | 'runtime' | 'originalLanguage' | 'isAnime'>>
   createdAt: number
   /** The selected genre for a hide-genre action. Older records use item.genreIds. */
   genreId?: number

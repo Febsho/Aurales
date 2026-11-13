@@ -188,7 +188,6 @@ function artworkSettingsKey(): string {
     providers: settings.artProviders,
     fanart: Boolean(settings.fanartApiKey),
     custom: settings.customArtUrls,
-    betterPosters: settings.betterPosters,
     meta: [settings.movieMetadataSource, settings.movieMetadataFallback],
   })
 }
@@ -228,7 +227,6 @@ export default function MovieDetailPage() {
   const artProviders = useAppStore((s) => s.artProviders)
   const fanartApiKey = useAppStore((s) => s.fanartApiKey)
   const customArtUrls = useAppStore((s) => s.customArtUrls)
-  const betterPosters = useAppStore((s) => s.betterPosters)
   const movieMetadataSource = useAppStore((s) => s.movieMetadataSource)
   const movieMetadataFallback = useAppStore((s) => s.movieMetadataFallback)
   const discordRichPresence = useAppStore((s) => s.discordRichPresence)
@@ -237,9 +235,8 @@ export default function MovieDetailPage() {
     providers: artProviders,
     fanart: Boolean(fanartApiKey),
     custom: customArtUrls,
-    betterPosters,
     meta: [movieMetadataSource, movieMetadataFallback],
-  }), [artProviders, fanartApiKey, customArtUrls, betterPosters, movieMetadataSource, movieMetadataFallback])
+  }), [artProviders, fanartApiKey, customArtUrls, movieMetadataSource, movieMetadataFallback])
   const [movieWatched, setMovieWatched] = useState(false)
 
   useEffect(() => {

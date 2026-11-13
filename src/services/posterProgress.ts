@@ -7,15 +7,18 @@ import { getMdblistPlaybackProgress, hasMdblistOAuth } from './mdblist'
 import { getAniListContinueWatching } from './anilist'
 import { getServerCatalogItems, listServerCatalogs } from './serverIntegrations'
 
-type PosterProgress = { type: 'movie' | 'series'; pct: number; title?: string; ids: Array<string | number | null | undefined> }
+type PosterProgress = { type: 'movie' | 'series'; pct: number; remainingSeconds?: number; title?: string; ids: Array<string | number | null | undefined> }
+export type PosterTimeLeft = { pct: number; remainingSeconds: number }
 
 const listeners = new Set<() => void>()
 let snapshot = new Map<string, number>()
+let timeLeftSnapshot = new Map<string, PosterTimeLeft>()
 let currentScope = ''
 let lastRefresh = 0
 let pending: Promise<void> | null = null
 let pendingScope = ''
 let progressBySource = new Map<string, Map<string, number>>()
+let timeLeftBySource = new Map<string, Map<string, PosterTimeLeft>>()
 
 function publish(progress: Map<string, number>) {
   snapshot = progress
@@ -28,24 +31,47 @@ function publish(progress: Map<string, number>) {
   }
 }
 
-function add(progress: Map<string, number>, item: PosterProgress) {
+function add(progress: Map<string, number>, item: PosterProgress, timeLeft = new Map<string, PosterTimeLeft>()) {
   if (!Number.isFinite(item.pct) || item.pct <= 0 || item.pct >= 100) return
+  const addKey = (key: string) => {
+    progress.set(key, Math.max(progress.get(key) ?? 0, item.pct))
+    if (Number.isFinite(item.remainingSeconds) && item.remainingSeconds! > 0) {
+      const previous = timeLeft.get(key)
+      if (!previous || item.pct > previous.pct || (item.pct === previous.pct && item.remainingSeconds! < previous.remainingSeconds)) {
+        timeLeft.set(key, { pct: item.pct, remainingSeconds: item.remainingSeconds! })
+      }
+    }
+  }
   for (const id of item.ids) {
     if (id == null || !String(id).trim()) continue
     const key = `${item.type}:${id}`
-    progress.set(key, Math.max(progress.get(key) ?? 0, item.pct))
+    addKey(key)
   }
   if (item.title) {
     const title = item.title.normalize('NFKD').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
-    if (title) progress.set(`title:${item.type}:${title}`, Math.max(progress.get(`title:${item.type}:${title}`) ?? 0, item.pct))
+    if (title) addKey(`title:${item.type}:${title}`)
   }
 }
 
 function publishSources() {
   const combined = new Map<string, number>()
-  for (const sourceProgress of progressBySource.values()) {
-    for (const [key, pct] of sourceProgress) combined.set(key, Math.max(combined.get(key) ?? 0, pct))
+  const combinedTimeLeft = new Map<string, PosterTimeLeft>()
+  for (const [source, sourceProgress] of progressBySource) {
+    const sourceTimeLeft = timeLeftBySource.get(source)
+    for (const [key, pct] of sourceProgress) {
+      const previousPct = combined.get(key) ?? 0
+      if (pct > previousPct) {
+        combined.set(key, pct)
+        combinedTimeLeft.delete(key)
+        const remainingSeconds = sourceTimeLeft?.get(key)?.remainingSeconds
+        if (remainingSeconds != null) combinedTimeLeft.set(key, { pct, remainingSeconds })
+      } else if (pct === previousPct && !combinedTimeLeft.has(key)) {
+        const remainingSeconds = sourceTimeLeft?.get(key)?.remainingSeconds
+        if (remainingSeconds != null) combinedTimeLeft.set(key, { pct, remainingSeconds })
+      }
+    }
   }
+  timeLeftSnapshot = combinedTimeLeft
   publish(combined)
 }
 
@@ -55,21 +81,27 @@ export function subscribePosterProgress(listener: () => void) {
 }
 
 export function getPosterProgressSnapshot() { return snapshot }
+export function getPosterTimeLeftSnapshot() { return timeLeftSnapshot }
 
-export function ensurePosterProgress(force = false) {
+export function ensurePosterProgress(force = false): Promise<void> {
   const state = useAppStore.getState()
-  const sources: ContinueWatchingSource[] = [
+  const connectedSources: ContinueWatchingSource[] = [
     ...(state.simklConnected ? ['simkl' as const] : []),
     ...(state.traktConnected ? ['trakt' as const] : []),
     ...(state.pmdbApiKey ? ['pmdb' as const] : []),
     ...(state.mdblistApiKey || hasMdblistOAuth() ? ['mdblist' as const] : []),
     ...(state.anilistConnected ? ['anilist' as const] : []),
   ]
-  const scope = sources.map((source) => `${source}:${getContinueWatchingAccountScope(source) ?? 'connected'}`).join('|')
+  const sources: ContinueWatchingSource[] = state.primaryProgressProvider === 'all'
+    ? connectedSources
+    : state.primaryProgressProvider === 'local' ? [] : [state.primaryProgressProvider]
+  const includeServer = state.primaryProgressProvider === 'all' || state.primaryProgressProvider === 'local'
+  const scope = `local:${includeServer}|${sources.map((source) => `${source}:${getContinueWatchingAccountScope(source) ?? 'connected'}`).join('|')}`
   if (scope !== currentScope) {
     currentScope = scope
     lastRefresh = 0
     progressBySource = new Map()
+    timeLeftBySource = new Map()
     for (const source of sources) {
       const accountScope = getContinueWatchingAccountScope(source)
       if (!accountScope) continue
@@ -84,7 +116,8 @@ export function ensurePosterProgress(force = false) {
     }
     publishSources()
   }
-  if ((pending && pendingScope === scope) || (!force && Date.now() - lastRefresh < 120_000)) return
+  if (pending && pendingScope === scope) return pending
+  if (!force && Date.now() - lastRefresh < 120_000) return Promise.resolve()
   lastRefresh = Date.now()
   const activeScope = scope
   const jobs = sources.map(async (source): Promise<PosterProgress[]> => {
@@ -93,6 +126,7 @@ export function ensurePosterProgress(force = false) {
       return items.map((item) => ({ type: item.media_type === 'movie' ? 'movie' : 'series',
         pct: item.runtime_ms > 0 ? item.position_ms / item.runtime_ms * 100
           : item.progress != null ? (item.progress > 1 ? item.progress : item.progress * 100) : 0,
+        remainingSeconds: item.runtime_ms > item.position_ms && item.runtime_ms > 0 ? (item.runtime_ms - item.position_ms) / 1000 : undefined,
         ids: [item.tmdb_id, `tmdb-${item.tmdb_id}`] }))
     }
     if (source === 'simkl') {
@@ -128,7 +162,7 @@ export function ensurePosterProgress(force = false) {
         item.anilistId != null ? `anilist-${item.anilistId}` : undefined,
         item.malId != null ? `mal-${item.malId}` : undefined] }))
   })
-  jobs.push((async () => {
+  if (includeServer) jobs.push((async () => {
     const catalogs = await listServerCatalogs()
     const activeCatalogs = catalogs.filter((catalog) => catalog.kind === 'continue-watching')
     const results = await Promise.allSettled(activeCatalogs.map((catalog) => getServerCatalogItems(catalog.connectionId, catalog.catalogId, 100)))
@@ -141,15 +175,19 @@ export function ensurePosterProgress(force = false) {
       return [{ type: item.type, title: item.title, pct, ids: [item.id, item.imdbId, item.tmdbId,
         item.tmdbId != null ? `tmdb-${item.tmdbId}` : undefined, item.tvdbId,
         item.malId != null ? `mal-${item.malId}` : undefined,
-        item.anilistId != null ? `anilist-${item.anilistId}` : undefined] }]
+        item.anilistId != null ? `anilist-${item.anilistId}` : undefined],
+        remainingSeconds: runtimeTicks > positionTicks ? (runtimeTicks - positionTicks) / 10_000_000 : undefined }]
     }) : [])
   })())
   const run = Promise.allSettled(jobs.map(async (job, index) => {
     const items = await job
     if (currentScope !== activeScope) return
     const next = new Map<string, number>()
-    items.forEach((item) => add(next, item))
-    progressBySource.set(index === sources.length ? 'server' : sources[index], next)
+    const nextTimeLeft = new Map<string, PosterTimeLeft>()
+    items.forEach((item) => add(next, item, nextTimeLeft))
+    const sourceKey = index === sources.length ? 'server' : sources[index]
+    progressBySource.set(sourceKey, next)
+    timeLeftBySource.set(sourceKey, nextTimeLeft)
     publishSources()
   })).then(() => {})
   pending = run
@@ -161,6 +199,7 @@ export function ensurePosterProgress(force = false) {
     }
   }
   void run.then(clearPending, clearPending)
+  return run
 }
 
 if (typeof window !== 'undefined') {

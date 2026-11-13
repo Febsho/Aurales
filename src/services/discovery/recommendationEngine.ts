@@ -37,11 +37,17 @@ function extractKeywords(text: string | undefined): Set<string> {
   return new Set(tokens.filter((token) => !KEYWORD_STOPWORDS.has(token)))
 }
 
-export function mediaKey(item: Pick<SearchResult, 'id' | 'type' | 'tmdbId' | 'imdbId'>): string {
+export function mediaKey(item: Pick<SearchResult, 'id' | 'type' | 'tmdbId' | 'imdbId' | 'tvdbId' | 'anilistId' | 'malId'>): string {
   const tmdbId = normalizedTmdbId(item.tmdbId)
   if (tmdbId) return `${item.type}:tmdb:${tmdbId}`
   const imdbId = normalizedImdbId(item.imdbId)
   if (imdbId) return `${item.type}:imdb:${imdbId}`
+  const tvdbId = item.tvdbId == null ? '' : String(item.tvdbId).trim().replace(/^tvdb[-:]/i, '')
+  if (tvdbId) return `${item.type}:tvdb:${tvdbId}`
+  const anilistId = item.anilistId == null ? '' : String(item.anilistId).trim().replace(/^anilist[-:]/i, '')
+  if (anilistId) return `${item.type}:anilist:${anilistId}`
+  const malId = item.malId == null ? '' : String(item.malId).trim().replace(/^mal[-:]/i, '')
+  if (malId) return `${item.type}:mal:${malId}`
   return `${item.type}:local:${item.id}`
 }
 
@@ -266,6 +272,38 @@ export function prioritizeLiveTrendsWithin(
   )
 }
 
+/**
+ * Keep taste refinement trend-forward while still letting public catalogs
+ * appear in the first batch. When only the weekly chart is available, expose
+ * all of it instead of shrinking the choice pool.
+ */
+export function buildTastePickerPool(
+  currentTrends: RankedRecommendation[],
+  recommendations: RankedRecommendation[],
+  firstBatchSize = 10,
+  trendShare = 6,
+): RankedRecommendation[] {
+  const seenTrends = new Set<string>()
+  const trends = currentTrends.filter((entry) => {
+    const key = mediaKey(entry.item)
+    if (seenTrends.has(key)) return false
+    seenTrends.add(key)
+    return true
+  })
+  const fallback = sortRecommendationsByPopularity(recommendations).filter((entry) => !seenTrends.has(mediaKey(entry.item)))
+  if (!fallback.length) return trends
+
+  const batchSize = Math.max(1, firstBatchSize)
+  const leadingTrendCount = Math.min(trends.length, Math.max(0, trendShare), batchSize)
+  const leadingFallbackCount = Math.max(0, batchSize - leadingTrendCount)
+  return [
+    ...trends.slice(0, leadingTrendCount),
+    ...fallback.slice(0, leadingFallbackCount),
+    ...trends.slice(leadingTrendCount),
+    ...fallback.slice(leadingFallbackCount),
+  ]
+}
+
 /** Keep the live weekly chart at the front of Top 10, then favor popular fallbacks. */
 export function buildPopularTopTen(
   currentTrends: RankedRecommendation[],
@@ -303,6 +341,19 @@ export function orderRecommendationsBySource(ranked: RankedRecommendation[], sou
     if (rightPosition != null) return 1
     return right.score.total - left.score.total
   })
+}
+
+/** Interleave active media charts without changing the rank inside either chart. */
+export function interleaveLiveTrendSources(sources: SearchResult[][]): SearchResult[] {
+  const interleaved: SearchResult[] = []
+  const longest = Math.max(0, ...sources.map((source) => source.length))
+  for (let index = 0; index < longest; index += 1) {
+    for (const source of sources) {
+      const item = source[index]
+      if (item) interleaved.push(item)
+    }
+  }
+  return interleaved
 }
 
 /**

@@ -62,7 +62,7 @@ describe('Aurales Sync download pagination', () => {
   })
 
   it('runs a follow-up sync after the initial profile pull so encrypted settings can be checkpointed', async () => {
-    runSyncBatchMock.mockResolvedValueOnce({ cursor: '1', records: [] })
+    runSyncBatchMock.mockResolvedValue({ cursor: '1', records: [] })
 
     await syncIfConfigured()
 

@@ -72,7 +72,7 @@ function hslToRgb(h: number, s: number, l: number): AmbientColor {
  * is cross-origin without CORS headers, which taints the canvas. Callers must
  * treat that as "no ambient colour" and leave their default styling alone.
  */
-export function extractAmbientColor(image: HTMLImageElement): AmbientColor | null {
+export function extractAmbientColor(image: HTMLImageElement, region: 'full' | 'poster-bottom' = 'full'): AmbientColor | null {
   if (!image.naturalWidth || !image.naturalHeight) return null
   try {
     const canvas = document.createElement('canvas')
@@ -80,7 +80,12 @@ export function extractAmbientColor(image: HTMLImageElement): AmbientColor | nul
     canvas.height = SAMPLE_SIZE
     const context = canvas.getContext('2d', { willReadFrequently: true })
     if (!context) return null
-    context.drawImage(image, 0, 0, SAMPLE_SIZE, SAMPLE_SIZE)
+    if (region === 'poster-bottom') {
+      const top = Math.floor(image.naturalHeight * 0.64)
+      context.drawImage(image, 0, top, image.naturalWidth, image.naturalHeight - top, 0, 0, SAMPLE_SIZE, SAMPLE_SIZE)
+    } else {
+      context.drawImage(image, 0, 0, SAMPLE_SIZE, SAMPLE_SIZE)
+    }
     const { data } = context.getImageData(0, 0, SAMPLE_SIZE, SAMPLE_SIZE)
 
     let r = 0
@@ -122,7 +127,7 @@ export function extractAmbientColor(image: HTMLImageElement): AmbientColor | nul
  * fetch happens again with CORS headers attached. Providers ignore the extra
  * parameter, and it only ever costs a second request when the first failed.
  */
-function decode(url: string, signal?: AbortSignal): Promise<AmbientColor | null> {
+function decode(url: string, signal?: AbortSignal, region: 'full' | 'poster-bottom' = 'full'): Promise<AmbientColor | null> {
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve(null)
     const image = new Image()
@@ -139,7 +144,7 @@ function decode(url: string, signal?: AbortSignal): Promise<AmbientColor | null>
       if (abortHandler) signal?.removeEventListener('abort', abortHandler)
       resolve(value)
     }
-    image.onload = () => done(signal?.aborted ? null : extractAmbientColor(image))
+    image.onload = () => done(signal?.aborted ? null : extractAmbientColor(image, region))
     image.onerror = () => done(null)
     abortHandler = () => done(null)
     signal?.addEventListener('abort', abortHandler, { once: true })
@@ -151,9 +156,10 @@ function decode(url: string, signal?: AbortSignal): Promise<AmbientColor | null>
 export async function loadAmbientColor(
   url: string,
   signal?: AbortSignal,
+  region: 'full' | 'poster-bottom' = 'full',
 ): Promise<AmbientColor | null> {
-  const direct = await decode(url, signal)
+  const direct = await decode(url, signal, region)
   if (direct || signal?.aborted) return direct
   const separator = url.includes('?') ? '&' : '?'
-  return decode(`${url}${separator}auralesAmbient=1`, signal)
+  return decode(`${url}${separator}auralesAmbient=1`, signal, region)
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SearchResult, WatchProgress } from '../../types'
-import { applyRecommendationFeedback, buildPopularTopTen, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, mediaKey, orderRecommendationsBySource, orderRuntimeCandidates, orderSpotlightCandidates, prioritizeLiveTrends, prioritizeLiveTrendsWithin, rankCandidates, reconcileTrendingSignals, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
+import { applyRecommendationFeedback, buildPopularTopTen, buildTastePickerPool, buildTasteProfile, chooseSurpriseAnimationFrame, chooseSurpriseRecommendation, dedupeCandidates, generateDiscoverySections, interleaveLiveTrendSources, mediaKey, orderRecommendationsBySource, orderRuntimeCandidates, orderSpotlightCandidates, prioritizeLiveTrends, prioritizeLiveTrendsWithin, rankCandidates, reconcileTrendingSignals, selectEditorialReason, selectTopRatedRecommendations, sortRecommendationsByPopularity, trendingScopeFingerprint } from './recommendationEngine'
 import type { DiscoveryActivity, RecommendationCandidate, RecommendationFeedback } from './types'
 
 const sciFi: SearchResult = { id:'seed',title:'Seed',type:'movie',provider:'tmdb',tmdbId:1,genreIds:[878],year:2020,rating:8 }
@@ -54,6 +54,31 @@ describe('discovery recommendation engine', () => {
     const liveTrends = ranked.filter((entry) => entry.source === 'tmdb-trending')
 
     expect(buildPopularTopTen(liveTrends, ranked).map((entry) => entry.item.tmdbId)).toEqual([930, 931, 932, 934, 933])
+  })
+  it('mixes six current trends with popular public catalog picks in the first taste batch', () => {
+    const trends = Array.from({ length: 8 }, (_, index) => candidate(940 + index))
+      .map((entry) => ({ ...entry, source: 'tmdb-trending' as const }))
+    const popular = Array.from({ length: 6 }, (_, index) => {
+      const entry = candidate(950 + index)
+      entry.popularity = 600 - index * 10
+      return entry
+    })
+    const profile = buildTasteProfile(activity())
+    const rankedTrends = rankCandidates(trends, profile, activity(), [], 'for-you')
+    const rankedPopular = rankCandidates(popular, profile, activity(), [], 'for-you')
+    const choices = buildTastePickerPool(rankedTrends, rankedPopular)
+
+    expect(choices.slice(0, 10).map((entry) => entry.item.tmdbId)).toEqual([
+      940, 941, 942, 943, 944, 945, 950, 951, 952, 953,
+    ])
+    expect(choices.slice(10, 12).map((entry) => entry.item.tmdbId)).toEqual([946, 947])
+  })
+  it('keeps all current trends available when no public fallback catalog is loaded', () => {
+    const trends = Array.from({ length: 8 }, (_, index) => candidate(960 + index))
+      .map((entry) => ({ ...entry, source: 'tmdb-trending' as const }))
+    const rankedTrends = rankCandidates(trends, buildTasteProfile(activity()), activity(), [], 'for-you')
+
+    expect(buildTastePickerPool(rankedTrends, []).map((entry) => entry.item.tmdbId)).toEqual([960, 961, 962, 963, 964, 965, 966, 967])
   })
   it('keeps live weekly order first and gives recent releases an edge over similarly popular older titles', () => {
     const currentYear = 2026
@@ -171,6 +196,13 @@ describe('discovery recommendation engine', () => {
 
     expect(orderRecommendationsBySource([...ranked].reverse(), sourceOrder.map((entry) => entry.item)).map((entry) => entry.item.tmdbId))
       .toEqual([143, 144, 145])
+  })
+  it('interleaves active weekly charts while preserving each chart’s rank', () => {
+    const movieChart = [candidate(160).item, candidate(161).item, candidate(162).item]
+    const seriesChart = [candidate(170, { type: 'series' }).item, candidate(171, { type: 'series' }).item]
+
+    expect(interleaveLiveTrendSources([movieChart, seriesChart]).map((item) => item.tmdbId))
+      .toEqual([160, 170, 161, 171, 162])
   })
   it('keeps live trends in source order before popularity-ranked fallback titles', () => {
     const profile = buildTasteProfile(activity())
@@ -433,6 +465,17 @@ describe('discovery recommendation engine', () => {
     const item = candidate(2)
     const feedback: RecommendationFeedback[] = [{ mediaKey:mediaKey(item.item),kind:'hide',item:item.item,createdAt:Date.now() }]
     expect(rankCandidates([item],buildTasteProfile(activity()),activity(),feedback,'for-you')).toHaveLength(0)
+  })
+  it('uses persisted positive taste picks to rank genre-matched recommendations', () => {
+    const emptyActivity: DiscoveryActivity = { progress: [], recent: [] }
+    const picked = { id:'anilist-88',title:'Anime pick',type:'series' as const,provider:'anilist',anilistId:88,genreIds:[16,14] }
+    const matched = candidate(201, { type:'series',genreIds:[16,14] })
+    const unrelated = candidate(202, { type:'series',genreIds:[35] })
+    const feedback: RecommendationFeedback[] = [{ mediaKey:mediaKey(picked),kind:'more-like-this',item:picked,createdAt:Date.now() }]
+    const ranked = rankCandidates([unrelated, matched],buildTasteProfile(emptyActivity),emptyActivity,feedback,'for-you')
+
+    expect(ranked[0]?.item.tmdbId).toBe(201)
+    expect(mediaKey(picked)).toBe('series:anilist:88')
   })
   it('filters every candidate in a specifically hidden genre', () => {
     const item = candidate(2)

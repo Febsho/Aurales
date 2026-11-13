@@ -267,6 +267,7 @@ export interface StreamResult {
   audioCodec?: string
   resolution?: string
   bitrate?: number
+  frameRate?: number
   hdr?: string
   mediaSourceId?: string
   playSessionId?: string
@@ -336,6 +337,8 @@ export interface DiscoverConfig {
 export interface DiscoveryCatalogContinuation {
   configs: DiscoverConfig[]
   tab: 'movies' | 'series' | 'anime'
+  /** Optional set of media families represented by the continuation queries. */
+  tabs?: Array<'movies' | 'series' | 'anime'>
   genreIds?: number[]
   maxPopularity?: number
   minRating?: number

@@ -194,7 +194,7 @@ Depending on available metadata, Aurales can show:
 
 Recently resolved details are cached during the session for faster repeat visits.
 
-Artwork also uses persistent caching and optional **Better Posters** resolution to improve repeat loading and visual quality.
+Aurales composes poster artwork in the app from your catalog and connected metadata sources, with persistent image caching for faster repeat visits. Title logos, ratings, watch status, and progress stay as separate layers so posters do not depend on an external composed-poster service.
 
 ---
 

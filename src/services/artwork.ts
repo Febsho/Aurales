@@ -1,51 +1,6 @@
 import type { EpisodeDetails, MovieDetails, SearchResult, ShowDetails } from '../types'
 import { useAppStore } from '../stores/appStore'
-import { getBetterPostersUrl } from './betterPosters'
 import type { ArtProvider, ArtProviderSettings } from '../stores/appStore'
-import { metadataTaskQueue, scheduleTask } from './cache/backgroundTaskQueue'
-
-// Better Posters needs an IMDb id. Catalog sources do not always include one,
-// so retain both completed and in-flight resolutions globally. This prevents
-// every card, row, and revisited route from independently doing the same ID
-// bridge and lets cards render the final Better Poster directly.
-interface BetterPosterCacheEntry {
-  url?: string
-  expiresAt: number
-}
-
-const betterPosterUrls = new Map<string, BetterPosterCacheEntry>()
-const betterPosterRequests = new Map<string, Promise<string | undefined>>()
-const MAX_BETTER_POSTER_URLS = 400
-const BETTER_POSTER_FAILURE_TTL_MS = 60_000
-
-function rememberBetterPoster(key: string, url: string | undefined): void {
-  betterPosterUrls.delete(key)
-  betterPosterUrls.set(key, {
-    url,
-    // Successful URL decisions remain stable for the session. Negative
-    // decisions are deliberately short-lived so a provider/ID bridge outage
-    // cannot suppress enhanced artwork until Aurales is restarted.
-    expiresAt: url ? Number.POSITIVE_INFINITY : Date.now() + BETTER_POSTER_FAILURE_TTL_MS,
-  })
-  while (betterPosterUrls.size > MAX_BETTER_POSTER_URLS) {
-    const oldest = betterPosterUrls.keys().next().value
-    if (!oldest) break
-    betterPosterUrls.delete(oldest)
-  }
-}
-
-function cachedBetterPoster(key: string): { found: boolean; url?: string } {
-  const cached = betterPosterUrls.get(key)
-  if (!cached) return { found: false }
-  if (cached.expiresAt <= Date.now()) {
-    betterPosterUrls.delete(key)
-    return { found: false }
-  }
-  // Refresh LRU order on access without changing the negative-cache deadline.
-  betterPosterUrls.delete(key)
-  betterPosterUrls.set(key, cached)
-  return { found: true, url: cached.url }
-}
 
 interface ArtIds {
   imdbId?: string
@@ -87,68 +42,37 @@ function resolveCustomUrl(pattern: string, ids: ArtIds): string | undefined {
 }
 
 function getCustomUrls() {
-  const { customArtUrls, betterPosters } = useAppStore.getState()
-  return betterPosters.enabled
-    ? { ...customArtUrls, posterUrl: getBetterPostersUrl(betterPosters) }
-    : customArtUrls
-}
-
-function betterPosterKey(item: Pick<SearchResult, 'type' | 'id' | 'imdbId' | 'tmdbId' | 'tvdbId' | 'malId' | 'anilistId'>, pattern: string): string {
-  return `${pattern}|${item.type}|${item.imdbId || ''}|${item.tmdbId || ''}|${item.tvdbId || ''}|${item.malId || ''}|${item.anilistId || ''}|${item.id}`
-}
-
-/** Resolve and memoize the final Better Posters URL, including the shared
- * IMDb-ID bridge for catalog entries that initially lack an IMDb id. */
-export function resolveBetterPoster(item: SearchResult): Promise<string | undefined> {
-  const { betterPosters } = useAppStore.getState()
-  if (!betterPosters.enabled) return Promise.resolve(undefined)
-  const pattern = getBetterPostersUrl(betterPosters)
-  const key = betterPosterKey(item, pattern)
-  const cached = cachedBetterPoster(key)
-  if (cached.found) return Promise.resolve(cached.url)
-  const existing = betterPosterRequests.get(key)
-  if (existing) return existing
-
-  // A long Home feed can make dozens of cards approach the viewport at once.
-  // Keep the IMDb bridge bounded instead of starting one network chain per
-  // card; scheduleTask also shares callers that race for the same item.
-  const request = scheduleTask(metadataTaskQueue, {
-    id: `better-poster:${key}`,
-    dedupKey: `better-poster:${key}`,
-    priority: 'low',
-    group: 'metadata',
-    execute: async () => {
-      let imdbId = item.imdbId
-      if (!imdbId) {
-        const { resolveImdbId } = await import('./metadataEnrich')
-        imdbId = await resolveImdbId({
-          tmdbId: item.tmdbId,
-          tvdbId: item.tvdbId,
-          malId: item.malId,
-          anilistId: item.anilistId,
-        }, item.type === 'movie' ? 'movie' : 'series')
-      }
-      const url = imdbId ? resolveCustomUrl(pattern, { imdbId, type: item.type }) : undefined
-      rememberBetterPoster(key, url)
-      return url
-    },
-  }).catch(() => {
-    rememberBetterPoster(key, undefined)
-    return undefined
-  }).finally(() => betterPosterRequests.delete(key))
-  betterPosterRequests.set(key, request)
-  return request
+  return useAppStore.getState().customArtUrls
 }
 
 export function getSearchResultCustomArt(item: SearchResult): { poster?: string; backdrop?: string; logo?: string } {
   const urls = getCustomUrls()
   const ids: ArtIds = { imdbId: item.imdbId, tmdbId: item.tmdbId, tvdbId: item.tvdbId, malId: item.malId, anilistId: item.anilistId, type: item.type }
-  const betterPattern = useAppStore.getState().betterPosters.enabled ? getBetterPostersUrl(useAppStore.getState().betterPosters) : undefined
-  const resolvedBetterPoster = betterPattern ? cachedBetterPoster(betterPosterKey(item, betterPattern)).url : undefined
   return {
-    poster: resolvedBetterPoster || resolveCustomUrl(urls.posterUrl, ids),
+    poster: resolveCustomUrl(urls.posterUrl, ids),
     backdrop: resolveCustomUrl(urls.backdropUrl, ids),
     logo: resolveCustomUrl(urls.logoUrl, ids),
+  }
+}
+
+/** Resolve ID-backed custom artwork the same way MediaCard does. Discovery's
+ * compact poster surfaces do not mount MediaCard, so they need to perform the
+ * IMDb bridge themselves for templates such as {imdb_id}. */
+export async function resolveSearchResultCustomArt(item: SearchResult): Promise<{ poster?: string; backdrop?: string; logo?: string }> {
+  const urls = getCustomUrls()
+  const needsImdbId = [urls.posterUrl, urls.backdropUrl, urls.logoUrl].some((url) => url.includes('{imdb_id}'))
+  if (!needsImdbId || item.imdbId) return getSearchResultCustomArt(item)
+
+  const tmdbId = item.tmdbId || (/^tmdb[-:]/i.test(String(item.id)) ? String(item.id).replace(/^tmdb[-:]/i, '') : undefined)
+  const tvdbId = item.tvdbId
+  if (!tmdbId && !tvdbId && item.malId == null && item.anilistId == null) return getSearchResultCustomArt(item)
+
+  try {
+    const { resolveImdbId } = await import('./metadataEnrich')
+    const imdbId = await resolveImdbId({ tmdbId, tvdbId, malId: item.malId, anilistId: item.anilistId }, item.type === 'movie' ? 'movie' : 'series')
+    return imdbId ? getSearchResultCustomArt({ ...item, imdbId }) : getSearchResultCustomArt(item)
+  } catch {
+    return getSearchResultCustomArt(item)
   }
 }
 
@@ -228,12 +152,13 @@ export async function resolveArtFromProviders(
   ids: { tmdbId?: string | number; tvdbId?: string | number; imdbId?: string },
   isAnime = false,
   role: 'poster' | 'backdrop' | 'all' = 'all',
+  preferConfiguredProvider = false,
 ): Promise<{ poster?: string; backdrop?: string; logo?: string }> {
   const { appManagedMetadata, artProviders, fanartApiKey } = useAppStore.getState()
   // When addon metadata is authoritative, its artwork is authoritative too.
   // Besides unexpectedly replacing the supplied art, provider lookups for every
   // visible card can saturate the same network connection the catalog uses.
-  if (!appManagedMetadata) return {}
+  if (!appManagedMetadata && !preferConfiguredProvider) return {}
 
   const posterProvider = artProviders[getProviderKey(mediaType, isAnime, 'Poster')]
   const backdropProvider = artProviders[getProviderKey(mediaType, isAnime, 'Backdrop')]

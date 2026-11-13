@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { getTmdbPerson, type TmdbPersonDetails, type TmdbPersonCredit } from '../services/tmdb'
+import MediaCard from '../components/MediaCard'
 
 function formatDate(value?: string): string | null {
   if (!value) return null
@@ -218,30 +219,22 @@ function TimelineItem({ credit }: { credit: TmdbPersonCredit }) {
 }
 
 function CreditCard({ credit }: { credit: TmdbPersonCredit }) {
-  const navigate = useNavigate()
-  const [imgError, setImgError] = useState(false)
-  const path = credit.type === 'movie' ? `/movie/${credit.id}` : `/series/${credit.id}`
-
   return (
-    <button onClick={() => navigate(path, { state: credit })} className="group text-left min-w-0 cursor-pointer focus-ring">
-      <div className="aspect-[2/3] rounded-xl overflow-hidden bg-white/[0.06] border border-white/[0.06] group-hover:border-white/20 transition-all duration-300 group-hover:-translate-y-1 shadow-lg">
-        {credit.poster && !imgError ? (
-          <img src={credit.poster} alt={credit.title} className="w-full h-full object-cover" loading="lazy" onError={() => setImgError(true)} />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center px-3">
-            <span className="text-3xl font-black text-white/15">{credit.title[0]}</span>
-          </div>
-        )}
-      </div>
-      <h3 className="mt-2 text-sm font-bold text-white/85 truncate group-hover:text-white">{credit.title}</h3>
-      <div className="mt-1 flex items-center gap-2 text-xs text-white/60">
-        {credit.year && <span>{credit.year}</span>}
+    <div className="min-w-0">
+      <MediaCard
+        item={credit}
+        layout="poster"
+        disableTrailerPreview
+        recordRecentlyWatched={false}
+        style={{ width: '100%', height: 'auto', minWidth: 0, maxWidth: '100%' }}
+      />
+      <div className="px-1 text-xs text-white/60">
         <span>{credit.type === 'movie' ? 'Movie' : 'Series'}</span>
-        {credit.creditTypes.includes('directing') && <span className="text-accent">Director</span>}
-        {credit.creditTypes.includes('voice') && <span className="text-blue-400">Voice</span>}
+        {credit.creditTypes.includes('directing') && <span className="ml-2 text-accent">Director</span>}
+        {credit.creditTypes.includes('voice') && <span className="ml-2 text-blue-400">Voice</span>}
+        {credit.character && <p className="mt-1 truncate">{credit.character}</p>}
+        {credit.job && <p className="mt-1 truncate">{credit.job}</p>}
       </div>
-      {credit.character && <p className="mt-1 text-xs text-white/60 truncate">{credit.character}</p>}
-      {credit.job && <p className="mt-1 text-xs text-white/60 truncate">{credit.job}</p>}
-    </button>
+    </div>
   )
 }
