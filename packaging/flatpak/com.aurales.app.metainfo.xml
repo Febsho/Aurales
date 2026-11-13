@@ -19,6 +19,14 @@
   <url type="bugtracker">https://github.com/Febsho/Aurales/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.6.0" date="2026-11-13">
+      <description>
+        <p>
+          Refreshes Discovery recommendations and layouts, improves posters and
+          episode summaries, and expands server integrations and watch syncing.
+        </p>
+      </description>
+    </release>
     <release version="0.5.5" date="2026-11-06">
       <description>
         <p>

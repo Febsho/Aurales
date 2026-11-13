@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://github.com/Febsho/Aurales/releases/latest">
-    <img src="https://img.shields.io/badge/Download-v0.5.5-ffffff?style=for-the-badge&logo=github&logoColor=black" alt="Download Aurales" />
+    <img src="https://img.shields.io/badge/Download-v0.6.0-ffffff?style=for-the-badge&logo=github&logoColor=black" alt="Download Aurales" />
   </a>
 </p>
 
@@ -488,7 +488,7 @@ More information is available in [`RUST_CORE_ARCHITECTURE.md`](./RUST_CORE_ARCHI
 
 The latest release is:
 
-## Aurales v0.5.5
+## Aurales v0.6.0
 
 **[Download from GitHub Releases](https://github.com/Febsho/Aurales/releases/latest)**
 
@@ -508,7 +508,7 @@ Available for:
 The recommended Windows package is the NSIS installer:
 
 ```text
-Aurales_0.5.5_x64-setup.exe
+Aurales_0.6.0_x64-setup.exe
 ```
 
 The MSI package is also available for managed installations.
@@ -522,7 +522,7 @@ The MSI package is also available for managed installations.
 Download:
 
 ```text
-Aurales_0.5.5_amd64.flatpak
+Aurales_0.6.0_amd64.flatpak
 ```
 
 Install:
@@ -542,7 +542,7 @@ flatpak run com.aurales.app
 Download:
 
 ```text
-Aurales_0.5.5_amd64.AppImage
+Aurales_0.6.0_amd64.AppImage
 ```
 
 Make it executable:
@@ -570,6 +570,19 @@ so separate media packages are normally unnecessary.
 
 
 
+
+# v0.6.0
+
+Version 0.6.0 brings a major refresh to discovery, artwork, and server integrations.
+
+* Rework Discovery with richer recommendations, continuation shelves, responsive layouts, and personalized feedback.
+* Refresh poster cards with improved artwork, episode summaries, progress, and technical badges.
+* Expand Jellyfin and WebDAV integrations, watched status synchronization, and profile handling.
+* Improve settings, playback behavior, and media metadata enrichment across desktop and web.
+
+See the full release notes on the **[v0.6.0 release page](https://github.com/Febsho/Aurales/releases/tag/v0.6.0)**.
+
+---
 
 # v0.5.5
 
